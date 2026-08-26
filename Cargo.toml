@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/phantom-core",
+    "crates/phantom-security",
+    "crates/phantom-dom",
+    "crates/phantom-engine",
+    "crates/phantom-browser",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+repository = "https://github.com/eusourmr/phantom-"
+authors = ["Phantom Contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
