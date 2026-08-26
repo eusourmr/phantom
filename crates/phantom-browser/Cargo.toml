@@ -1,0 +1,15 @@
+[package]
+name = "phantom-browser"
+description = "Native browser shell for Phantom"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phantom-core = { path = "../phantom-core" }
+phantom-engine = { path = "../phantom-engine" }
+
+[lints]
+workspace = true
