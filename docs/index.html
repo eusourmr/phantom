@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Phantom — an independent, open-source browser and web engine built for safety, auditability, semantic understanding and human-controlled intelligence.">
+  <title>Phantom — The web, rethought.</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="#top" aria-label="Phantom home">PHANTOM</a>
+    <nav>
+      <a href="#manifesto">Manifesto</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/eusourmr/phantom-">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">Independent web engine · Rust · Open source</p>
+      <h1>The web,<br><span>rethought.</span></h1>
+      <p class="lede">Phantom is an independent browser and engine built from the ground up for safety, auditability, semantic understanding and human-controlled intelligence.</p>
+      <div class="actions">
+        <a class="primary" href="https://github.com/eusourmr/phantom-">Explore the code</a>
+        <a class="secondary" href="#manifesto">Read the manifesto</a>
+      </div>
+      <div class="signal"><span></span> Foundation stage · v0.0.1</div>
+    </section>
+
+    <section class="statement">
+      <p>Not a Chromium fork.<br>Not AI bolted onto a browser.</p>
+      <h2>Phantom treats the browser as a secure runtime for <em>context, meaning and action.</em></h2>
+    </section>
+
+    <section id="manifesto" class="section">
+      <div class="section-label">01 / Manifesto</div>
+      <div class="section-copy">
+        <h2>The browser should understand the objective without taking control away from the human.</h2>
+        <div class="grid manifesto-grid">
+          <article><b>Independent by design</b><p>Own engine, own contracts, incremental standards compatibility.</p></article>
+          <article><b>Meaning beyond pages</b><p>Entities, relationships, changes, decisions and actions become first-class concepts.</p></article>
+          <article><b>Memory with consent</b><p>Context can persist without turning personal knowledge into telemetry.</p></article>
+          <article><b>AI without privilege</b><p>Agents use explicit capabilities and policy gates. High-impact actions remain human-controlled.</p></article>
+          <article><b>Security as architecture</b><p>Memory safety, least privilege, typed boundaries, sandboxing and adversarial testing from the start.</p></article>
+          <article><b>Auditability over cleverness</b><p>Code should be understandable, replaceable, testable and independently inspectable.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture" class="section dark-panel">
+      <div class="section-label">02 / Architecture</div>
+      <div class="section-copy">
+        <h2>Small components. Explicit boundaries. No ambient authority.</h2>
+        <div class="stack">
+          <div><span>Product</span><strong>Phantom Browser</strong></div>
+          <div><span>Orchestration</span><strong>Phantom Engine</strong></div>
+          <div class="split"><strong>Web Runtime</strong><strong>Intelligence Runtime</strong></div>
+          <div class="modules"><span>DOM</span><span>HTML</span><span>CSS</span><span>Layout</span><span>Render</span><span>JS</span><span>Network</span><span>Security</span><span>Semantic</span><span>Memory</span><span>Agent</span></div>
+        </div>
+        <p class="note">Rust is the primary implementation language. Unsafe code is forbidden by default and future privileged operations are isolated behind explicit capabilities.</p>
+      </div>
+    </section>
+
+    <section id="roadmap" class="section">
+      <div class="section-label">03 / Roadmap</div>
+      <div class="section-copy">
+        <h2>Correctness first. Breadth later.</h2>
+        <ol class="timeline">
+          <li class="active"><span>00</span><div><b>Foundation</b><p>Workspace, invariants, capabilities, DOM, CI.</p></div></li>
+          <li><span>01</span><div><b>Document pipeline</b><p>URL/origin, HTML tokenizer and tree builder.</p></div></li>
+          <li><span>02</span><div><b>CSS & layout</b><p>Cascade, computed style and deterministic layout.</p></div></li>
+          <li><span>03</span><div><b>Rendering</b><p>Scene graph, GPU abstraction and compositor.</p></div></li>
+          <li><span>04+</span><div><b>Network, JS, semantic runtime, memory & agents</b><p>Added only after the lower layers have stable contracts and tests.</p></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="closing">
+      <p>Phantom</p>
+      <h2>You should not have to navigate the internet.<br><span>The internet should become understandable.</span></h2>
+      <a href="https://github.com/eusourmr/phantom-">github.com/eusourmr/phantom- →</a>
+    </section>
+  </main>
+
+  <footer>
+    <span>Phantom · Open source · MPL-2.0</span>
+    <span>Built in the open.</span>
+  </footer>
+</body>
+</html>
