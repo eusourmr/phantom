@@ -2,40 +2,75 @@ name: Build and Release Phantom
 
 on:
   workflow_dispatch:
+
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
 permissions:
   contents: write
 
+concurrency:
+  group: phantom-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   quality:
     name: Quality Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
+        shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup toolchain install stable \
+            --profile minimal \
+            --component rustfmt,clippy
           rustup default stable
 
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
       - name: Check formatting
-        run: cargo fmt --all --check
+        shell: bash
+        run: |
+          cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          cargo test --workspace
+
+      - name: Documentation
+        shell: bash
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo doc \
+            --workspace \
+            --no-deps
 
   windows:
     name: Windows x64
     needs: quality
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -46,6 +81,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+
           rustc --version
           cargo --version
 
@@ -54,27 +90,55 @@ jobs:
         run: |
           cargo build --release -p phantom-browser
 
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "target/release/phantom-browser.exe"
+
+          if (-not (Test-Path $exe)) {
+            Write-Error "Phantom executable was not generated: $exe"
+            exit 1
+          }
+
+          Write-Host "Executable generated successfully:"
+          Get-Item $exe | Format-List Name, Length, LastWriteTime
+
       - name: Prepare distribution
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist
+          $version = "${{ github.ref_name }}"
+
+          if ("${{ github.ref_type }}" -ne "tag") {
+            $version = "development"
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "dist" | Out-Null
 
           Copy-Item `
             "target/release/phantom-browser.exe" `
             "dist/Phantom.exe"
 
+          $archive = "dist/Phantom-$version-windows-x86_64.zip"
+
           Compress-Archive `
             -Path "dist/Phantom.exe" `
-            -DestinationPath "dist/Phantom-${{ github.ref_name }}-windows-x86_64.zip"
+            -DestinationPath $archive `
+            -Force
 
           $hash = Get-FileHash `
-            "dist/Phantom-${{ github.ref_name }}-windows-x86_64.zip" `
+            $archive `
             -Algorithm SHA256
 
-          "$($hash.Hash)  Phantom-${{ github.ref_name }}-windows-x86_64.zip" |
+          "$($hash.Hash)  $(Split-Path $archive -Leaf)" |
             Out-File `
               "dist/SHA256SUMS.txt" `
               -Encoding ascii
+
+          Write-Host "Distribution created:"
+          Get-ChildItem dist
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -84,16 +148,48 @@ jobs:
             dist/Phantom.exe
             dist/Phantom-*.zip
             dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            "dist/Phantom-${{ github.ref_name }}-windows-x86_64.zip" `
-            "dist/SHA256SUMS.txt" `
-            --title "Phantom ${{ github.ref_name }}" `
-            --notes "First public technical preview of the Phantom independent web browser." `
-            --prerelease
+          $tag = "${{ github.ref_name }}"
+          $archive = "dist/Phantom-$tag-windows-x86_64.zip"
+          $checksum = "dist/SHA256SUMS.txt"
+
+          gh release view $tag *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release already exists. Updating assets..."
+
+            gh release upload $tag `
+              $archive `
+              $checksum `
+              --clobber
+          }
+          else {
+            Write-Host "Creating Phantom release..."
+
+            gh release create $tag `
+              $archive `
+              $checksum `
+              --title "Phantom $tag" `
+              --notes "First public technical preview of the Phantom independent web browser.
+
+Security-first technical preview.
+
+Current characteristics:
+- Independent Phantom engine foundation
+- Rust-based architecture
+- No Chromium, WebKit or Gecko engine
+- Telemetry disabled by default
+- Explicit security and capability boundaries
+- HTML/CSS support is experimental
+- JavaScript execution is not yet supported
+
+This is an early technical preview intended for testing and development." `
+              --prerelease
