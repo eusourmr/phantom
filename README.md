@@ -5,7 +5,9 @@
 Phantom is **not a Chromium, WebKit or Gecko fork**. The project intends to build its own engine incrementally while remaining standards-oriented and interoperable with the open web.
 
 > Correctness before convenience. Security before compatibility. Composition before inheritance. Explicit before implicit. Auditable before clever.
+> 
 
+> <img width="1672" height="941" alt="phantom" src="https://github.com/user-attachments/assets/a88a874e-272e-4856-84cc-14068bd05016" />
 ## Why Phantom
 
 Today's browsers are optimized around pages, tabs and URLs. Phantom is exploring a different model: the browser as an execution environment that can understand context, represent semantic entities, remember user-authorized knowledge and let agents act only through explicit security capabilities.
