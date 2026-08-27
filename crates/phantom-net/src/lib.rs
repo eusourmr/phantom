@@ -52,8 +52,8 @@ impl HttpUrl {
             format!("https://{trimmed}")
         };
 
-        let parsed = Url::parse(&normalized)
-            .map_err(|error| UrlError::Invalid(error.to_string()))?;
+        let parsed =
+            Url::parse(&normalized).map_err(|error| UrlError::Invalid(error.to_string()))?;
 
         Self::from_url(parsed)
     }
@@ -95,11 +95,7 @@ impl HttpUrl {
         match url.scheme() {
             "http" | "https" => {}
             other => {
-                return Err(
-                    UrlError::UnsupportedScheme(
-                        other.to_owned(),
-                    ),
-                );
+                return Err(UrlError::UnsupportedScheme(other.to_owned()));
             }
         }
 
@@ -107,12 +103,8 @@ impl HttpUrl {
             return Err(UrlError::MissingHost);
         }
 
-        if !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(
-                UrlError::CredentialsNotAllowed,
-            );
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(UrlError::CredentialsNotAllowed);
         }
 
         Ok(Self(url))
@@ -120,10 +112,7 @@ impl HttpUrl {
 }
 
 impl fmt::Display for HttpUrl {
-    fn fmt(
-        &self,
-        formatter: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
@@ -131,9 +120,7 @@ impl fmt::Display for HttpUrl {
 impl FromStr for HttpUrl {
     type Err = UrlError;
 
-    fn from_str(
-        value: &str,
-    ) -> Result<Self, Self::Err> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
 }
@@ -273,17 +260,13 @@ impl Default for NetworkClient {
             .max_redirects(10)
             .max_response_header_size(64 * 1024)
             .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(
-                "Phantom/0.0.1 (+https://github.com/eusourmr/phantom)",
-            )
+            .user_agent("Phantom/0.0.1 (+https://github.com/eusourmr/phantom)")
             .build();
 
         Self {
             agent: ureq::Agent::new_with_config(config),
-            max_text_body_bytes:
-                DEFAULT_MAX_TEXT_BODY_BYTES,
-            max_binary_body_bytes:
-                DEFAULT_MAX_BINARY_BODY_BYTES,
+            max_text_body_bytes: DEFAULT_MAX_TEXT_BODY_BYTES,
+            max_binary_body_bytes: DEFAULT_MAX_BINARY_BODY_BYTES,
         }
     }
 }
@@ -299,27 +282,19 @@ impl NetworkClient {
     ///
     /// The binary-resource limit remains at the safe default.
     #[must_use]
-    pub fn with_max_body_bytes(
-        max_body_bytes: u64,
-    ) -> Self {
+    pub fn with_max_body_bytes(max_body_bytes: u64) -> Self {
         Self {
-            max_text_body_bytes:
-                max_body_bytes.max(1),
+            max_text_body_bytes: max_body_bytes.max(1),
             ..Self::default()
         }
     }
 
     /// Builds a client with explicit document and binary-resource limits.
     #[must_use]
-    pub fn with_body_limits(
-        max_text_body_bytes: u64,
-        max_binary_body_bytes: u64,
-    ) -> Self {
+    pub fn with_body_limits(max_text_body_bytes: u64, max_binary_body_bytes: u64) -> Self {
         Self {
-            max_text_body_bytes:
-                max_text_body_bytes.max(1),
-            max_binary_body_bytes:
-                max_binary_body_bytes.max(1),
+            max_text_body_bytes: max_text_body_bytes.max(1),
+            max_binary_body_bytes: max_binary_body_bytes.max(1),
             ..Self::default()
         }
     }
@@ -330,13 +305,9 @@ impl NetworkClient {
     ///
     /// Returns [`NetworkError`] for rejected URLs, transport failures, invalid
     /// redirect targets, or responses exceeding the configured text budget.
-    pub fn fetch_text(
-        &self,
-        input: &str,
-    ) -> Result<TextResponse, NetworkError> {
+    pub fn fetch_text(&self, input: &str) -> Result<TextResponse, NetworkError> {
         let url = HttpUrl::parse(input)?;
-        let requested_url =
-            url.as_str().to_owned();
+        let requested_url = url.as_str().to_owned();
 
         let mut response = self
             .agent
@@ -346,25 +317,16 @@ impl NetworkClient {
                 "text/html,application/xhtml+xml,text/css,text/plain;q=0.9,*/*;q=0.5",
             )
             .call()
-            .map_err(|error| {
-                NetworkError::Request(
-                    error.to_string(),
-                )
-            })?;
+            .map_err(|error| NetworkError::Request(error.to_string()))?;
 
-        let status =
-            response.status().as_u16();
+        let status = response.status().as_u16();
 
-        let final_url = HttpUrl::parse(
-            &response.get_uri().to_string(),
-        )?;
+        let final_url = HttpUrl::parse(&response.get_uri().to_string())?;
 
         let content_type = response
             .headers()
             .get("content-type")
-            .and_then(|value| {
-                value.to_str().ok()
-            })
+            .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
 
         let body = response
@@ -373,16 +335,11 @@ impl NetworkClient {
             .limit(self.max_text_body_bytes)
             .lossy_utf8(true)
             .read_to_string()
-            .map_err(|error| {
-                NetworkError::Body(
-                    error.to_string(),
-                )
-            })?;
+            .map_err(|error| NetworkError::Body(error.to_string()))?;
 
         Ok(TextResponse {
             requested_url,
-            final_url:
-                final_url.as_str().to_owned(),
+            final_url: final_url.as_str().to_owned(),
             status,
             content_type,
             body,
@@ -391,47 +348,34 @@ impl NetworkClient {
 
     /// Fetches a bounded binary HTTP(S) subresource.
     ///
-    /// The request advertises PNG/JPEG preference so servers do not select
-    /// newer image formats that the current Phantom decoder cannot render yet.
+    /// The request advertises the image formats enabled by the current Phantom
+    /// decoder while retaining a conservative generic image fallback.
     ///
     /// # Errors
     ///
     /// Returns [`NetworkError`] for transport failures, invalid redirect
     /// targets, or a response exceeding the configured binary byte budget.
-    pub fn fetch_bytes(
-        &self,
-        url: &HttpUrl,
-    ) -> Result<BinaryResponse, NetworkError> {
-        let requested_url =
-            url.as_str().to_owned();
+    pub fn fetch_bytes(&self, url: &HttpUrl) -> Result<BinaryResponse, NetworkError> {
+        let requested_url = url.as_str().to_owned();
 
         let mut response = self
             .agent
             .get(url.as_str())
             .header(
                 "Accept",
-                "image/webp,image/png,image/jpeg;q=0.95,image/*;q=0.5,*/*;q=0.1",
+                "image/webp,image/png,image/jpeg,image/gif;q=0.95,image/*;q=0.5,*/*;q=0.1",
             )
             .call()
-            .map_err(|error| {
-                NetworkError::Request(
-                    error.to_string(),
-                )
-            })?;
+            .map_err(|error| NetworkError::Request(error.to_string()))?;
 
-        let status =
-            response.status().as_u16();
+        let status = response.status().as_u16();
 
-        let final_url = HttpUrl::parse(
-            &response.get_uri().to_string(),
-        )?;
+        let final_url = HttpUrl::parse(&response.get_uri().to_string())?;
 
         let content_type = response
             .headers()
             .get("content-type")
-            .and_then(|value| {
-                value.to_str().ok()
-            })
+            .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
 
         let body = response
@@ -439,17 +383,12 @@ impl NetworkClient {
             .with_config()
             .limit(self.max_binary_body_bytes)
             .read_to_vec()
-            .map_err(|error| {
-                NetworkError::Body(
-                    error.to_string(),
-                )
-            })?
+            .map_err(|error| NetworkError::Body(error.to_string()))?
             .into_boxed_slice();
 
         Ok(BinaryResponse {
             requested_url,
-            final_url:
-                final_url.as_str().to_owned(),
+            final_url: final_url.as_str().to_owned(),
             status,
             content_type,
             body,
@@ -475,81 +414,48 @@ pub enum NetworkError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        HttpUrl, NetworkClient, UrlError,
-    };
+    use super::{HttpUrl, NetworkClient, UrlError};
 
     #[test]
-    fn assumes_https_when_scheme_is_missing(
-    ) -> Result<(), UrlError> {
-        let url =
-            HttpUrl::parse("example.com/a")?;
+    fn assumes_https_when_scheme_is_missing() -> Result<(), UrlError> {
+        let url = HttpUrl::parse("example.com/a")?;
 
-        assert_eq!(
-            url.as_str(),
-            "https://example.com/a"
-        );
+        assert_eq!(url.as_str(), "https://example.com/a");
 
         Ok(())
     }
 
     #[test]
-    fn resolves_relative_resources(
-    ) -> Result<(), UrlError> {
-        let base = HttpUrl::parse(
-            "https://example.com/news/page.html",
-        )?;
+    fn resolves_relative_resources() -> Result<(), UrlError> {
+        let base = HttpUrl::parse("https://example.com/news/page.html")?;
 
-        let image =
-            base.resolve("../img/photo.jpg")?;
+        let image = base.resolve("../img/photo.jpg")?;
 
-        assert_eq!(
-            image.as_str(),
-            "https://example.com/img/photo.jpg"
-        );
+        assert_eq!(image.as_str(), "https://example.com/img/photo.jpg");
 
         Ok(())
     }
 
     #[test]
     fn rejects_embedded_credentials() {
-        let result = HttpUrl::parse(
-            "https://user:secret@example.com/",
-        );
+        let result = HttpUrl::parse("https://user:secret@example.com/");
 
-        assert_eq!(
-            result,
-            Err(UrlError::CredentialsNotAllowed)
-        );
+        assert_eq!(result, Err(UrlError::CredentialsNotAllowed));
     }
 
     #[test]
     fn accepts_a_custom_text_body_limit() {
-        let client =
-            NetworkClient::with_max_body_bytes(1024);
+        let client = NetworkClient::with_max_body_bytes(1024);
 
-        assert_eq!(
-            client.max_text_body_bytes,
-            1024
-        );
+        assert_eq!(client.max_text_body_bytes, 1024);
     }
 
     #[test]
     fn accepts_separate_binary_budget() {
-        let client =
-            NetworkClient::with_body_limits(
-                1024,
-                4096,
-            );
+        let client = NetworkClient::with_body_limits(1024, 4096);
 
-        assert_eq!(
-            client.max_text_body_bytes,
-            1024
-        );
+        assert_eq!(client.max_text_body_bytes, 1024);
 
-        assert_eq!(
-            client.max_binary_body_bytes,
-            4096
-        );
+        assert_eq!(client.max_binary_body_bytes, 4096);
     }
 }

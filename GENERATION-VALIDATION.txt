@@ -1,33 +1,12 @@
-PHANTOM — 2C-3 GENERATION VALIDATION
+PHANTOM 2C-4 GENERATION VALIDATION
 
-BASE USED:
-- 2C-1 complete package + missing-docs fix
-- 2C-2 image fetch/decode/raster package
-- 2C-2 FIX 1 HttpUrl boundary
-- 2C-2 FIX 2 ImageRequest test
-- 2B-10 validated CSS baseline for the style file (2C-1/2C-2 did not replace CSS)
-
-STATIC CHECKS PERFORMED BEFORE PACKAGING:
-- changed Rust files have balanced (), [] and {} delimiters;
+Static checks performed:
+- changed Rust delimiters balanced;
 - no todo!, unimplemented!, panic!, dbg!, .unwrap() or .expect() introduced;
-- no warning/clippy allow was added;
-- no unsafe code introduced;
-- Paint still has no DOM dependency;
-- responsive candidate selection is owned by Engine, not Browser/Paint;
-- WebP codec types remain hidden behind phantom-image;
-- decoded pixels are not stored in DOM or LayoutSnapshot;
-- resource cache is bounded and document-generation scoped;
-- <source> is already classified as a void element by the existing Phantom HTML parser baseline;
-- integration tests include crate-level //! documentation.
+- no quality gate disabled;
+- codec types remain inside phantom-image;
+- animation frames are not stored in DOM/Layout/Paint;
+- frame and aggregate memory limits are explicit;
+- GIF and animated-WebP deterministic fixtures included.
 
-LIMITATION:
-This execution environment does not contain cargo/rustc. The authoritative
-compile/lint/test validation is the user's Rust 1.95 workspace.
-
-REQUIRED GATES:
-cargo fmt --all
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo test -p phantom-engine --test responsive_images
-cargo test -p phantom-image --test raster_decode
+Authoritative validation remains the user's Rust 1.95 workspace.

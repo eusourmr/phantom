@@ -15,17 +15,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
-    Engine, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily,
-    PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange,
+    Engine, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle,
+    PaintFontWeight, PaintList, PaintRect, PaintTextRange,
 };
 use phantom_image::{
-    DecodedImage, ImageDecodeLimits, ImageDecoder, ImageMetadata,
-    ImageResourceId, RasterImageDecoder,
+    AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
+    DecodedImage, ImageDecodeLimits, ImageDecoder, ImageMetadata, ImageResourceId,
+    RasterImageDecoder, image_is_animated,
 };
 use phantom_net::{HttpUrl, NetworkClient, NetworkError, TextResponse};
 
@@ -35,11 +36,9 @@ const LUCIDE_FONT_NAME: &str = "phantom-lucide";
 const MAX_IMAGES_PER_DOCUMENT: usize = 64;
 const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 
-const PAGE_LOGO_BYTES: &[u8] =
-    include_bytes!("../assets/branding/phantom-logo.png");
+const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.png");
 
-const APP_ICON_BYTES: &[u8] =
-    include_bytes!("../assets/branding/phantom-app-icon-1024.png");
+const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-app-icon-1024.png");
 
 #[derive(Clone, Copy, Debug)]
 enum NavigationAction {
@@ -58,9 +57,131 @@ struct ImageLoadRequest {
     url: HttpUrl,
 }
 
+enum LoadedRaster {
+    Static(DecodedImage),
+    Animated(DecodedAnimation),
+}
+
 struct LoadedImage {
     metadata: ImageMetadata,
-    decoded: DecodedImage,
+    raster: LoadedRaster,
+}
+
+#[derive(Clone)]
+enum ImageTextureBinding {
+    Static(egui::TextureHandle),
+    Animated(Arc<AnimatedTexture>),
+}
+
+impl ImageTextureBinding {
+    fn texture_at(&self, now: Instant) -> Option<&egui::TextureHandle> {
+        match self {
+            Self::Static(texture) => Some(texture),
+            Self::Animated(animation) => animation.texture_at(now),
+        }
+    }
+
+    fn next_repaint_after(&self, now: Instant) -> Option<Duration> {
+        match self {
+            Self::Static(_) => None,
+            Self::Animated(animation) => animation.next_repaint_after(now),
+        }
+    }
+
+    const fn is_animated(&self) -> bool {
+        matches!(self, Self::Animated(_))
+    }
+
+    fn same_asset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Static(left), Self::Static(right)) => left.id() == right.id(),
+            (Self::Animated(left), Self::Animated(right)) => Arc::ptr_eq(left, right),
+            (Self::Static(_), Self::Animated(_)) | (Self::Animated(_), Self::Static(_)) => false,
+        }
+    }
+}
+
+struct AnimationTextureFrame {
+    texture: egui::TextureHandle,
+    delay: Duration,
+}
+
+struct AnimatedTexture {
+    frames: Vec<AnimationTextureFrame>,
+    loop_count: AnimationLoopCount,
+    started_at: Instant,
+    cycle_duration: Duration,
+}
+
+impl AnimatedTexture {
+    fn texture_at(&self, now: Instant) -> Option<&egui::TextureHandle> {
+        let frame_index = self.frame_index(now)?;
+        self.frames.get(frame_index).map(|frame| &frame.texture)
+    }
+
+    fn next_repaint_after(&self, now: Instant) -> Option<Duration> {
+        let elapsed = now.saturating_duration_since(self.started_at);
+        let cycle_millis = duration_millis(self.cycle_duration).max(1);
+        let elapsed_millis = duration_millis(elapsed);
+
+        if self.animation_finished(elapsed_millis, cycle_millis) {
+            return None;
+        }
+
+        let cycle_position = elapsed_millis % cycle_millis;
+        let mut boundary = 0_u64;
+
+        for frame in &self.frames {
+            boundary = boundary.saturating_add(duration_millis(frame.delay).max(1));
+            if cycle_position < boundary {
+                return Some(Duration::from_millis(
+                    boundary.saturating_sub(cycle_position).max(1),
+                ));
+            }
+        }
+
+        Some(Duration::from_millis(1))
+    }
+
+    fn frame_index(&self, now: Instant) -> Option<usize> {
+        if self.frames.is_empty() {
+            return None;
+        }
+
+        let elapsed = now.saturating_duration_since(self.started_at);
+        let cycle_millis = duration_millis(self.cycle_duration).max(1);
+        let elapsed_millis = duration_millis(elapsed);
+
+        if self.animation_finished(elapsed_millis, cycle_millis) {
+            return self.frames.len().checked_sub(1);
+        }
+
+        let cycle_position = elapsed_millis % cycle_millis;
+        let mut boundary = 0_u64;
+
+        for (index, frame) in self.frames.iter().enumerate() {
+            boundary = boundary.saturating_add(duration_millis(frame.delay).max(1));
+            if cycle_position < boundary {
+                return Some(index);
+            }
+        }
+
+        self.frames.len().checked_sub(1)
+    }
+
+    fn animation_finished(&self, elapsed_millis: u64, cycle_millis: u64) -> bool {
+        match self.loop_count {
+            AnimationLoopCount::Infinite => false,
+            AnimationLoopCount::Finite(count) => {
+                let cycles = u64::from(count).max(1);
+                elapsed_millis >= cycle_millis.saturating_mul(cycles)
+            }
+        }
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 struct ImageLoadEvent {
@@ -71,7 +192,7 @@ struct ImageLoadEvent {
 
 struct CachedImage {
     metadata: ImageMetadata,
-    texture: egui::TextureHandle,
+    binding: ImageTextureBinding,
     raster_bytes: u64,
     last_used: u64,
 }
@@ -89,7 +210,7 @@ struct BrowserTab {
     status: String,
     pending: Option<PendingNavigation>,
     pending_images: Option<PendingImageBatch>,
-    image_textures: BTreeMap<ImageResourceId, egui::TextureHandle>,
+    image_textures: BTreeMap<ImageResourceId, ImageTextureBinding>,
     image_cache: BTreeMap<String, CachedImage>,
     cache_clock: u64,
     loaded_images: usize,
@@ -137,6 +258,13 @@ impl BrowserTab {
     fn is_loading_images(&self) -> bool {
         self.pending_images.is_some()
     }
+
+    fn animation_repaint_after(&self, now: Instant) -> Option<Duration> {
+        self.image_textures
+            .values()
+            .filter_map(|binding| binding.next_repaint_after(now))
+            .min()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -167,16 +295,8 @@ impl PhantomApp {
             network: NetworkClient::new(),
             tabs: vec![BrowserTab::new()],
             active_tab: 0,
-            page_logo: load_texture(
-                &context.egui_ctx,
-                "phantom-page-logo",
-                PAGE_LOGO_BYTES,
-            ),
-            app_icon: load_texture(
-                &context.egui_ctx,
-                "phantom-app-icon",
-                APP_ICON_BYTES,
-            ),
+            page_logo: load_texture(&context.egui_ctx, "phantom-page-logo", PAGE_LOGO_BYTES),
+            app_icon: load_texture(&context.egui_ctx, "phantom-app-icon", APP_ICON_BYTES),
             floating_bar_forced: true,
             focus_address_next_frame: true,
             window_maximized: false,
@@ -221,9 +341,8 @@ impl PhantomApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
-        let focus_location = context.input(|input| {
-            input.modifiers.command && input.key_pressed(egui::Key::L)
-        });
+        let focus_location =
+            context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::L));
 
         if focus_location {
             self.floating_bar_forced = true;
@@ -240,11 +359,7 @@ impl PhantomApp {
         let network = self.network.clone();
 
         for tab in &mut self.tabs {
-            poll_tab_navigation(
-                tab,
-                &network,
-                context.pixels_per_point(),
-            );
+            poll_tab_navigation(tab, &network, context.pixels_per_point());
             poll_tab_images(tab, context);
         }
     }
@@ -258,12 +373,7 @@ impl PhantomApp {
                 let target = tab.address.trim().to_owned();
 
                 if !target.is_empty() {
-                    start_navigation(
-                        &network,
-                        tab,
-                        target,
-                        NavigationAction::New,
-                    );
+                    start_navigation(&network, tab, target, NavigationAction::New);
                 }
             }
 
@@ -315,12 +425,7 @@ impl PhantomApp {
                     .unwrap_or_else(|| tab.address.trim().to_owned());
 
                 if !target.is_empty() {
-                    start_navigation(
-                        &network,
-                        tab,
-                        target,
-                        NavigationAction::Reload,
-                    );
+                    start_navigation(&network, tab, target, NavigationAction::Reload);
                 }
             }
         }
@@ -362,39 +467,24 @@ impl PhantomApp {
 
                         let tab_response = ui.add_sized(
                             [136.0, 30.0],
-                            egui::Button::new(
-                                egui::RichText::new(title).size(13.0),
-                            )
-                            .fill(fill),
+                            egui::Button::new(egui::RichText::new(title).size(13.0)).fill(fill),
                         );
 
                         if tab_response.clicked() {
                             activate_tab = Some(index);
                         }
 
-                        let close_response = icon_button(
-                            ui,
-                            Icon::X,
-                            true,
-                            [28.0, 30.0],
-                            15.0,
-                        )
-                        .on_hover_text("Fechar aba");
+                        let close_response = icon_button(ui, Icon::X, true, [28.0, 30.0], 15.0)
+                            .on_hover_text("Fechar aba");
 
                         if close_response.clicked() {
                             close_tab = Some(index);
                         }
                     }
 
-                    if icon_button(
-                        ui,
-                        Icon::Plus,
-                        true,
-                        [32.0, 30.0],
-                        17.0,
-                    )
-                    .on_hover_text("Nova aba")
-                    .clicked()
+                    if icon_button(ui, Icon::Plus, true, [32.0, 30.0], 17.0)
+                        .on_hover_text("Nova aba")
+                        .clicked()
                     {
                         create_tab = true;
                     }
@@ -413,41 +503,23 @@ impl PhantomApp {
                         toggle_maximize = true;
                     }
 
-                    if icon_button(
-                        ui,
-                        Icon::Minus,
-                        true,
-                        [36.0, 30.0],
-                        16.0,
-                    )
-                    .on_hover_text("Minimizar")
-                    .clicked()
+                    if icon_button(ui, Icon::Minus, true, [36.0, 30.0], 16.0)
+                        .on_hover_text("Minimizar")
+                        .clicked()
                     {
                         minimize = true;
                     }
 
-                    if icon_button(
-                        ui,
-                        Icon::Square,
-                        true,
-                        [36.0, 30.0],
-                        14.0,
-                    )
-                    .on_hover_text("Maximizar / restaurar")
-                    .clicked()
+                    if icon_button(ui, Icon::Square, true, [36.0, 30.0], 14.0)
+                        .on_hover_text("Maximizar / restaurar")
+                        .clicked()
                     {
                         toggle_maximize = true;
                     }
 
-                    if icon_button(
-                        ui,
-                        Icon::X,
-                        true,
-                        [36.0, 30.0],
-                        17.0,
-                    )
-                    .on_hover_text("Fechar Phantom")
-                    .clicked()
+                    if icon_button(ui, Icon::X, true, [36.0, 30.0], 17.0)
+                        .on_hover_text("Fechar Phantom")
+                        .clicked()
                     {
                         close_window = true;
                     }
@@ -480,9 +552,7 @@ impl PhantomApp {
 
         if toggle_maximize {
             self.window_maximized = !self.window_maximized;
-            context.send_viewport_cmd(egui::ViewportCommand::Maximized(
-                self.window_maximized,
-            ));
+            context.send_viewport_cmd(egui::ViewportCommand::Maximized(self.window_maximized));
         }
 
         if close_window {
@@ -513,10 +583,7 @@ impl PhantomApp {
 
             ui.heading("Nova aba");
             ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("Phantom Independent Web Browser")
-                    .size(17.0),
-            );
+            ui.label(egui::RichText::new("Phantom Independent Web Browser").size(17.0));
             ui.add_space(14.0);
             ui.label(egui::RichText::new(&tab.status).small().weak());
         });
@@ -550,18 +617,11 @@ impl PhantomApp {
                     egui::Sense::hover(),
                 );
 
-                let horizontal_offset =
-                    ((canvas_width - document_width) * 0.5).max(0.0);
+                let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
 
-                let origin =
-                    canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
+                let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
 
-                paint_page(
-                    ui,
-                    origin,
-                    paint,
-                    &tab.image_textures,
-                );
+                paint_page(ui, origin, paint, &tab.image_textures);
             });
     }
 
@@ -591,10 +651,7 @@ impl PhantomApp {
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(250, 251, 253))
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_gray(210),
-                    ))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(210)))
                     .corner_radius(18)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
@@ -643,16 +700,13 @@ impl PhantomApp {
                                 keep_forced = false;
                             }
 
-                            let address_width =
-                                (ui.available_width() - 58.0).max(180.0);
+                            let address_width = (ui.available_width() - 58.0).max(180.0);
 
                             let address_response = ui.add_sized(
                                 [address_width, 36.0],
-                                egui::TextEdit::singleline(
-                                    &mut self.tabs[active_index].address,
-                                )
-                                .hint_text("Digite um endereço")
-                                .margin(egui::Margin::symmetric(12, 8)),
+                                egui::TextEdit::singleline(&mut self.tabs[active_index].address)
+                                    .hint_text("Digite um endereço")
+                                    .margin(egui::Margin::symmetric(12, 8)),
                             );
 
                             if self.focus_address_next_frame {
@@ -666,17 +720,12 @@ impl PhantomApp {
                             }
 
                             let enter_pressed = address_response.lost_focus()
-                                && ui.input(|input| {
-                                    input.key_pressed(egui::Key::Enter)
-                                });
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
                             let go_clicked = ui
                                 .add_enabled_ui(!loading, |ui| {
-                                    ui.add_sized(
-                                        [48.0, 36.0],
-                                        egui::Button::new("Ir"),
-                                    )
-                                    .clicked()
+                                    ui.add_sized([48.0, 36.0], egui::Button::new("Ir"))
+                                        .clicked()
                                 })
                                 .inner;
 
@@ -729,17 +778,26 @@ impl eframe::App for PhantomApp {
         self.poll_navigation(ui.ctx());
         self.update_window_title(ui.ctx());
 
-        if self.tabs.iter().any(|tab| {
-            tab.is_loading() || tab.is_loading_images()
-        }) {
-            ui.ctx()
-                .request_repaint_after(Duration::from_millis(50));
+        if self
+            .tabs
+            .iter()
+            .any(|tab| tab.is_loading() || tab.is_loading_images())
+        {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
+
+        if let Some(delay) = self.active_tab().animation_repaint_after(Instant::now()) {
+            ui.ctx().request_repaint_after(delay);
         }
 
         self.top_chrome(ui);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(egui::Color32::WHITE).inner_margin(10))
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::WHITE)
+                    .inner_margin(10),
+            )
             .show(ui, |ui| {
                 self.page_area(ui);
             });
@@ -784,11 +842,7 @@ fn start_navigation(
     }
 }
 
-fn poll_tab_navigation(
-    tab: &mut BrowserTab,
-    network: &NetworkClient,
-    device_pixel_ratio: f32,
-) {
+fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pixel_ratio: f32) {
     let receive_result = tab
         .pending
         .as_ref()
@@ -822,12 +876,7 @@ fn poll_tab_navigation(
                         tab.engine.paint_list().len()
                     );
 
-                    start_image_loading(
-                        network,
-                        tab,
-                        &final_url,
-                        device_pixel_ratio,
-                    );
+                    start_image_loading(network, tab, &final_url, device_pixel_ratio);
                 }
 
                 Err(error) => {
@@ -862,11 +911,7 @@ fn start_image_loading(
         return;
     };
 
-    let requests = collect_image_requests(
-        tab,
-        &base_url,
-        device_pixel_ratio,
-    );
+    let requests = collect_image_requests(tab, &base_url, device_pixel_ratio);
 
     if requests.is_empty() {
         return;
@@ -880,12 +925,8 @@ fn start_image_loading(
         .name("phantom-images".to_owned())
         .spawn(move || {
             let decoder = RasterImageDecoder;
-            let limits = ImageDecodeLimits::new(
-                8_192,
-                8_192,
-                16_777_216,
-                67_108_864,
-            );
+            let limits = ImageDecodeLimits::new(8_192, 8_192, 16_777_216, 67_108_864);
+            let animation_limits = AnimationDecodeLimits::new(256, 128 * 1024 * 1024);
 
             for request in requests {
                 let cache_key = request.url.as_str().to_owned();
@@ -893,6 +934,7 @@ fn start_image_loading(
                     &client,
                     &decoder,
                     limits,
+                    animation_limits,
                     &request.url,
                 );
 
@@ -911,24 +953,18 @@ fn start_image_loading(
 
     match thread_result {
         Ok(_handle) => {
-            tab.pending_images = Some(
-                PendingImageBatch {
-                    receiver,
-                    remaining: total,
-                    total,
-                },
-            );
+            tab.pending_images = Some(PendingImageBatch {
+                receiver,
+                remaining: total,
+                total,
+            });
 
-            tab.status = format!(
-                "Página pronta · carregando {total} imagens…"
-            );
+            tab.status = format!("Página pronta · carregando {total} imagens…");
         }
 
         Err(error) => {
             tab.failed_images = total;
-            tab.status = format!(
-                "Página pronta · worker de imagens indisponível: {error}"
-            );
+            tab.status = format!("Página pronta · worker de imagens indisponível: {error}");
         }
     }
 }
@@ -938,9 +974,7 @@ fn collect_image_requests(
     base_url: &HttpUrl,
     device_pixel_ratio: f32,
 ) -> Vec<ImageLoadRequest> {
-    let discovered = tab
-        .engine
-        .image_requests_for_device(device_pixel_ratio);
+    let discovered = tab.engine.image_requests_for_device(device_pixel_ratio);
 
     let mut grouped = BTreeMap::<String, (HttpUrl, Vec<ImageResourceId>)>::new();
     let mut element_count = 0_usize;
@@ -978,15 +1012,11 @@ fn collect_image_requests(
     requests
 }
 
-fn bind_cached_image(
-    tab: &mut BrowserTab,
-    cache_key: &str,
-    resources: &[ImageResourceId],
-) -> bool {
-    let Some((metadata, texture)) = tab
+fn bind_cached_image(tab: &mut BrowserTab, cache_key: &str, resources: &[ImageResourceId]) -> bool {
+    let Some((metadata, binding)) = tab
         .image_cache
         .get(cache_key)
-        .map(|cached| (cached.metadata, cached.texture.clone()))
+        .map(|cached| (cached.metadata, cached.binding.clone()))
     else {
         return false;
     };
@@ -1005,7 +1035,7 @@ fn bind_cached_image(
             .install_image_metadata(*resource, metadata, viewport_width)
             .is_ok()
         {
-            tab.image_textures.insert(*resource, texture.clone());
+            tab.image_textures.insert(*resource, binding.clone());
             installed = installed.saturating_add(1);
         } else {
             tab.failed_images = tab.failed_images.saturating_add(1);
@@ -1018,8 +1048,9 @@ fn bind_cached_image(
 
 fn fetch_and_decode_image(
     network: &NetworkClient,
-    decoder: &dyn ImageDecoder,
+    decoder: &RasterImageDecoder,
     limits: ImageDecodeLimits,
+    animation_limits: AnimationDecodeLimits,
     url: &HttpUrl,
 ) -> Result<LoadedImage, String> {
     let response = network
@@ -1027,30 +1058,31 @@ fn fetch_and_decode_image(
         .map_err(|error| error.to_string())?;
 
     if !(200..=299).contains(&response.status()) {
-        return Err(format!(
-            "HTTP {} ao carregar imagem",
-            response.status(),
-        ));
+        return Err(format!("HTTP {} ao carregar imagem", response.status(),));
     }
 
     let metadata = decoder
         .probe(response.body(), limits)
         .map_err(|error| error.to_string())?;
 
-    let decoded = decoder
-        .decode(response.body(), limits)
-        .map_err(|error| error.to_string())?;
+    let raster = if image_is_animated(response.body(), metadata) {
+        LoadedRaster::Animated(
+            decoder
+                .decode_animation(response.body(), limits, animation_limits)
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        LoadedRaster::Static(
+            decoder
+                .decode(response.body(), limits)
+                .map_err(|error| error.to_string())?,
+        )
+    };
 
-    Ok(LoadedImage {
-        metadata,
-        decoded,
-    })
+    Ok(LoadedImage { metadata, raster })
 }
 
-fn poll_tab_images(
-    tab: &mut BrowserTab,
-    context: &egui::Context,
-) {
+fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
     const MAX_IMAGES_PER_FRAME: usize = 8;
 
     for _ in 0..MAX_IMAGES_PER_FRAME {
@@ -1061,18 +1093,11 @@ fn poll_tab_images(
 
         match receive_result {
             Some(Ok(event)) => {
-                if let Some(pending) =
-                    tab.pending_images.as_mut()
-                {
-                    pending.remaining =
-                        pending.remaining.saturating_sub(1);
+                if let Some(pending) = tab.pending_images.as_mut() {
+                    pending.remaining = pending.remaining.saturating_sub(1);
                 }
 
-                install_loaded_image(
-                    tab,
-                    context,
-                    event,
-                );
+                install_loaded_image(tab, context, event);
             }
 
             Some(Err(TryRecvError::Disconnected)) => {
@@ -1081,9 +1106,7 @@ fn poll_tab_images(
                     .as_ref()
                     .map_or(0, |pending| pending.remaining);
 
-                tab.failed_images = tab
-                    .failed_images
-                    .saturating_add(unresolved);
+                tab.failed_images = tab.failed_images.saturating_add(unresolved);
                 tab.pending_images = None;
                 update_image_status(tab);
                 break;
@@ -1106,13 +1129,9 @@ fn poll_tab_images(
     }
 }
 
-fn install_loaded_image(
-    tab: &mut BrowserTab,
-    context: &egui::Context,
-    event: ImageLoadEvent,
-) {
+fn install_loaded_image(tab: &mut BrowserTab, context: &egui::Context, event: ImageLoadEvent) {
     let resource_count = event.resources.len();
-    let LoadedImage { metadata, decoded } = match event.result {
+    let LoadedImage { metadata, raster } = match event.result {
         Ok(loaded) => loaded,
         Err(_error) => {
             tab.failed_images = tab.failed_images.saturating_add(resource_count);
@@ -1121,7 +1140,18 @@ fn install_loaded_image(
         }
     };
 
-    let decoded_bytes = u64::try_from(decoded.rgba8().len()).unwrap_or(u64::MAX);
+    let Some(resource_name) = event.resources.first().copied() else {
+        update_image_status(tab);
+        return;
+    };
+
+    let Some((binding, decoded_bytes)) = image_texture_binding(context, resource_name, raster)
+    else {
+        tab.failed_images = tab.failed_images.saturating_add(resource_count);
+        update_image_status(tab);
+        return;
+    };
+
     if decoded_bytes > MAX_TAB_RASTER_BYTES {
         tab.failed_images = tab.failed_images.saturating_add(resource_count);
         update_image_status(tab);
@@ -1130,23 +1160,12 @@ fn install_loaded_image(
 
     evict_image_cache_for(tab, decoded_bytes);
 
-    let Some(resource_name) = event.resources.first().copied() else {
-        update_image_status(tab);
-        return;
-    };
-
-    let Some(texture) = decoded_image_texture(context, resource_name, &decoded) else {
-        tab.failed_images = tab.failed_images.saturating_add(resource_count);
-        update_image_status(tab);
-        return;
-    };
-
     tab.cache_clock = tab.cache_clock.saturating_add(1);
     tab.image_cache.insert(
         event.cache_key,
         CachedImage {
             metadata,
-            texture: texture.clone(),
+            binding: binding.clone(),
             raster_bytes: decoded_bytes,
             last_used: tab.cache_clock,
         },
@@ -1162,7 +1181,7 @@ fn install_loaded_image(
             .install_image_metadata(resource, metadata, viewport_width)
             .is_ok()
         {
-            tab.image_textures.insert(resource, texture.clone());
+            tab.image_textures.insert(resource, binding.clone());
             installed = installed.saturating_add(1);
         } else {
             tab.failed_images = tab.failed_images.saturating_add(1);
@@ -1171,6 +1190,56 @@ fn install_loaded_image(
 
     tab.loaded_images = tab.loaded_images.saturating_add(installed);
     update_image_status(tab);
+}
+
+fn image_texture_binding(
+    context: &egui::Context,
+    resource: ImageResourceId,
+    raster: LoadedRaster,
+) -> Option<(ImageTextureBinding, u64)> {
+    match raster {
+        LoadedRaster::Static(decoded) => {
+            let bytes = u64::try_from(decoded.rgba8().len()).ok()?;
+            let texture = decoded_image_texture(context, resource, &decoded)?;
+            Some((ImageTextureBinding::Static(texture), bytes))
+        }
+        LoadedRaster::Animated(animation) => {
+            let bytes = animation.total_raster_bytes();
+            let animation = decoded_animation_texture(context, resource, &animation)?;
+            Some((ImageTextureBinding::Animated(Arc::new(animation)), bytes))
+        }
+    }
+}
+
+fn decoded_animation_texture(
+    context: &egui::Context,
+    resource: ImageResourceId,
+    animation: &DecodedAnimation,
+) -> Option<AnimatedTexture> {
+    let mut frames = Vec::with_capacity(animation.frames().len());
+    let mut cycle_duration = Duration::ZERO;
+
+    for (index, frame) in animation.frames().iter().enumerate() {
+        let texture = decoded_image_texture_named(
+            context,
+            format!("phantom-web-image-{}-frame-{index}", resource.as_u64()),
+            frame.image(),
+        )?;
+        let delay = Duration::from_millis(frame.delay_millis().max(10));
+        cycle_duration = cycle_duration.saturating_add(delay);
+        frames.push(AnimationTextureFrame { texture, delay });
+    }
+
+    if frames.is_empty() {
+        return None;
+    }
+
+    Some(AnimatedTexture {
+        frames,
+        loop_count: animation.loop_count(),
+        started_at: Instant::now(),
+        cycle_duration,
+    })
 }
 
 fn evict_image_cache_for(tab: &mut BrowserTab, incoming_bytes: u64) {
@@ -1190,6 +1259,8 @@ fn evict_image_cache_for(tab: &mut BrowserTab, incoming_bytes: u64) {
 
         if let Some(evicted) = tab.image_cache.remove(&oldest_key) {
             tab.raster_bytes = tab.raster_bytes.saturating_sub(evicted.raster_bytes);
+            tab.image_textures
+                .retain(|_, binding| !binding.same_asset(&evicted.binding));
         }
     }
 }
@@ -1199,52 +1270,49 @@ fn decoded_image_texture(
     resource: ImageResourceId,
     decoded: &DecodedImage,
 ) -> Option<egui::TextureHandle> {
-    let width = usize::try_from(
-        decoded.size().width(),
+    decoded_image_texture_named(
+        context,
+        format!("phantom-web-image-{}", resource.as_u64()),
+        decoded,
     )
-    .ok()?;
+}
 
-    let height = usize::try_from(
-        decoded.size().height(),
-    )
-    .ok()?;
+fn decoded_image_texture_named(
+    context: &egui::Context,
+    name: String,
+    decoded: &DecodedImage,
+) -> Option<egui::TextureHandle> {
+    let width = usize::try_from(decoded.size().width()).ok()?;
+    let height = usize::try_from(decoded.size().height()).ok()?;
 
-    let color_image =
-        egui::ColorImage::from_rgba_unmultiplied(
-            [width, height],
-            decoded.rgba8(),
-        );
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([width, height], decoded.rgba8());
 
-    Some(context.load_texture(
-        format!(
-            "phantom-web-image-{}",
-            resource.as_u64(),
-        ),
-        color_image,
-        egui::TextureOptions::LINEAR,
-    ))
+    Some(context.load_texture(name, color_image, egui::TextureOptions::LINEAR))
+}
+
+fn animated_image_count(tab: &BrowserTab) -> usize {
+    tab.image_textures
+        .values()
+        .filter(|binding| binding.is_animated())
+        .count()
 }
 
 fn update_image_status(tab: &mut BrowserTab) {
-    if let Some(pending) =
-        tab.pending_images.as_ref()
-    {
-        let completed = pending
-            .total
-            .saturating_sub(pending.remaining);
+    if let Some(pending) = tab.pending_images.as_ref() {
+        let completed = pending.total.saturating_sub(pending.remaining);
 
         tab.status = format!(
-            "Página pronta · imagens {completed}/{} · {} exibidas · {} falhas",
+            "Página pronta · imagens {completed}/{} · {} exibidas · {} animadas · {} falhas",
             pending.total,
             tab.loaded_images,
+            animated_image_count(tab),
             tab.failed_images,
         );
-    } else if tab.loaded_images > 0
-        || tab.failed_images > 0
-    {
+    } else if tab.loaded_images > 0 || tab.failed_images > 0 {
         tab.status = format!(
-            "Página pronta · {} imagens exibidas · {} falhas",
+            "Página pronta · {} imagens exibidas · {} animadas · {} falhas",
             tab.loaded_images,
+            animated_image_count(tab),
             tab.failed_images,
         );
     }
@@ -1336,18 +1404,16 @@ fn paint_page(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
     paint: &PaintList,
-    image_textures: &BTreeMap<ImageResourceId, egui::TextureHandle>,
+    image_textures: &BTreeMap<ImageResourceId, ImageTextureBinding>,
 ) {
+    let now = Instant::now();
+
     for command in paint.commands() {
         match command {
             PaintCommand::FillRect { rect, color } => {
                 let target = egui_rect(origin, *rect);
 
-                ui.painter().rect_filled(
-                    target,
-                    0.0,
-                    egui_color(*color),
-                );
+                ui.painter().rect_filled(target, 0.0, egui_color(*color));
             }
 
             PaintCommand::Image {
@@ -1359,21 +1425,13 @@ fn paint_page(
             } => {
                 let target = egui_rect(origin, *rect);
 
-                if let Some(texture) = image_textures.get(resource) {
-                    paint_fitted_image(
-                        ui,
-                        texture,
-                        target,
-                        *fit,
-                        *position,
-                    );
+                if let Some(texture) = image_textures
+                    .get(resource)
+                    .and_then(|binding| binding.texture_at(now))
+                {
+                    paint_fitted_image(ui, texture, target, *fit, *position);
                 } else {
-                    paint_image_placeholder(
-                        ui,
-                        target,
-                        paint,
-                        *alt,
-                    );
+                    paint_image_placeholder(ui, target, paint, *alt);
                 }
             }
 
@@ -1411,10 +1469,7 @@ fn paint_page(
                     rich_text = rich_text.underline();
                 }
 
-                ui.put(
-                    egui_rect(origin, *rect),
-                    egui::Label::new(rich_text).wrap(),
-                );
+                ui.put(egui_rect(origin, *rect), egui::Label::new(rich_text).wrap());
             }
         }
     }
@@ -1435,12 +1490,8 @@ fn paint_fitted_image(
     }
 
     let (draw_rect, uv) = object_geometry(target, source, fit, position);
-    ui.painter().image(
-        texture.id(),
-        draw_rect,
-        uv,
-        egui::Color32::WHITE,
-    );
+    ui.painter()
+        .image(texture.id(), draw_rect, uv, egui::Color32::WHITE);
 }
 
 fn object_geometry(
@@ -1469,8 +1520,7 @@ fn contained_geometry(
     source: egui::Vec2,
     position: ObjectPosition,
 ) -> (egui::Rect, egui::Rect) {
-    let scale = (target.width() / source.x)
-        .min(target.height() / source.y);
+    let scale = (target.width() / source.x).min(target.height() / source.y);
     let size = source * scale;
     let offset = egui::vec2(
         (target.width() - size.x) * position.x(),
@@ -1485,8 +1535,7 @@ fn covered_geometry(
     source: egui::Vec2,
     position: ObjectPosition,
 ) -> (egui::Rect, egui::Rect) {
-    let scale = (target.width() / source.x)
-        .max(target.height() / source.y);
+    let scale = (target.width() / source.x).max(target.height() / source.y);
     let displayed = source * scale;
     let visible_x = (target.width() / displayed.x).clamp(0.0, 1.0);
     let visible_y = (target.height() / displayed.y).clamp(0.0, 1.0);
@@ -1533,11 +1582,8 @@ fn paint_image_placeholder(
     paint: &PaintList,
     alt: Option<PaintTextRange>,
 ) {
-    ui.painter().rect_filled(
-        target,
-        0.0,
-        egui::Color32::from_gray(36),
-    );
+    ui.painter()
+        .rect_filled(target, 0.0, egui::Color32::from_gray(36));
 
     if let Some(alt_range) = alt
         && let Some(content) = paint.text(alt_range)
@@ -1548,9 +1594,7 @@ fn paint_image_placeholder(
             egui::Label::new(
                 egui::RichText::new(content)
                     .size(13.0)
-                    .color(
-                        egui::Color32::from_gray(190),
-                    ),
+                    .color(egui::Color32::from_gray(190)),
             )
             .wrap(),
         );
@@ -1560,20 +1604,12 @@ fn paint_image_placeholder(
 fn egui_rect(origin: egui::Pos2, rect: PaintRect) -> egui::Rect {
     egui::Rect::from_min_size(
         origin + egui::vec2(rect.x(), rect.y()),
-        egui::vec2(
-            rect.width().max(1.0),
-            rect.height().max(1.0),
-        ),
+        egui::vec2(rect.width().max(1.0), rect.height().max(1.0)),
     )
 }
 
 fn egui_color(color: PaintColor) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(
-        color.red(),
-        color.green(),
-        color.blue(),
-        color.alpha(),
-    )
+    egui::Color32::from_rgba_unmultiplied(color.red(), color.green(), color.blue(), color.alpha())
 }
 
 fn configure_fonts(context: &egui::Context) {
@@ -1584,10 +1620,9 @@ fn configure_fonts(context: &egui::Context) {
         Arc::new(egui::FontData::from_static(LUCIDE_FONT_BYTES)),
     );
 
-    fonts.families.insert(
-        lucide_font_family(),
-        vec![LUCIDE_FONT_NAME.to_owned()],
-    );
+    fonts
+        .families
+        .insert(lucide_font_family(), vec![LUCIDE_FONT_NAME.to_owned()]);
 
     context.set_fonts(fonts);
 }
@@ -1620,25 +1655,14 @@ fn decode_image(bytes: &[u8]) -> Option<image::RgbaImage> {
         .map(|image| image.to_rgba8())
 }
 
-fn load_texture(
-    context: &egui::Context,
-    name: &str,
-    bytes: &[u8],
-) -> Option<egui::TextureHandle> {
+fn load_texture(context: &egui::Context, name: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
     let image = decode_image(bytes)?;
     let width = usize::try_from(image.width()).ok()?;
     let height = usize::try_from(image.height()).ok()?;
 
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(
-        [width, height],
-        image.as_raw(),
-    );
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([width, height], image.as_raw());
 
-    Some(context.load_texture(
-        name,
-        color_image,
-        egui::TextureOptions::LINEAR,
-    ))
+    Some(context.load_texture(name, color_image, egui::TextureOptions::LINEAR))
 }
 
 fn load_window_icon() -> Option<egui::IconData> {

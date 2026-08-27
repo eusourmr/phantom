@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 eframe.workspace = true
-image = { version = "=0.25.8", default-features = false, features = ["png"] }
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
 lucide-icons = "=1.34.0"
 phantom-engine = { path = "../phantom-engine" }
 phantom-image = { path = "../phantom-image" }

@@ -4,9 +4,7 @@
 //! that codec output is converted into Phantom-owned RGBA8 buffers behind the
 //! image boundary.
 
-use phantom_image::{
-    ImageDecodeLimits, ImageDecoder, ImageFormat, RasterImageDecoder,
-};
+use phantom_image::{ImageDecodeLimits, ImageDecoder, ImageFormat, RasterImageDecoder};
 
 const PNG_BYTES: &[u8] = include_bytes!("fixtures/rgba-2x1.png");
 const JPEG_BYTES: &[u8] = include_bytes!("fixtures/rgb-2x1.jpg");

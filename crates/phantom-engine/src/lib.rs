@@ -10,23 +10,22 @@ use phantom_dom::{Document, ElementData, NodeId, NodeKind};
 use phantom_html::HtmlError;
 
 pub use phantom_css::{
-    AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing,
-    ComputedStyle, Display, EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle,
-    FontWeight, JustifyContent, Length, ObjectFit, ObjectPosition, Rgba, StyleMap,
+    AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing, ComputedStyle, Display,
+    EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, JustifyContent, Length,
+    ObjectFit, ObjectPosition, Rgba, StyleMap,
 };
 pub use phantom_image::{
-    DecodedImage, ImageCatalog, ImageDecodeLimits, ImageDecoder, ImageError,
-    ImageFormat, ImageMetadata, ImageResourceId, IntrinsicSize, probe_image,
+    DecodedImage, ImageCatalog, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat,
+    ImageMetadata, ImageResourceId, IntrinsicSize, probe_image,
 };
 pub use phantom_layout::{
-    LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect,
-    build_layout_snapshot, build_layout_snapshot_with_images,
-    build_layout_snapshot_with_shaper,
+    LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect, build_layout_snapshot,
+    build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
     build_layout_snapshot_with_shaper_and_images,
 };
 pub use phantom_paint::{
-    PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle,
-    PaintFontWeight, PaintList, PaintRect, PaintTextRange, build_paint_list,
+    PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle, PaintFontWeight,
+    PaintList, PaintRect, PaintTextRange, build_paint_list,
 };
 
 use thiserror::Error;
@@ -182,12 +181,7 @@ impl Engine {
                 };
 
                 let node_id = layout_box.source_node();
-                let source = select_image_source(
-                    &self.document,
-                    node_id,
-                    viewport_width,
-                    dpr,
-                )?;
+                let source = select_image_source(&self.document, node_id, viewport_width, dpr)?;
 
                 Some(ImageRequest { resource, source })
             })
@@ -220,12 +214,8 @@ impl Engine {
         let document = phantom_html::parse(source)?;
         let styles = phantom_css::compute_styles(&document);
         let images = ImageCatalog::default();
-        let layout = build_layout_snapshot_with_images(
-            &document,
-            &styles,
-            viewport_width,
-            &images,
-        )?;
+        let layout =
+            build_layout_snapshot_with_images(&document, &styles, viewport_width, &images)?;
         let paint = build_paint_list(&layout, &styles)?;
 
         self.document = document;
@@ -254,10 +244,7 @@ impl Engine {
         metadata: ImageMetadata,
         viewport_width: f32,
     ) -> Result<(), EngineError> {
-        self.images.insert(
-            resource,
-            metadata,
-        );
+        self.images.insert(resource, metadata);
 
         self.relayout(viewport_width)
     }
@@ -286,7 +273,6 @@ impl Engine {
     }
 }
 
-
 #[derive(Clone, Copy, Debug)]
 enum CandidateDescriptor {
     Density(f32),
@@ -310,13 +296,7 @@ fn select_image_source(
     if let Some(parent_id) = document.node(image_id)?.parent()
         && let Some(parent) = element_for(document, parent_id)
         && parent.tag_name() == "picture"
-        && let Some(source) = picture_source(
-            document,
-            parent_id,
-            image_id,
-            viewport_width,
-            dpr,
-        )
+        && let Some(source) = picture_source(document, parent_id, image_id, viewport_width, dpr)
     {
         return Some(source);
     }
@@ -366,18 +346,10 @@ fn picture_source(
     None
 }
 
-fn select_from_element(
-    element: &ElementData,
-    viewport_width: f32,
-    dpr: f32,
-) -> Option<String> {
+fn select_from_element(element: &ElementData, viewport_width: f32, dpr: f32) -> Option<String> {
     if let Some(srcset) = element.attribute("srcset")
-        && let Some(selected) = select_srcset(
-            srcset,
-            element.attribute("sizes"),
-            viewport_width,
-            dpr,
-        )
+        && let Some(selected) =
+            select_srcset(srcset, element.attribute("sizes"), viewport_width, dpr)
     {
         return Some(selected);
     }
@@ -389,10 +361,7 @@ fn select_from_element(
         .map(str::to_owned)
 }
 
-fn element_for(
-    document: &Document,
-    node_id: NodeId,
-) -> Option<&ElementData> {
+fn element_for(document: &Document, node_id: NodeId) -> Option<&ElementData> {
     let node = document.node(node_id)?;
     let NodeKind::Element(element) = node.kind() else {
         return None;
@@ -407,7 +376,7 @@ fn supported_source_type(value: Option<&str>) -> bool {
 
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
     )
 }
 
@@ -421,10 +390,8 @@ fn media_matches(value: Option<&str>, viewport_width: f32) -> bool {
         return true;
     }
 
-    parse_media_px(&condition, "max-width")
-        .is_some_and(|limit| viewport_width <= limit)
-        || parse_media_px(&condition, "min-width")
-            .is_some_and(|limit| viewport_width >= limit)
+    parse_media_px(&condition, "max-width").is_some_and(|limit| viewport_width <= limit)
+        || parse_media_px(&condition, "min-width").is_some_and(|limit| viewport_width >= limit)
 }
 
 fn parse_media_px(condition: &str, feature: &str) -> Option<f32> {
@@ -447,9 +414,9 @@ fn select_srcset(
         return None;
     }
 
-    let uses_width = candidates.iter().any(|candidate| {
-        matches!(candidate.descriptor, CandidateDescriptor::Width(_))
-    });
+    let uses_width = candidates
+        .iter()
+        .any(|candidate| matches!(candidate.descriptor, CandidateDescriptor::Width(_)));
 
     let target = if uses_width {
         resolve_source_size(sizes, viewport_width) * dpr
@@ -578,9 +545,7 @@ fn parse_css_px(value: &str) -> Option<f32> {
 mod tests {
     use phantom_dom::NodeKind;
 
-    use super::{
-        Engine, EngineError, EngineState, LayoutKind, PaintCommand, Rgba,
-    };
+    use super::{Engine, EngineError, EngineState, LayoutKind, PaintCommand, Rgba};
 
     #[test]
     fn new_engine_is_idle() {
@@ -597,9 +562,7 @@ mod tests {
     fn html_generates_layout_and_paint_snapshots() -> Result<(), EngineError> {
         let mut engine = Engine::new();
 
-        engine.load_html(
-            "<html><body><h1>Phantom</h1><p>Independent browser</p></body></html>",
-        )?;
+        engine.load_html("<html><body><h1>Phantom</h1><p>Independent browser</p></body></html>")?;
 
         assert_eq!(engine.state(), EngineState::Ready);
         assert!(!engine.layout().is_empty());
@@ -633,17 +596,17 @@ mod tests {
              <p id=\"hero\">Styled by Phantom</p>",
         )?;
 
-        let paragraph_id = engine.document().nodes().find_map(|node| {
-            match node.kind() {
+        let paragraph_id = engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
                 NodeKind::Element(element)
-                    if element.tag_name() == "p"
-                        && element.attribute("id") == Some("hero") =>
+                    if element.tag_name() == "p" && element.attribute("id") == Some("hero") =>
                 {
                     Some(node.id())
                 }
                 _ => None,
-            }
-        });
+            });
 
         let color = paragraph_id
             .and_then(|node_id| engine.styles().get(node_id))
@@ -651,17 +614,15 @@ mod tests {
 
         assert_eq!(color, Some(Rgba::new(18, 171, 52, 255)));
 
-        let contains_green_text = engine.paint_list().commands().iter().any(
-            |command| {
-                matches!(
-                    command,
-                    PaintCommand::Text { color, .. }
-                        if color.red() == 18
-                            && color.green() == 171
-                            && color.blue() == 52
-                )
-            },
-        );
+        let contains_green_text = engine.paint_list().commands().iter().any(|command| {
+            matches!(
+                command,
+                PaintCommand::Text { color, .. }
+                    if color.red() == 18
+                        && color.green() == 171
+                        && color.blue() == 52
+            )
+        });
 
         assert!(contains_green_text);
 
@@ -703,13 +664,11 @@ mod tests {
     }
 
     #[test]
-    fn exposes_image_requests_without_browser_layout_inspection(
-    ) -> Result<(), EngineError> {
+    fn exposes_image_requests_without_browser_layout_inspection() -> Result<(), EngineError> {
         let mut engine = Engine::new();
 
-        engine.load_html(
-            "<img src=\"/media/hero.png\" width=\"40\" height=\"20\" alt=\"Hero\">",
-        )?;
+        engine
+            .load_html("<img src=\"/media/hero.png\" width=\"40\" height=\"20\" alt=\"Hero\">")?;
 
         let requests = engine.image_requests();
 
@@ -721,5 +680,4 @@ mod tests {
 
         Ok(())
     }
-
 }

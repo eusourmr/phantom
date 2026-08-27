@@ -161,18 +161,27 @@ impl ObjectPosition {
     /// Creates a clamped percentage position, where `0.0` is start and `1.0` is end.
     #[must_use]
     pub fn new(x: f32, y: f32) -> Self {
-        Self { x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) }
+        Self {
+            x: x.clamp(0.0, 1.0),
+            y: y.clamp(0.0, 1.0),
+        }
     }
     /// Returns the horizontal percentage.
     #[must_use]
-    pub const fn x(self) -> f32 { self.x }
+    pub const fn x(self) -> f32 {
+        self.x
+    }
     /// Returns the vertical percentage.
     #[must_use]
-    pub const fn y(self) -> f32 { self.y }
+    pub const fn y(self) -> f32 {
+        self.y
+    }
 }
 
 impl Default for ObjectPosition {
-    fn default() -> Self { Self::new(0.5, 0.5) }
+    fn default() -> Self {
+        Self::new(0.5, 0.5)
+    }
 }
 
 /// Border painting style supported by the first Phantom box model.
@@ -336,7 +345,6 @@ impl EdgeSizes {
     }
 }
 
-
 /// Semantic `auto` state for physical margin edges.
 ///
 /// Numeric margin lengths remain in [`EdgeSizes`]. This companion value keeps
@@ -397,7 +405,6 @@ impl AutoEdges {
         (self.top as u8) + (self.bottom as u8)
     }
 }
-
 
 /// Immutable values computed for one DOM node.
 #[derive(Debug, Clone, PartialEq)]
@@ -582,11 +589,15 @@ impl ComputedStyle {
 
     /// Returns the replaced-element object fitting mode.
     #[must_use]
-    pub const fn object_fit(&self) -> ObjectFit { self.object_fit }
+    pub const fn object_fit(&self) -> ObjectFit {
+        self.object_fit
+    }
 
     /// Returns the replaced-element object position.
     #[must_use]
-    pub const fn object_position(&self) -> ObjectPosition { self.object_position }
+    pub const fn object_position(&self) -> ObjectPosition {
+        self.object_position
+    }
 
     /// Returns the computed width.
     #[must_use]
@@ -754,7 +765,8 @@ impl StyleMap {
         };
 
         if self.node_styles.len() <= node_index {
-            self.node_styles.resize(node_index.saturating_add(1), NO_STYLE);
+            self.node_styles
+                .resize(node_index.saturating_add(1), NO_STYLE);
         }
 
         if self.node_styles[node_index] == NO_STYLE {
@@ -1112,10 +1124,11 @@ impl Selector {
     }
 
     fn specificity(&self) -> Specificity {
-        self.parts.iter().fold(
-            Specificity::zero(),
-            |specificity, part| specificity.add(part.compound.specificity()),
-        )
+        self.parts
+            .iter()
+            .fold(Specificity::zero(), |specificity, part| {
+                specificity.add(part.compound.specificity())
+            })
     }
 
     fn matches(&self, document: &Document, node_id: NodeId) -> bool {
@@ -1152,8 +1165,7 @@ impl Selector {
                 }
 
                 Combinator::Descendant => {
-                    let Some(ancestor) =
-                        matching_ancestor(document, current, &left.compound)
+                    let Some(ancestor) = matching_ancestor(document, current, &left.compound)
                     else {
                         return false;
                     };
@@ -1188,10 +1200,7 @@ impl CompoundSelector {
         {
             let start = cursor;
 
-            while cursor < bytes.len()
-                && bytes[cursor] != b'.'
-                && bytes[cursor] != b'#'
-            {
+            while cursor < bytes.len() && bytes[cursor] != b'.' && bytes[cursor] != b'#' {
                 if !is_identifier_byte(bytes[cursor]) {
                     return None;
                 }
@@ -1216,10 +1225,7 @@ impl CompoundSelector {
             cursor += 1;
             let start = cursor;
 
-            while cursor < bytes.len()
-                && bytes[cursor] != b'.'
-                && bytes[cursor] != b'#'
-            {
+            while cursor < bytes.len() && bytes[cursor] != b'.' && bytes[cursor] != b'#' {
                 if !is_identifier_byte(bytes[cursor]) {
                     return None;
                 }
@@ -1327,8 +1333,7 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
             }
 
             character if character.is_whitespace() => {
-                if !buffer.is_empty()
-                    && !flush_selector_part(&mut parts, &mut buffer, &mut pending)
+                if !buffer.is_empty() && !flush_selector_part(&mut parts, &mut buffer, &mut pending)
                 {
                     invalid = true;
                     break;
@@ -1430,8 +1435,7 @@ fn apply_cascade(
     parent_style: Option<&ComputedStyle>,
     style: &mut ComputedStyle,
 ) {
-    let mut winners: [Option<CascadeWinner>; Property::COUNT] =
-        array::from_fn(|_| None);
+    let mut winners: [Option<CascadeWinner>; Property::COUNT] = array::from_fn(|_| None);
 
     for rule in &stylesheet.rules {
         if !rule.selector.matches(document, node_id) {
@@ -1590,10 +1594,7 @@ fn apply_value(
             style.color = *color;
         }
 
-        (
-            Property::BackgroundColor,
-            SpecifiedValue::BackgroundColor(background),
-        ) => {
+        (Property::BackgroundColor, SpecifiedValue::BackgroundColor(background)) => {
             style.background_color = *background;
         }
 
@@ -1614,44 +1615,28 @@ fn apply_value(
         }
 
         (Property::MarginTop, SpecifiedValue::MarginLength(length)) => {
-            let (value, automatic) =
-                resolve_margin_length(
-                    *length,
-                    style.font_size,
-                );
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
 
             style.margin.top = value;
             style.margin_auto.top = automatic;
         }
 
         (Property::MarginRight, SpecifiedValue::MarginLength(length)) => {
-            let (value, automatic) =
-                resolve_margin_length(
-                    *length,
-                    style.font_size,
-                );
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
 
             style.margin.right = value;
             style.margin_auto.right = automatic;
         }
 
         (Property::MarginBottom, SpecifiedValue::MarginLength(length)) => {
-            let (value, automatic) =
-                resolve_margin_length(
-                    *length,
-                    style.font_size,
-                );
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
 
             style.margin.bottom = value;
             style.margin_auto.bottom = automatic;
         }
 
         (Property::MarginLeft, SpecifiedValue::MarginLength(length)) => {
-            let (value, automatic) =
-                resolve_margin_length(
-                    *length,
-                    style.font_size,
-                );
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
 
             style.margin.left = value;
             style.margin_auto.left = automatic;
@@ -1749,45 +1734,27 @@ fn apply_value(
             style.max_height = resolve_size_length(*length, style.font_size);
         }
 
-        (
-            Property::FlexDirection,
-            SpecifiedValue::FlexDirection(direction),
-        ) => {
+        (Property::FlexDirection, SpecifiedValue::FlexDirection(direction)) => {
             style.flex_direction = *direction;
         }
 
-        (
-            Property::FlexWrap,
-            SpecifiedValue::FlexWrap(flex_wrap),
-        ) => {
+        (Property::FlexWrap, SpecifiedValue::FlexWrap(flex_wrap)) => {
             style.flex_wrap = *flex_wrap;
         }
 
-        (
-            Property::JustifyContent,
-            SpecifiedValue::JustifyContent(justify),
-        ) => {
+        (Property::JustifyContent, SpecifiedValue::JustifyContent(justify)) => {
             style.justify_content = *justify;
         }
 
-        (
-            Property::AlignItems,
-            SpecifiedValue::AlignItems(align),
-        ) => {
+        (Property::AlignItems, SpecifiedValue::AlignItems(align)) => {
             style.align_items = *align;
         }
 
-        (
-            Property::AlignContent,
-            SpecifiedValue::AlignContent(align),
-        ) => {
+        (Property::AlignContent, SpecifiedValue::AlignContent(align)) => {
             style.align_content = *align;
         }
 
-        (
-            Property::AlignSelf,
-            SpecifiedValue::AlignSelf(align),
-        ) => {
+        (Property::AlignSelf, SpecifiedValue::AlignSelf(align)) => {
             style.align_self = *align;
         }
 
@@ -1914,32 +1881,11 @@ fn initial_style(node: &Node, parent: Option<&ComputedStyle>) -> ComputedStyle {
 
 fn default_display(tag: &str) -> Display {
     match tag {
-        "head" | "style" | "script" | "meta" | "link" | "title" | "base" => {
-            Display::None
-        }
+        "head" | "style" | "script" | "meta" | "link" | "title" | "base" => Display::None,
 
-        "html"
-        | "body"
-        | "div"
-        | "p"
-        | "h1"
-        | "h2"
-        | "h3"
-        | "h4"
-        | "h5"
-        | "h6"
-        | "ul"
-        | "ol"
-        | "li"
-        | "section"
-        | "article"
-        | "main"
-        | "header"
-        | "footer"
-        | "nav"
-        | "blockquote"
-        | "pre"
-        | "hr" => Display::Block,
+        "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
+        | "li" | "section" | "article" | "main" | "header" | "footer" | "nav" | "blockquote"
+        | "pre" | "hr" => Display::Block,
 
         _ => Display::Inline,
     }
@@ -2199,21 +2145,11 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .unwrap_or_default(),
 
         "font-weight" => parse_font_weight(value)
-            .map(|weight| {
-                vec![(
-                    Property::FontWeight,
-                    SpecifiedValue::FontWeight(weight),
-                )]
-            })
+            .map(|weight| vec![(Property::FontWeight, SpecifiedValue::FontWeight(weight))])
             .unwrap_or_default(),
 
         "font-style" => parse_font_style(value)
-            .map(|font_style| {
-                vec![(
-                    Property::FontStyle,
-                    SpecifiedValue::FontStyle(font_style),
-                )]
-            })
+            .map(|font_style| vec![(Property::FontStyle, SpecifiedValue::FontStyle(font_style))])
             .unwrap_or_default(),
 
         "font-family" => {
@@ -2223,10 +2159,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
                 FontFamily::SansSerif
             };
 
-            vec![(
-                Property::FontFamily,
-                SpecifiedValue::FontFamily(family),
-            )]
+            vec![(Property::FontFamily, SpecifiedValue::FontFamily(family))]
         }
 
         "text-decoration" | "text-decoration-line" => {
@@ -2281,29 +2214,16 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             ],
         ),
 
-        "border-top-width" => {
-            parse_edge_property(Property::BorderTopWidth, value)
-        }
+        "border-top-width" => parse_edge_property(Property::BorderTopWidth, value),
 
-        "border-right-width" => {
-            parse_edge_property(Property::BorderRightWidth, value)
-        }
+        "border-right-width" => parse_edge_property(Property::BorderRightWidth, value),
 
-        "border-bottom-width" => {
-            parse_edge_property(Property::BorderBottomWidth, value)
-        }
+        "border-bottom-width" => parse_edge_property(Property::BorderBottomWidth, value),
 
-        "border-left-width" => {
-            parse_edge_property(Property::BorderLeftWidth, value)
-        }
+        "border-left-width" => parse_edge_property(Property::BorderLeftWidth, value),
 
         "border-color" => parse_border_color(value)
-            .map(|color| {
-                vec![(
-                    Property::BorderColor,
-                    SpecifiedValue::BorderColor(color),
-                )]
-            })
+            .map(|color| vec![(Property::BorderColor, SpecifiedValue::BorderColor(color))])
             .unwrap_or_default(),
 
         "border-style" => parse_border_style(value)
@@ -2318,12 +2238,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
         "border" => parse_border_shorthand(value),
 
         "box-sizing" => parse_box_sizing(value)
-            .map(|box_sizing| {
-                vec![(
-                    Property::BoxSizing,
-                    SpecifiedValue::BoxSizing(box_sizing),
-                )]
-            })
+            .map(|box_sizing| vec![(Property::BoxSizing, SpecifiedValue::BoxSizing(box_sizing))])
             .unwrap_or_default(),
 
         "object-fit" => parse_object_fit(value)
@@ -2331,35 +2246,21 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .unwrap_or_default(),
 
         "object-position" => parse_object_position(value)
-            .map(|position| vec![(
-                Property::ObjectPosition,
-                SpecifiedValue::ObjectPosition(position),
-            )])
+            .map(|position| {
+                vec![(
+                    Property::ObjectPosition,
+                    SpecifiedValue::ObjectPosition(position),
+                )]
+            })
             .unwrap_or_default(),
 
         "width" => parse_size_property(Property::Width, value),
-        "min-width" => parse_constraint_property(
-            Property::MinWidth,
-            value,
-            false,
-        ),
-        "max-width" => parse_constraint_property(
-            Property::MaxWidth,
-            value,
-            true,
-        ),
+        "min-width" => parse_constraint_property(Property::MinWidth, value, false),
+        "max-width" => parse_constraint_property(Property::MaxWidth, value, true),
 
         "height" => parse_size_property(Property::Height, value),
-        "min-height" => parse_constraint_property(
-            Property::MinHeight,
-            value,
-            false,
-        ),
-        "max-height" => parse_constraint_property(
-            Property::MaxHeight,
-            value,
-            true,
-        ),
+        "min-height" => parse_constraint_property(Property::MinHeight, value, false),
+        "max-height" => parse_constraint_property(Property::MaxHeight, value, true),
 
         "flex-direction" => parse_flex_direction(value)
             .map(|direction| {
@@ -2371,12 +2272,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .unwrap_or_default(),
 
         "flex-wrap" => parse_flex_wrap(value)
-            .map(|flex_wrap| {
-                vec![(
-                    Property::FlexWrap,
-                    SpecifiedValue::FlexWrap(flex_wrap),
-                )]
-            })
+            .map(|flex_wrap| vec![(Property::FlexWrap, SpecifiedValue::FlexWrap(flex_wrap))])
             .unwrap_or_default(),
 
         "flex-flow" => parse_flex_flow_shorthand(value),
@@ -2391,51 +2287,24 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .unwrap_or_default(),
 
         "align-items" => parse_align_items(value)
-            .map(|align| {
-                vec![(
-                    Property::AlignItems,
-                    SpecifiedValue::AlignItems(align),
-                )]
-            })
+            .map(|align| vec![(Property::AlignItems, SpecifiedValue::AlignItems(align))])
             .unwrap_or_default(),
 
         "align-content" => parse_align_content(value)
-            .map(|align| {
-                vec![(
-                    Property::AlignContent,
-                    SpecifiedValue::AlignContent(align),
-                )]
-            })
+            .map(|align| vec![(Property::AlignContent, SpecifiedValue::AlignContent(align))])
             .unwrap_or_default(),
 
         "align-self" => parse_align_self(value)
-            .map(|align| {
-                vec![(
-                    Property::AlignSelf,
-                    SpecifiedValue::AlignSelf(align),
-                )]
-            })
+            .map(|align| vec![(Property::AlignSelf, SpecifiedValue::AlignSelf(align))])
             .unwrap_or_default(),
 
-        "gap" => parse_non_negative_size_property(
-            Property::Gap,
-            value,
-        ),
+        "gap" => parse_non_negative_size_property(Property::Gap, value),
 
-        "flex-grow" => parse_non_negative_number(
-            Property::FlexGrow,
-            value,
-        ),
+        "flex-grow" => parse_non_negative_number(Property::FlexGrow, value),
 
-        "flex-shrink" => parse_non_negative_number(
-            Property::FlexShrink,
-            value,
-        ),
+        "flex-shrink" => parse_non_negative_number(Property::FlexShrink, value),
 
-        "flex-basis" => parse_size_property(
-            Property::FlexBasis,
-            value,
-        ),
+        "flex-basis" => parse_size_property(Property::FlexBasis, value),
 
         "flex" => parse_flex_shorthand(value),
 
@@ -2443,9 +2312,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
     }
 }
 
-fn parse_flex_direction(
-    value: &str,
-) -> Option<FlexDirection> {
+fn parse_flex_direction(value: &str) -> Option<FlexDirection> {
     match value.trim().to_ascii_lowercase().as_str() {
         "row" => Some(FlexDirection::Row),
         "row-reverse" => Some(FlexDirection::RowReverse),
@@ -2455,9 +2322,7 @@ fn parse_flex_direction(
     }
 }
 
-fn parse_flex_wrap(
-    value: &str,
-) -> Option<FlexWrap> {
+fn parse_flex_wrap(value: &str) -> Option<FlexWrap> {
     match value.trim().to_ascii_lowercase().as_str() {
         "nowrap" => Some(FlexWrap::NoWrap),
         "wrap" => Some(FlexWrap::Wrap),
@@ -2466,14 +2331,10 @@ fn parse_flex_wrap(
     }
 }
 
-fn parse_flex_flow_shorthand(
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
-    let normalized =
-        value.trim().to_ascii_lowercase();
+fn parse_flex_flow_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
+    let normalized = value.trim().to_ascii_lowercase();
 
-    let tokens: Vec<&str> =
-        normalized.split_ascii_whitespace().collect();
+    let tokens: Vec<&str> = normalized.split_ascii_whitespace().collect();
 
     if tokens.is_empty() || tokens.len() > 2 {
         return Vec::new();
@@ -2483,9 +2344,7 @@ fn parse_flex_flow_shorthand(
     let mut flex_wrap = None;
 
     for token in tokens {
-        if let Some(parsed) =
-            parse_flex_direction(token)
-        {
+        if let Some(parsed) = parse_flex_direction(token) {
             if direction.is_some() {
                 return Vec::new();
             }
@@ -2494,9 +2353,7 @@ fn parse_flex_flow_shorthand(
             continue;
         }
 
-        if let Some(parsed) =
-            parse_flex_wrap(token)
-        {
+        if let Some(parsed) = parse_flex_wrap(token) {
             if flex_wrap.is_some() {
                 return Vec::new();
             }
@@ -2511,26 +2368,16 @@ fn parse_flex_flow_shorthand(
     vec![
         (
             Property::FlexDirection,
-            SpecifiedValue::FlexDirection(
-                direction.unwrap_or(
-                    FlexDirection::Row,
-                ),
-            ),
+            SpecifiedValue::FlexDirection(direction.unwrap_or(FlexDirection::Row)),
         ),
         (
             Property::FlexWrap,
-            SpecifiedValue::FlexWrap(
-                flex_wrap.unwrap_or(
-                    FlexWrap::NoWrap,
-                ),
-            ),
+            SpecifiedValue::FlexWrap(flex_wrap.unwrap_or(FlexWrap::NoWrap)),
         ),
     ]
 }
 
-fn parse_justify_content(
-    value: &str,
-) -> Option<JustifyContent> {
+fn parse_justify_content(value: &str) -> Option<JustifyContent> {
     match value.trim().to_ascii_lowercase().as_str() {
         "flex-start" | "start" => Some(JustifyContent::FlexStart),
         "center" => Some(JustifyContent::Center),
@@ -2540,9 +2387,7 @@ fn parse_justify_content(
     }
 }
 
-fn parse_align_items(
-    value: &str,
-) -> Option<AlignItems> {
+fn parse_align_items(value: &str) -> Option<AlignItems> {
     match value.trim().to_ascii_lowercase().as_str() {
         "stretch" => Some(AlignItems::Stretch),
         "flex-start" | "start" => Some(AlignItems::FlexStart),
@@ -2552,9 +2397,7 @@ fn parse_align_items(
     }
 }
 
-fn parse_align_content(
-    value: &str,
-) -> Option<AlignContent> {
+fn parse_align_content(value: &str) -> Option<AlignContent> {
     match value.trim().to_ascii_lowercase().as_str() {
         "stretch" => Some(AlignContent::Stretch),
         "flex-start" | "start" => Some(AlignContent::FlexStart),
@@ -2565,9 +2408,7 @@ fn parse_align_content(
     }
 }
 
-fn parse_align_self(
-    value: &str,
-) -> Option<AlignSelf> {
+fn parse_align_self(value: &str) -> Option<AlignSelf> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Some(AlignSelf::Auto),
         "stretch" => Some(AlignSelf::Stretch),
@@ -2583,97 +2424,50 @@ fn parse_non_negative_size_property(
     value: &str,
 ) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, true)
-        .filter(|length| {
-            !matches!(
-                length,
-                SpecifiedLength::Auto
-            )
-        })
-        .map(|length| {
-            vec![(
-                property,
-                SpecifiedValue::SizeLength(length),
-            )]
-        })
+        .filter(|length| !matches!(length, SpecifiedLength::Auto))
+        .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
 }
 
-fn parse_non_negative_number(
-    property: Property,
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
-    parse_non_negative_float(
-        value.trim(),
-    )
-        .map(|number| {
-            vec![(
-                property,
-                SpecifiedValue::Number(number),
-            )]
-        })
+fn parse_non_negative_number(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    parse_non_negative_float(value.trim())
+        .map(|number| vec![(property, SpecifiedValue::Number(number))])
         .unwrap_or_default()
 }
 
-fn parse_flex_shorthand(
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
-    let normalized =
-        value.trim().to_ascii_lowercase();
+fn parse_flex_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
+    let normalized = value.trim().to_ascii_lowercase();
 
     match normalized.as_str() {
         "none" => {
             return vec![
-                (
-                    Property::FlexGrow,
-                    SpecifiedValue::Number(0.0),
-                ),
-                (
-                    Property::FlexShrink,
-                    SpecifiedValue::Number(0.0),
-                ),
+                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(0.0)),
                 (
                     Property::FlexBasis,
-                    SpecifiedValue::SizeLength(
-                        SpecifiedLength::Auto,
-                    ),
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
                 ),
             ];
         }
 
         "auto" => {
             return vec![
-                (
-                    Property::FlexGrow,
-                    SpecifiedValue::Number(1.0),
-                ),
-                (
-                    Property::FlexShrink,
-                    SpecifiedValue::Number(1.0),
-                ),
+                (Property::FlexGrow, SpecifiedValue::Number(1.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
                 (
                     Property::FlexBasis,
-                    SpecifiedValue::SizeLength(
-                        SpecifiedLength::Auto,
-                    ),
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
                 ),
             ];
         }
 
         "initial" => {
             return vec![
-                (
-                    Property::FlexGrow,
-                    SpecifiedValue::Number(0.0),
-                ),
-                (
-                    Property::FlexShrink,
-                    SpecifiedValue::Number(1.0),
-                ),
+                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
                 (
                     Property::FlexBasis,
-                    SpecifiedValue::SizeLength(
-                        SpecifiedLength::Auto,
-                    ),
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
                 ),
             ];
         }
@@ -2681,37 +2475,26 @@ fn parse_flex_shorthand(
         _ => {}
     }
 
-    let tokens: Vec<&str> =
-        normalized.split_ascii_whitespace().collect();
+    let tokens: Vec<&str> = normalized.split_ascii_whitespace().collect();
 
     if tokens.is_empty() || tokens.len() > 3 {
         return Vec::new();
     }
 
-    let Some(grow) =
-        parse_non_negative_float(tokens[0])
-    else {
+    let Some(grow) = parse_non_negative_float(tokens[0]) else {
         return Vec::new();
     };
 
     let mut shrink = 1.0;
-    let mut basis =
-        SpecifiedLength::Px(0.0);
+    let mut basis = SpecifiedLength::Px(0.0);
 
     match tokens.as_slice() {
         [_] => {}
 
         [_, second] => {
-            if let Some(number) =
-                parse_non_negative_float(second)
-            {
+            if let Some(number) = parse_non_negative_float(second) {
                 shrink = number;
-            } else if let Some(length) =
-                parse_specified_length(
-                    second,
-                    true,
-                )
-            {
+            } else if let Some(length) = parse_specified_length(second, true) {
                 basis = length;
             } else {
                 return Vec::new();
@@ -2719,18 +2502,11 @@ fn parse_flex_shorthand(
         }
 
         [_, second, third] => {
-            let Some(number) =
-                parse_non_negative_float(second)
-            else {
+            let Some(number) = parse_non_negative_float(second) else {
                 return Vec::new();
             };
 
-            let Some(length) =
-                parse_specified_length(
-                    third,
-                    true,
-                )
-            else {
+            let Some(length) = parse_specified_length(third, true) else {
                 return Vec::new();
             };
 
@@ -2742,45 +2518,23 @@ fn parse_flex_shorthand(
     }
 
     vec![
-        (
-            Property::FlexGrow,
-            SpecifiedValue::Number(grow),
-        ),
-        (
-            Property::FlexShrink,
-            SpecifiedValue::Number(shrink),
-        ),
-        (
-            Property::FlexBasis,
-            SpecifiedValue::SizeLength(basis),
-        ),
+        (Property::FlexGrow, SpecifiedValue::Number(grow)),
+        (Property::FlexShrink, SpecifiedValue::Number(shrink)),
+        (Property::FlexBasis, SpecifiedValue::SizeLength(basis)),
     ]
 }
 
-fn parse_non_negative_float(
-    value: &str,
-) -> Option<f32> {
+fn parse_non_negative_float(value: &str) -> Option<f32> {
     value
         .parse::<f32>()
         .ok()
-        .filter(|number| {
-            number.is_finite()
-                && *number >= 0.0
-        })
+        .filter(|number| number.is_finite() && *number >= 0.0)
 }
 
-fn parse_margin_property(
-    property: Property,
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
+fn parse_margin_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, true)
         .filter(|length| !matches!(length, SpecifiedLength::Percent(_)))
-        .map(|length| {
-            vec![(
-                property,
-                SpecifiedValue::MarginLength(length),
-            )]
-        })
+        .map(|length| vec![(property, SpecifiedValue::MarginLength(length))])
         .unwrap_or_default()
 }
 
@@ -2791,17 +2545,9 @@ fn parse_edge_property(property: Property, value: &str) -> Vec<(Property, Specif
         .unwrap_or_default()
 }
 
-fn parse_size_property(
-    property: Property,
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
+fn parse_size_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, true)
-        .map(|length| {
-            vec![(
-                property,
-                SpecifiedValue::SizeLength(length),
-            )]
-        })
+        .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
 }
 
@@ -2813,27 +2559,15 @@ fn parse_constraint_property(
     let normalized = value.trim().to_ascii_lowercase();
 
     if allow_none && normalized == "none" {
-        return vec![(
-            property,
-            SpecifiedValue::SizeLength(
-                SpecifiedLength::Auto,
-            ),
-        )];
+        return vec![(property, SpecifiedValue::SizeLength(SpecifiedLength::Auto))];
     }
 
     parse_specified_length(value, true)
-        .map(|length| {
-            vec![(
-                property,
-                SpecifiedValue::SizeLength(length),
-            )]
-        })
+        .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
 }
 
-fn parse_border_color(
-    value: &str,
-) -> Option<Option<Rgba>> {
+fn parse_border_color(value: &str) -> Option<Option<Rgba>> {
     if value.trim().eq_ignore_ascii_case("currentcolor") {
         return Some(None);
     }
@@ -2841,9 +2575,7 @@ fn parse_border_color(
     parse_color(value).map(Some)
 }
 
-fn parse_border_style(
-    value: &str,
-) -> Option<BorderStyle> {
+fn parse_border_style(value: &str) -> Option<BorderStyle> {
     match value.trim().to_ascii_lowercase().as_str() {
         "none" => Some(BorderStyle::None),
         "solid" => Some(BorderStyle::Solid),
@@ -2851,9 +2583,7 @@ fn parse_border_style(
     }
 }
 
-fn parse_box_sizing(
-    value: &str,
-) -> Option<BoxSizing> {
+fn parse_box_sizing(value: &str) -> Option<BoxSizing> {
     match value.trim().to_ascii_lowercase().as_str() {
         "content-box" => Some(BoxSizing::ContentBox),
         "border-box" => Some(BoxSizing::BorderBox),
@@ -2861,17 +2591,13 @@ fn parse_box_sizing(
     }
 }
 
-fn parse_border_shorthand(
-    value: &str,
-) -> Vec<(Property, SpecifiedValue)> {
+fn parse_border_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
     let normalized = value.trim();
 
     if normalized.eq_ignore_ascii_case("none") {
         return vec![(
             Property::BorderStyle,
-            SpecifiedValue::BorderStyle(
-                BorderStyle::None,
-            ),
+            SpecifiedValue::BorderStyle(BorderStyle::None),
         )];
     }
 
@@ -2881,29 +2607,22 @@ fn parse_border_shorthand(
 
     for token in normalized.split_ascii_whitespace() {
         if width.is_none()
-            && let Some(length) =
-                parse_specified_length(token, false)
-            && !matches!(
-                length,
-                SpecifiedLength::Auto
-                    | SpecifiedLength::Percent(_)
-            )
+            && let Some(length) = parse_specified_length(token, false)
+            && !matches!(length, SpecifiedLength::Auto | SpecifiedLength::Percent(_))
         {
             width = Some(length);
             continue;
         }
 
         if border_style.is_none()
-            && let Some(parsed_style) =
-                parse_border_style(token)
+            && let Some(parsed_style) = parse_border_style(token)
         {
             border_style = Some(parsed_style);
             continue;
         }
 
         if color.is_none()
-            && let Some(parsed_color) =
-                parse_border_color(token)
+            && let Some(parsed_color) = parse_border_color(token)
         {
             color = Some(parsed_color);
             continue;
@@ -2921,10 +2640,7 @@ fn parse_border_shorthand(
             Property::BorderBottomWidth,
             Property::BorderLeftWidth,
         ] {
-            declarations.push((
-                property,
-                SpecifiedValue::EdgeLength(length),
-            ));
+            declarations.push((property, SpecifiedValue::EdgeLength(length)));
         }
     }
 
@@ -2945,10 +2661,7 @@ fn parse_border_shorthand(
     declarations
 }
 
-fn expand_margin_edges(
-    value: &str,
-    properties: [Property; 4],
-) -> Vec<(Property, SpecifiedValue)> {
+fn expand_margin_edges(value: &str, properties: [Property; 4]) -> Vec<(Property, SpecifiedValue)> {
     let parsed = value
         .split_ascii_whitespace()
         .map(|part| parse_specified_length(part, true))
@@ -2968,23 +2681,11 @@ fn expand_margin_edges(
     let edges = match values.as_slice() {
         [all] => [*all, *all, *all, *all],
 
-        [vertical, horizontal] => [
-            *vertical,
-            *horizontal,
-            *vertical,
-            *horizontal,
-        ],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
 
-        [top, horizontal, bottom] => [
-            *top,
-            *horizontal,
-            *bottom,
-            *horizontal,
-        ],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
 
-        [top, right, bottom, left] => {
-            [*top, *right, *bottom, *left]
-        }
+        [top, right, bottom, left] => [*top, *right, *bottom, *left],
 
         _ => return Vec::new(),
     };
@@ -2992,19 +2693,11 @@ fn expand_margin_edges(
     properties
         .into_iter()
         .zip(edges)
-        .map(|(property, length)| {
-            (
-                property,
-                SpecifiedValue::MarginLength(length),
-            )
-        })
+        .map(|(property, length)| (property, SpecifiedValue::MarginLength(length)))
         .collect()
 }
 
-fn expand_edges(
-    value: &str,
-    properties: [Property; 4],
-) -> Vec<(Property, SpecifiedValue)> {
+fn expand_edges(value: &str, properties: [Property; 4]) -> Vec<(Property, SpecifiedValue)> {
     let parsed = value
         .split_ascii_whitespace()
         .map(|part| parse_specified_length(part, false))
@@ -3024,19 +2717,9 @@ fn expand_edges(
     let edges = match values.as_slice() {
         [all] => [*all, *all, *all, *all],
 
-        [vertical, horizontal] => [
-            *vertical,
-            *horizontal,
-            *vertical,
-            *horizontal,
-        ],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
 
-        [top, horizontal, bottom] => [
-            *top,
-            *horizontal,
-            *bottom,
-            *horizontal,
-        ],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
 
         [top, right, bottom, left] => [*top, *right, *bottom, *left],
 
@@ -3046,9 +2729,7 @@ fn expand_edges(
     properties
         .into_iter()
         .zip(edges)
-        .map(|(property, length)| {
-            (property, SpecifiedValue::EdgeLength(length))
-        })
+        .map(|(property, length)| (property, SpecifiedValue::EdgeLength(length)))
         .collect()
 }
 
@@ -3088,10 +2769,7 @@ fn parse_object_position(value: &str) -> Option<ObjectPosition> {
 
     match second {
         Some(second) => {
-            if let (Some(x), Some(y)) = (
-                component(first, true),
-                component(second, false),
-            ) {
+            if let (Some(x), Some(y)) = (component(first, true), component(second, false)) {
                 return Some(ObjectPosition::new(x, y));
             }
 
@@ -3160,9 +2838,7 @@ fn parse_specified_length(value: &str, allow_auto_percent: bool) -> Option<Speci
         return parse_number(number).map(SpecifiedLength::Em);
     }
 
-    if allow_auto_percent
-        && let Some(number) = normalized.strip_suffix('%')
-    {
+    if allow_auto_percent && let Some(number) = normalized.strip_suffix('%') {
         return parse_number(number).map(SpecifiedLength::Percent);
     }
 
@@ -3179,19 +2855,12 @@ fn resolve_font_size(length: SpecifiedLength, inherited_size: f32) -> Option<f32
     }
 }
 
-fn resolve_margin_length(
-    length: SpecifiedLength,
-    font_size: f32,
-) -> (f32, bool) {
+fn resolve_margin_length(length: SpecifiedLength, font_size: f32) -> (f32, bool) {
     match length {
         SpecifiedLength::Auto => (0.0, true),
 
         _ => (
-            resolve_edge_length(
-                length,
-                font_size,
-            )
-            .unwrap_or_default(),
+            resolve_edge_length(length, font_size).unwrap_or_default(),
             false,
         ),
     }
@@ -3211,9 +2880,7 @@ fn resolve_size_length(length: SpecifiedLength, font_size: f32) -> Length {
         SpecifiedLength::Auto => Length::Auto,
         SpecifiedLength::Px(value) => Length::Px(value.max(0.0)),
         SpecifiedLength::Em(value) => Length::Px((value * font_size).max(0.0)),
-        SpecifiedLength::Rem(value) => {
-            Length::Px((value * ROOT_FONT_SIZE_PX).max(0.0))
-        }
+        SpecifiedLength::Rem(value) => Length::Px((value * ROOT_FONT_SIZE_PX).max(0.0)),
         SpecifiedLength::Percent(value) => Length::Percent(value),
     }
 }
@@ -3358,15 +3025,11 @@ fn remove_comments(source: &str) -> String {
             continue;
         }
 
-        if byte == b'/'
-            && bytes.get(cursor.saturating_add(1)) == Some(&b'*')
-        {
+        if byte == b'/' && bytes.get(cursor.saturating_add(1)) == Some(&b'*') {
             cursor = cursor.saturating_add(2);
 
             while cursor < bytes.len() {
-                if bytes[cursor] == b'*'
-                    && bytes.get(cursor.saturating_add(1)) == Some(&b'/')
-                {
+                if bytes[cursor] == b'*' && bytes.get(cursor.saturating_add(1)) == Some(&b'/') {
                     cursor = cursor.saturating_add(2);
                     break;
                 }
@@ -3515,8 +3178,8 @@ mod tests {
     use phantom_dom::{Document, ElementData, NodeKind};
 
     use super::{
-        AlignContent, AlignSelf, ComputedStyle, Display, FlexDirection,
-        FlexWrap, ObjectFit, ObjectPosition, Rgba, Stylesheet, compute_styles,
+        AlignContent, AlignSelf, ComputedStyle, Display, FlexDirection, FlexWrap, ObjectFit,
+        ObjectPosition, Rgba, Stylesheet, compute_styles,
     };
 
     #[test]
@@ -3530,15 +3193,11 @@ mod tests {
     }
 
     #[test]
-    fn descendant_child_and_specificity_are_applied(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn descendant_child_and_specificity_are_applied() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
-        let style = document.append_child(
-            root,
-            NodeKind::Element(ElementData::new("style")),
-        )?;
+        let style = document.append_child(root, NodeKind::Element(ElementData::new("style")))?;
 
         document.append_child(
             style,
@@ -3550,10 +3209,7 @@ mod tests {
             ),
         )?;
 
-        let div = document.append_child(
-            root,
-            NodeKind::Element(ElementData::new("div")),
-        )?;
+        let div = document.append_child(root, NodeKind::Element(ElementData::new("div")))?;
 
         let mut attributes = BTreeMap::new();
         attributes.insert("id".to_owned(), "hero".to_owned());
@@ -3561,10 +3217,7 @@ mod tests {
 
         let paragraph = document.append_child(
             div,
-            NodeKind::Element(ElementData::with_attributes(
-                "p",
-                attributes,
-            )),
+            NodeKind::Element(ElementData::with_attributes("p", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3578,21 +3231,15 @@ mod tests {
     }
 
     #[test]
-    fn important_author_rule_beats_normal_inline_style(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn important_author_rule_beats_normal_inline_style() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
-        let style = document.append_child(
-            root,
-            NodeKind::Element(ElementData::new("style")),
-        )?;
+        let style = document.append_child(root, NodeKind::Element(ElementData::new("style")))?;
 
         document.append_child(
             style,
-            NodeKind::Text(
-                "#hero { color: red !important; }".to_owned(),
-            ),
+            NodeKind::Text("#hero { color: red !important; }".to_owned()),
         )?;
 
         let mut attributes = BTreeMap::new();
@@ -3601,10 +3248,7 @@ mod tests {
 
         let paragraph = document.append_child(
             root,
-            NodeKind::Element(ElementData::with_attributes(
-                "p",
-                attributes,
-            )),
+            NodeKind::Element(ElementData::with_attributes("p", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3618,36 +3262,24 @@ mod tests {
     }
 
     #[test]
-    fn inline_important_beats_author_important(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn inline_important_beats_author_important() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
-        let style = document.append_child(
-            root,
-            NodeKind::Element(ElementData::new("style")),
-        )?;
+        let style = document.append_child(root, NodeKind::Element(ElementData::new("style")))?;
 
         document.append_child(
             style,
-            NodeKind::Text(
-                "#hero { color: red !important; }".to_owned(),
-            ),
+            NodeKind::Text("#hero { color: red !important; }".to_owned()),
         )?;
 
         let mut attributes = BTreeMap::new();
         attributes.insert("id".to_owned(), "hero".to_owned());
-        attributes.insert(
-            "style".to_owned(),
-            "color: blue !important".to_owned(),
-        );
+        attributes.insert("style".to_owned(), "color: blue !important".to_owned());
 
         let paragraph = document.append_child(
             root,
-            NodeKind::Element(ElementData::with_attributes(
-                "p",
-                attributes,
-            )),
+            NodeKind::Element(ElementData::with_attributes("p", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3661,8 +3293,7 @@ mod tests {
     }
 
     #[test]
-    fn shorthand_expands_before_cascade(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn shorthand_expands_before_cascade() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -3674,10 +3305,7 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(ElementData::with_attributes(
-                "div",
-                attributes,
-            )),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3692,16 +3320,12 @@ mod tests {
     }
 
     #[test]
-    fn computed_styles_are_interned(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn computed_styles_are_interned() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
         for _ in 0..32 {
-            document.append_child(
-                root,
-                NodeKind::Element(ElementData::new("span")),
-            )?;
+            document.append_child(root, NodeKind::Element(ElementData::new("span")))?;
         }
 
         let styles = compute_styles(&document);
@@ -3713,23 +3337,16 @@ mod tests {
     }
 
     #[test]
-    fn display_none_is_still_computed(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn display_none_is_still_computed() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
         let mut attributes = BTreeMap::new();
-        attributes.insert(
-            "style".to_owned(),
-            "display: none".to_owned(),
-        );
+        attributes.insert("style".to_owned(), "display: none".to_owned());
 
         let element = document.append_child(
             root,
-            NodeKind::Element(ElementData::with_attributes(
-                "div",
-                attributes,
-            )),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3743,8 +3360,7 @@ mod tests {
     }
 
     #[test]
-    fn box_model_properties_are_computed(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn box_model_properties_are_computed() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -3762,12 +3378,7 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -3783,10 +3394,7 @@ mod tests {
             Some(super::BorderStyle::Solid)
         );
 
-        assert_eq!(
-            computed.map(|style| style.border_width().top()),
-            Some(4.0)
-        );
+        assert_eq!(computed.map(|style| style.border_width().top()), Some(4.0));
 
         assert_eq!(
             computed.map(|style| style.border_color()),
@@ -3807,44 +3415,33 @@ mod tests {
     }
 
     #[test]
-    fn border_none_removes_effective_border_width(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn border_none_removes_effective_border_width() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
         let mut attributes = BTreeMap::new();
         attributes.insert(
             "style".to_owned(),
-            "border-width: 10px; border-style: none"
-                .to_owned(),
+            "border-width: 10px; border-style: none".to_owned(),
         );
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
 
         assert_eq!(
-            styles
-                .get(element)
-                .map(|style| style.border_width().left()),
+            styles.get(element).map(|style| style.border_width().left()),
             Some(0.0)
         );
 
         Ok(())
     }
 
-
     #[test]
-    fn flex_core_properties_are_computed(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn flex_core_properties_are_computed() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -3864,21 +3461,13 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
         let computed = styles.get(element);
 
-        assert_eq!(
-            computed.map(|style| style.display()),
-            Some(Display::Flex)
-        );
+        assert_eq!(computed.map(|style| style.display()), Some(Display::Flex));
 
         assert_eq!(
             computed.map(|style| style.flex_direction()),
@@ -3900,15 +3489,9 @@ mod tests {
             Some(super::Length::Px(12.0))
         );
 
-        assert_eq!(
-            computed.map(|style| style.flex_grow()),
-            Some(2.0)
-        );
+        assert_eq!(computed.map(|style| style.flex_grow()), Some(2.0));
 
-        assert_eq!(
-            computed.map(|style| style.flex_shrink()),
-            Some(0.5)
-        );
+        assert_eq!(computed.map(|style| style.flex_shrink()), Some(0.5));
 
         assert_eq!(
             computed.map(|style| style.flex_basis()),
@@ -3918,42 +3501,25 @@ mod tests {
         Ok(())
     }
 
-
-
     #[test]
-    fn flex_shorthand_expands_to_longhands(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn flex_shorthand_expands_to_longhands() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
         let mut attributes = BTreeMap::new();
-        attributes.insert(
-            "style".to_owned(),
-            "flex: 2 0.5 25%".to_owned(),
-        );
+        attributes.insert("style".to_owned(), "flex: 2 0.5 25%".to_owned());
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
         let computed = styles.get(element);
 
-        assert_eq!(
-            computed.map(|style| style.flex_grow()),
-            Some(2.0)
-        );
+        assert_eq!(computed.map(|style| style.flex_grow()), Some(2.0));
 
-        assert_eq!(
-            computed.map(|style| style.flex_shrink()),
-            Some(0.5)
-        );
+        assert_eq!(computed.map(|style| style.flex_shrink()), Some(0.5));
 
         assert_eq!(
             computed.map(|style| style.flex_basis()),
@@ -3963,11 +3529,8 @@ mod tests {
         Ok(())
     }
 
-
-
     #[test]
-    fn flex_wrapping_and_alignment_properties_are_computed(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn flex_wrapping_and_alignment_properties_are_computed() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -3984,12 +3547,7 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -4000,10 +3558,7 @@ mod tests {
             Some(FlexDirection::RowReverse)
         );
 
-        assert_eq!(
-            computed.map(ComputedStyle::flex_wrap),
-            Some(FlexWrap::Wrap)
-        );
+        assert_eq!(computed.map(ComputedStyle::flex_wrap), Some(FlexWrap::Wrap));
 
         assert_eq!(
             computed.map(ComputedStyle::align_content),
@@ -4018,10 +3573,8 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
-    fn flex_flow_sets_direction_and_wrap_reverse(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn flex_flow_sets_direction_and_wrap_reverse() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -4035,28 +3588,19 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
         let computed = styles.get(element);
 
         assert_eq!(
-            computed.map(
-                ComputedStyle::flex_direction,
-            ),
+            computed.map(ComputedStyle::flex_direction,),
             Some(FlexDirection::ColumnReverse)
         );
 
         assert_eq!(
-            computed.map(
-                ComputedStyle::flex_wrap,
-            ),
+            computed.map(ComputedStyle::flex_wrap,),
             Some(FlexWrap::WrapReverse)
         );
 
@@ -4064,8 +3608,7 @@ mod tests {
     }
 
     #[test]
-    fn flex_flow_single_component_resets_other_axis(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn flex_flow_single_component_resets_other_axis() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -4080,39 +3623,27 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
         let computed = styles.get(element);
 
         assert_eq!(
-            computed.map(
-                ComputedStyle::flex_direction,
-            ),
+            computed.map(ComputedStyle::flex_direction,),
             Some(FlexDirection::RowReverse)
         );
 
         assert_eq!(
-            computed.map(
-                ComputedStyle::flex_wrap,
-            ),
+            computed.map(ComputedStyle::flex_wrap,),
             Some(FlexWrap::NoWrap)
         );
 
         Ok(())
     }
 
-
-
     #[test]
-    fn margin_auto_is_preserved_as_semantic_state(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn margin_auto_is_preserved_as_semantic_state() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
 
@@ -4124,12 +3655,7 @@ mod tests {
 
         let element = document.append_child(
             root,
-            NodeKind::Element(
-                ElementData::with_attributes(
-                    "div",
-                    attributes,
-                ),
-            ),
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
         )?;
 
         let styles = compute_styles(&document);
@@ -4147,11 +3673,8 @@ mod tests {
         Ok(())
     }
 
-
-
     #[test]
-    fn object_sizing_properties_are_computed(
-    ) -> Result<(), phantom_dom::DomError> {
+    fn object_sizing_properties_are_computed() -> Result<(), phantom_dom::DomError> {
         let mut document = Document::new();
         let root = document.root();
         let mut attributes = BTreeMap::new();
@@ -4174,5 +3697,4 @@ mod tests {
         );
         Ok(())
     }
-
 }

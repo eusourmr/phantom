@@ -10,13 +10,9 @@
 
 #![forbid(unsafe_code)]
 
-use phantom_css::{
-    FontFamily, FontStyle, FontWeight, ObjectFit, ObjectPosition, Rgba, StyleMap,
-};
+use phantom_css::{FontFamily, FontStyle, FontWeight, ObjectFit, ObjectPosition, Rgba, StyleMap};
 use phantom_image::ImageResourceId;
-use phantom_layout::{
-    LayoutBox, LayoutKind, LayoutSnapshot, Rect as LayoutRect,
-};
+use phantom_layout::{LayoutBox, LayoutKind, LayoutSnapshot, Rect as LayoutRect};
 use thiserror::Error;
 
 /// Renderer-neutral RGBA color.
@@ -31,12 +27,7 @@ pub struct PaintColor {
 impl PaintColor {
     /// Creates a renderer-neutral RGBA color.
     #[must_use]
-    pub const fn new(
-        red: u8,
-        green: u8,
-        blue: u8,
-        alpha: u8,
-    ) -> Self {
+    pub const fn new(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
         Self {
             red,
             green,
@@ -72,12 +63,7 @@ impl PaintColor {
 
 impl From<Rgba> for PaintColor {
     fn from(color: Rgba) -> Self {
-        Self::new(
-            color.red(),
-            color.green(),
-            color.blue(),
-            color.alpha(),
-        )
+        Self::new(color.red(), color.green(), color.blue(), color.alpha())
     }
 }
 
@@ -93,12 +79,7 @@ pub struct PaintRect {
 impl PaintRect {
     /// Creates a paint rectangle in logical pixels.
     #[must_use]
-    pub const fn new(
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) -> Self {
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
             y,
@@ -134,12 +115,7 @@ impl PaintRect {
 
 impl From<LayoutRect> for PaintRect {
     fn from(rect: LayoutRect) -> Self {
-        Self::new(
-            rect.x(),
-            rect.y(),
-            rect.width(),
-            rect.height(),
-        )
+        Self::new(rect.x(), rect.y(), rect.width(), rect.height())
     }
 }
 
@@ -335,10 +311,7 @@ impl PaintList {
 
     /// Returns text addressed by one compact range.
     #[must_use]
-    pub fn text(
-        &self,
-        range: PaintTextRange,
-    ) -> Option<&str> {
+    pub fn text(&self, range: PaintTextRange) -> Option<&str> {
         let start = usize::try_from(range.start).ok()?;
         let len = usize::try_from(range.len).ok()?;
         let end = start.checked_add(len)?;
@@ -392,52 +365,21 @@ pub fn build_paint_list(
             LayoutKind::Root | LayoutKind::Line => {}
 
             LayoutKind::Block | LayoutKind::Flex => {
-                push_background(
-                    &mut paint,
-                    layout_box,
-                    styles,
-                );
+                push_background(&mut paint, layout_box, styles);
 
-                push_border(
-                    &mut paint,
-                    layout_box,
-                    styles,
-                );
+                push_border(&mut paint, layout_box, styles);
             }
 
-            LayoutKind::Image {
-                resource,
-                ..
-            } => {
-                push_background(
-                    &mut paint,
-                    layout_box,
-                    styles,
-                );
+            LayoutKind::Image { resource, .. } => {
+                push_background(&mut paint, layout_box, styles);
 
-                push_border(
-                    &mut paint,
-                    layout_box,
-                    styles,
-                );
+                push_border(&mut paint, layout_box, styles);
 
-                push_image(
-                    &mut paint,
-                    layout,
-                    layout_box,
-                    styles,
-                    resource,
-                )?;
+                push_image(&mut paint, layout, layout_box, styles, resource)?;
             }
 
             LayoutKind::Text { underline, .. } => {
-                push_text(
-                    &mut paint,
-                    layout,
-                    layout_box,
-                    styles,
-                    underline,
-                )?;
+                push_text(&mut paint, layout, layout_box, styles, underline)?;
             }
         }
     }
@@ -445,20 +387,12 @@ pub fn build_paint_list(
     Ok(paint)
 }
 
-fn push_background(
-    paint: &mut PaintList,
-    layout_box: &LayoutBox,
-    styles: &StyleMap,
-) {
-    let Some(style) =
-        styles.get(layout_box.source_node())
-    else {
+fn push_background(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap) {
+    let Some(style) = styles.get(layout_box.source_node()) else {
         return;
     };
 
-    let Some(background) =
-        style.background_color()
-    else {
+    let Some(background) = style.background_color() else {
         return;
     };
 
@@ -468,28 +402,18 @@ fn push_background(
 
     let rect = layout_box.rect();
 
-    if rect.width() <= 0.0
-        || rect.height() <= 0.0
-    {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
 
-    paint.commands.push(
-        PaintCommand::FillRect {
-            rect: rect.into(),
-            color: background.into(),
-        },
-    );
+    paint.commands.push(PaintCommand::FillRect {
+        rect: rect.into(),
+        color: background.into(),
+    });
 }
 
-fn push_border(
-    paint: &mut PaintList,
-    layout_box: &LayoutBox,
-    styles: &StyleMap,
-) {
-    let Some(style) =
-        styles.get(layout_box.source_node())
-    else {
+fn push_border(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap) {
+    let Some(style) = styles.get(layout_box.source_node()) else {
         return;
     };
 
@@ -507,76 +431,45 @@ fn push_border(
     let color = style.border_color().into();
 
     if border.top() > 0.0 {
-        paint.commands.push(
-            PaintCommand::FillRect {
-                rect: PaintRect::new(
-                    rect.x(),
-                    rect.y(),
-                    rect.width(),
-                    border.top(),
-                ),
-                color,
-            },
-        );
+        paint.commands.push(PaintCommand::FillRect {
+            rect: PaintRect::new(rect.x(), rect.y(), rect.width(), border.top()),
+            color,
+        });
     }
 
-    let vertical_start =
-        rect.y() + border.top();
+    let vertical_start = rect.y() + border.top();
 
-    let vertical_height =
-        (rect.height()
-            - border.top()
-            - border.bottom())
-            .max(0.0);
+    let vertical_height = (rect.height() - border.top() - border.bottom()).max(0.0);
 
-    if border.left() > 0.0
-        && vertical_height > 0.0
-    {
-        paint.commands.push(
-            PaintCommand::FillRect {
-                rect: PaintRect::new(
-                    rect.x(),
-                    vertical_start,
-                    border.left(),
-                    vertical_height,
-                ),
-                color,
-            },
-        );
+    if border.left() > 0.0 && vertical_height > 0.0 {
+        paint.commands.push(PaintCommand::FillRect {
+            rect: PaintRect::new(rect.x(), vertical_start, border.left(), vertical_height),
+            color,
+        });
     }
 
-    if border.right() > 0.0
-        && vertical_height > 0.0
-    {
-        paint.commands.push(
-            PaintCommand::FillRect {
-                rect: PaintRect::new(
-                    rect.x()
-                        + rect.width()
-                        - border.right(),
-                    vertical_start,
-                    border.right(),
-                    vertical_height,
-                ),
-                color,
-            },
-        );
+    if border.right() > 0.0 && vertical_height > 0.0 {
+        paint.commands.push(PaintCommand::FillRect {
+            rect: PaintRect::new(
+                rect.x() + rect.width() - border.right(),
+                vertical_start,
+                border.right(),
+                vertical_height,
+            ),
+            color,
+        });
     }
 
     if border.bottom() > 0.0 {
-        paint.commands.push(
-            PaintCommand::FillRect {
-                rect: PaintRect::new(
-                    rect.x(),
-                    rect.y()
-                        + rect.height()
-                        - border.bottom(),
-                    rect.width(),
-                    border.bottom(),
-                ),
-                color,
-            },
-        );
+        paint.commands.push(PaintCommand::FillRect {
+            rect: PaintRect::new(
+                rect.x(),
+                rect.y() + rect.height() - border.bottom(),
+                rect.width(),
+                border.bottom(),
+            ),
+            color,
+        });
     }
 }
 
@@ -591,89 +484,43 @@ fn push_image(
     let border = layout_box.border();
     let padding = layout_box.padding();
 
-    let x =
-        rect.x()
-            + border.left()
-            + padding.left();
+    let x = rect.x() + border.left() + padding.left();
 
-    let y =
-        rect.y()
-            + border.top()
-            + padding.top();
+    let y = rect.y() + border.top() + padding.top();
 
     let width =
-        (rect.width()
-            - border.left()
-            - border.right()
-            - padding.left()
-            - padding.right())
-            .max(0.0);
+        (rect.width() - border.left() - border.right() - padding.left() - padding.right()).max(0.0);
 
     let height =
-        (rect.height()
-            - border.top()
-            - border.bottom()
-            - padding.top()
-            - padding.bottom())
+        (rect.height() - border.top() - border.bottom() - padding.top() - padding.bottom())
             .max(0.0);
 
-    let alt =
-        if let Some(alt) =
-            layout.image_alt_for(
-                layout_box,
-            )
-            && !alt.is_empty()
-        {
-            let start =
-                u32::try_from(
-                    paint.text.len(),
-                )
-                .map_err(
-                    |_| {
-                        PaintError::TextCapacityExceeded
-                    },
-                )?;
+    let alt = if let Some(alt) = layout.image_alt_for(layout_box)
+        && !alt.is_empty()
+    {
+        let start =
+            u32::try_from(paint.text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
 
-            let len =
-                u32::try_from(
-                    alt.len(),
-                )
-                .map_err(
-                    |_| {
-                        PaintError::TextCapacityExceeded
-                    },
-                )?;
+        let len = u32::try_from(alt.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
 
-            paint.text.push_str(alt);
+        paint.text.push_str(alt);
 
-            Some(
-                PaintTextRange {
-                    start,
-                    len,
-                },
-            )
-        } else {
-            None
-        };
+        Some(PaintTextRange { start, len })
+    } else {
+        None
+    };
 
-    paint.commands.push(
-        PaintCommand::Image {
-            rect: PaintRect::new(
-                x,
-                y,
-                width,
-                height,
-            ),
-            resource,
-            alt,
-            fit: styles
-                .get(layout_box.source_node())
-                .map_or(ObjectFit::Fill, |style| style.object_fit()),
-            position: styles
-                .get(layout_box.source_node())
-                .map_or_else(ObjectPosition::default, |style| style.object_position()),
-        },
-    );
+    paint.commands.push(PaintCommand::Image {
+        rect: PaintRect::new(x, y, width, height),
+        resource,
+        alt,
+        fit: styles
+            .get(layout_box.source_node())
+            .map_or(ObjectFit::Fill, |style| style.object_fit()),
+        position: styles
+            .get(layout_box.source_node())
+            .map_or_else(ObjectPosition::default, |style| style.object_position()),
+    });
 
     Ok(())
 }
@@ -685,9 +532,7 @@ fn push_text(
     styles: &StyleMap,
     underline: bool,
 ) -> Result<(), PaintError> {
-    let Some(text) =
-        layout.text_for(layout_box)
-    else {
+    let Some(text) = layout.text_for(layout_box) else {
         return Ok(());
     };
 
@@ -695,15 +540,9 @@ fn push_text(
         return Ok(());
     }
 
-    let start = u32::try_from(paint.text.len())
-        .map_err(|_| {
-            PaintError::TextCapacityExceeded
-        })?;
+    let start = u32::try_from(paint.text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
 
-    let len = u32::try_from(text.len())
-        .map_err(|_| {
-            PaintError::TextCapacityExceeded
-        })?;
+    let len = u32::try_from(text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
 
     paint.text.push_str(text);
 
@@ -712,21 +551,16 @@ fn push_text(
         .cloned()
         .unwrap_or_default();
 
-    paint.commands.push(
-        PaintCommand::Text {
-            rect: layout_box.rect().into(),
-            text: PaintTextRange {
-                start,
-                len,
-            },
-            color: style.color().into(),
-            font_size: style.font_size(),
-            weight: style.font_weight().into(),
-            style: style.font_style().into(),
-            family: style.font_family().into(),
-            underline,
-        },
-    );
+    paint.commands.push(PaintCommand::Text {
+        rect: layout_box.rect().into(),
+        text: PaintTextRange { start, len },
+        color: style.color().into(),
+        font_size: style.font_size(),
+        weight: style.font_weight().into(),
+        style: style.font_style().into(),
+        family: style.font_family().into(),
+        underline,
+    });
 
     Ok(())
 }
@@ -735,21 +569,11 @@ fn push_text(
 mod tests {
     use phantom_css::Rgba;
 
-    use super::{
-        PaintColor, PaintList, PaintTextRange,
-    };
+    use super::{PaintColor, PaintList, PaintTextRange};
 
     #[test]
     fn converts_css_color_without_renderer_dependency() {
-        let color =
-            PaintColor::from(
-                Rgba::new(
-                    18,
-                    52,
-                    86,
-                    200,
-                ),
-            );
+        let color = PaintColor::from(Rgba::new(18, 52, 86, 200));
 
         assert_eq!(color.red(), 18);
         assert_eq!(color.green(), 52);
@@ -762,24 +586,15 @@ mod tests {
         let paint = PaintList::empty(800.0);
 
         assert!(paint.is_empty());
-        assert_eq!(
-            paint.viewport_width(),
-            800.0
-        );
+        assert_eq!(paint.viewport_width(), 800.0);
     }
 
     #[test]
     fn invalid_text_range_is_rejected() {
         let paint = PaintList::empty(800.0);
 
-        let range = PaintTextRange {
-            start: 1,
-            len: 4,
-        };
+        let range = PaintTextRange { start: 1, len: 4 };
 
-        assert_eq!(
-            paint.text(range),
-            None
-        );
+        assert_eq!(paint.text(range), None);
     }
 }

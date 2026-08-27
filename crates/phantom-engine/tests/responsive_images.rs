@@ -8,12 +8,13 @@ use phantom_engine::{Engine, EngineError};
 #[test]
 fn selects_density_candidate_for_device_pixel_ratio() -> Result<(), EngineError> {
     let mut engine = Engine::new();
-    engine.load_html(
-        r#"<img src="fallback.jpg" srcset="one.jpg 1x, two.jpg 2x" alt="hero">"#,
-    )?;
+    engine.load_html(r#"<img src="fallback.jpg" srcset="one.jpg 1x, two.jpg 2x" alt="hero">"#)?;
 
     let requests = engine.image_requests_for_device(2.0);
-    assert_eq!(requests.first().map(|request| request.source()), Some("two.jpg"));
+    assert_eq!(
+        requests.first().map(|request| request.source()),
+        Some("two.jpg")
+    );
     Ok(())
 }
 
@@ -26,7 +27,10 @@ fn selects_width_candidate_from_sizes_slot() -> Result<(), EngineError> {
     )?;
 
     let requests = engine.image_requests_for_device(2.0);
-    assert_eq!(requests.first().map(|request| request.source()), Some("large.jpg"));
+    assert_eq!(
+        requests.first().map(|request| request.source()),
+        Some("large.jpg")
+    );
     Ok(())
 }
 
@@ -43,7 +47,10 @@ fn picture_uses_first_matching_source_before_img() -> Result<(), EngineError> {
     )?;
 
     let requests = engine.image_requests_for_device(1.0);
-    assert_eq!(requests.first().map(|request| request.source()), Some("mobile.webp"));
+    assert_eq!(
+        requests.first().map(|request| request.source()),
+        Some("mobile.webp")
+    );
     Ok(())
 }
 
@@ -59,6 +66,9 @@ fn picture_falls_back_to_img_when_media_does_not_match() -> Result<(), EngineErr
     )?;
 
     let requests = engine.image_requests_for_device(1.0);
-    assert_eq!(requests.first().map(|request| request.source()), Some("fallback.jpg"));
+    assert_eq!(
+        requests.first().map(|request| request.source()),
+        Some("fallback.jpg")
+    );
     Ok(())
 }
