@@ -1,0 +1,12 @@
+2B-10 GENERATION VALIDATION
+
+Static checks performed before packaging:
+- balanced Rust (), [] and {} delimiters in changed source files;
+- no newly introduced function above the project's 7-argument Clippy limit;
+- no unsafe block introduced;
+- no quality gate disabled;
+- no DOM dependency added to phantom-paint;
+- WPT slice is isolated as an integration test.
+
+The authoritative validation remains the user's Rust 1.95 workspace:
+cargo fmt / clippy / test / release build.

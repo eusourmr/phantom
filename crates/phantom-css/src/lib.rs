@@ -4,6 +4,10 @@
 //! deliberately bounded CSS subset, resolves selectors and cascade priority,
 //! computes inherited values, and emits a compact immutable style snapshot.
 //!
+//! The current milestone consolidates Phantom Flexbox across both axes:
+//! direction, wrapping including `wrap-reverse`, main/cross-axis alignment,
+//! gap, grow, shrink, basis, `flex`, and `flex-flow` shorthand.
+//!
 //! Layout never parses CSS, and paint never reads CSS or the DOM directly.
 
 #![forbid(unsafe_code)]
@@ -141,6 +145,105 @@ pub enum BorderStyle {
     Solid,
 }
 
+/// Main-axis direction used by the first Phantom Flexbox core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FlexDirection {
+    /// Main axis runs horizontally from left to right.
+    Row,
+
+    /// Main axis runs horizontally from right to left.
+    RowReverse,
+
+    /// Main axis runs vertically from top to bottom.
+    Column,
+
+    /// Main axis runs vertically from bottom to top.
+    ColumnReverse,
+}
+
+/// Whether flex items stay on one line or may wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FlexWrap {
+    /// All flex items remain on one flex line.
+    NoWrap,
+
+    /// Flex items may create additional flex lines from cross-start.
+    Wrap,
+
+    /// Flex items wrap while reversing the cross-start/cross-end direction.
+    WrapReverse,
+}
+
+/// Distribution of flex items along the main axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JustifyContent {
+    /// Items begin at the main-start edge.
+    FlexStart,
+
+    /// Items are centered on the main axis.
+    Center,
+
+    /// Items end at the main-end edge.
+    FlexEnd,
+
+    /// Remaining space is distributed between adjacent items.
+    SpaceBetween,
+}
+
+/// Cross-axis alignment used by a flex container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlignItems {
+    /// Auto-sized flex items stretch across the cross axis.
+    Stretch,
+
+    /// Items align to the cross-start edge.
+    FlexStart,
+
+    /// Items are centered on the cross axis.
+    Center,
+
+    /// Items align to the cross-end edge.
+    FlexEnd,
+}
+
+/// Cross-axis distribution of multiple flex lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlignContent {
+    /// Extra cross-axis space is distributed into line cross sizes.
+    Stretch,
+
+    /// Flex lines begin at the cross-start edge.
+    FlexStart,
+
+    /// Flex lines are centered on the cross axis.
+    Center,
+
+    /// Flex lines end at the cross-end edge.
+    FlexEnd,
+
+    /// Extra space is distributed between flex lines.
+    SpaceBetween,
+}
+
+/// Per-item override of a flex container's `align-items`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlignSelf {
+    /// Use the parent flex container's `align-items` value.
+    Auto,
+
+    /// Auto-sized item stretches across its flex line.
+    Stretch,
+
+    /// Item aligns to the cross-start edge.
+    FlexStart,
+
+    /// Item is centered on the cross axis.
+    Center,
+
+    /// Item aligns to the cross-end edge.
+    FlexEnd,
+}
+
 /// Four physical edge values in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdgeSizes {
@@ -193,6 +296,67 @@ impl EdgeSizes {
     }
 }
 
+/// Semantic `auto` state for physical margin edges.
+///
+/// Numeric margin lengths remain in [`EdgeSizes`]. This companion value keeps
+/// `auto` explicit until the formatting context that owns its resolution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AutoEdges {
+    top: bool,
+    right: bool,
+    bottom: bool,
+    left: bool,
+}
+
+impl AutoEdges {
+    /// Returns edges with no automatic margins.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            top: false,
+            right: false,
+            bottom: false,
+            left: false,
+        }
+    }
+
+    /// Returns whether the top margin is automatic.
+    #[must_use]
+    pub const fn top(self) -> bool {
+        self.top
+    }
+
+    /// Returns whether the right margin is automatic.
+    #[must_use]
+    pub const fn right(self) -> bool {
+        self.right
+    }
+
+    /// Returns whether the bottom margin is automatic.
+    #[must_use]
+    pub const fn bottom(self) -> bool {
+        self.bottom
+    }
+
+    /// Returns whether the left margin is automatic.
+    #[must_use]
+    pub const fn left(self) -> bool {
+        self.left
+    }
+
+    /// Returns the number of automatic horizontal margins.
+    #[must_use]
+    pub const fn horizontal_count(self) -> u8 {
+        (self.left as u8) + (self.right as u8)
+    }
+
+    /// Returns the number of automatic vertical margins.
+    #[must_use]
+    pub const fn vertical_count(self) -> u8 {
+        (self.top as u8) + (self.bottom as u8)
+    }
+}
+
 /// Immutable values computed for one DOM node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
@@ -205,6 +369,7 @@ pub struct ComputedStyle {
     font_family: FontFamily,
     underline: bool,
     margin: EdgeSizes,
+    margin_auto: AutoEdges,
     padding: EdgeSizes,
     border_width: EdgeSizes,
     border_color: Option<Rgba>,
@@ -216,6 +381,16 @@ pub struct ComputedStyle {
     height: Length,
     min_height: Length,
     max_height: Length,
+    flex_direction: FlexDirection,
+    flex_wrap: FlexWrap,
+    justify_content: JustifyContent,
+    align_items: AlignItems,
+    align_content: AlignContent,
+    align_self: AlignSelf,
+    gap: Length,
+    flex_grow: f32,
+    flex_shrink: f32,
+    flex_basis: Length,
 }
 
 impl Default for ComputedStyle {
@@ -230,17 +405,28 @@ impl Default for ComputedStyle {
             font_family: FontFamily::SansSerif,
             underline: false,
             margin: EdgeSizes::zero(),
+            margin_auto: AutoEdges::none(),
             padding: EdgeSizes::zero(),
             border_width: EdgeSizes::new(3.0, 3.0, 3.0, 3.0),
             border_color: None,
             border_style: BorderStyle::None,
             box_sizing: BoxSizing::ContentBox,
             width: Length::Auto,
-            min_width: Length::Px(0.0),
+            min_width: Length::Auto,
             max_width: Length::Auto,
             height: Length::Auto,
-            min_height: Length::Px(0.0),
+            min_height: Length::Auto,
             max_height: Length::Auto,
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::NoWrap,
+            justify_content: JustifyContent::FlexStart,
+            align_items: AlignItems::Stretch,
+            align_content: AlignContent::Stretch,
+            align_self: AlignSelf::Auto,
+            gap: Length::Px(0.0),
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: Length::Auto,
         }
     }
 }
@@ -298,6 +484,12 @@ impl ComputedStyle {
     #[must_use]
     pub const fn margin(&self) -> EdgeSizes {
         self.margin
+    }
+
+    /// Returns semantic `auto` state for physical margin edges.
+    #[must_use]
+    pub const fn margin_auto(&self) -> AutoEdges {
+        self.margin_auto
     }
 
     /// Returns the computed padding.
@@ -380,6 +572,66 @@ impl ComputedStyle {
     #[must_use]
     pub const fn max_height(&self) -> Length {
         self.max_height
+    }
+
+    /// Returns the computed flex-direction.
+    #[must_use]
+    pub const fn flex_direction(&self) -> FlexDirection {
+        self.flex_direction
+    }
+
+    /// Returns whether flex items stay on one line or may wrap.
+    #[must_use]
+    pub const fn flex_wrap(&self) -> FlexWrap {
+        self.flex_wrap
+    }
+
+    /// Returns the computed main-axis distribution.
+    #[must_use]
+    pub const fn justify_content(&self) -> JustifyContent {
+        self.justify_content
+    }
+
+    /// Returns the computed cross-axis alignment.
+    #[must_use]
+    pub const fn align_items(&self) -> AlignItems {
+        self.align_items
+    }
+
+    /// Returns the computed distribution of multiple flex lines.
+    #[must_use]
+    pub const fn align_content(&self) -> AlignContent {
+        self.align_content
+    }
+
+    /// Returns this item's cross-axis alignment override.
+    #[must_use]
+    pub const fn align_self(&self) -> AlignSelf {
+        self.align_self
+    }
+
+    /// Returns the computed gap between direct flex items.
+    #[must_use]
+    pub const fn gap(&self) -> Length {
+        self.gap
+    }
+
+    /// Returns the computed flex-grow factor.
+    #[must_use]
+    pub const fn flex_grow(&self) -> f32 {
+        self.flex_grow
+    }
+
+    /// Returns the computed flex-shrink factor.
+    #[must_use]
+    pub const fn flex_shrink(&self) -> f32 {
+        self.flex_shrink
+    }
+
+    /// Returns the computed flex-basis value.
+    #[must_use]
+    pub const fn flex_basis(&self) -> Length {
+        self.flex_basis
     }
 }
 
@@ -658,10 +910,20 @@ enum Property {
     Height,
     MinHeight,
     MaxHeight,
+    FlexDirection,
+    FlexWrap,
+    JustifyContent,
+    AlignItems,
+    AlignContent,
+    AlignSelf,
+    Gap,
+    FlexGrow,
+    FlexShrink,
+    FlexBasis,
 }
 
 impl Property {
-    const COUNT: usize = 29;
+    const COUNT: usize = 39;
 
     const fn index(self) -> usize {
         match self {
@@ -694,6 +956,16 @@ impl Property {
             Self::Height => 26,
             Self::MinHeight => 27,
             Self::MaxHeight => 28,
+            Self::FlexDirection => 29,
+            Self::FlexWrap => 30,
+            Self::JustifyContent => 31,
+            Self::AlignItems => 32,
+            Self::AlignContent => 33,
+            Self::AlignSelf => 34,
+            Self::Gap => 35,
+            Self::FlexGrow => 36,
+            Self::FlexShrink => 37,
+            Self::FlexBasis => 38,
         }
     }
 }
@@ -708,11 +980,19 @@ enum SpecifiedValue {
     FontStyle(FontStyle),
     FontFamily(FontFamily),
     Underline(bool),
+    MarginLength(SpecifiedLength),
     EdgeLength(SpecifiedLength),
     BorderColor(Option<Rgba>),
     BorderStyle(BorderStyle),
     BoxSizing(BoxSizing),
     SizeLength(SpecifiedLength),
+    FlexDirection(FlexDirection),
+    FlexWrap(FlexWrap),
+    JustifyContent(JustifyContent),
+    AlignItems(AlignItems),
+    AlignContent(AlignContent),
+    AlignSelf(AlignSelf),
+    Number(f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1198,6 +1478,16 @@ fn apply_winners(
         Property::Height,
         Property::MinHeight,
         Property::MaxHeight,
+        Property::FlexDirection,
+        Property::FlexWrap,
+        Property::JustifyContent,
+        Property::AlignItems,
+        Property::AlignContent,
+        Property::AlignSelf,
+        Property::Gap,
+        Property::FlexGrow,
+        Property::FlexShrink,
+        Property::FlexBasis,
     ] {
         let Some(value) = winner_for(winners, property) else {
             continue;
@@ -1251,28 +1541,32 @@ fn apply_value(
             style.underline = *underline;
         }
 
-        (Property::MarginTop, SpecifiedValue::EdgeLength(length)) => {
-            if let Some(value) = resolve_edge_length(*length, style.font_size) {
-                style.margin.top = value;
-            }
+        (Property::MarginTop, SpecifiedValue::MarginLength(length)) => {
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
+
+            style.margin.top = value;
+            style.margin_auto.top = automatic;
         }
 
-        (Property::MarginRight, SpecifiedValue::EdgeLength(length)) => {
-            if let Some(value) = resolve_edge_length(*length, style.font_size) {
-                style.margin.right = value;
-            }
+        (Property::MarginRight, SpecifiedValue::MarginLength(length)) => {
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
+
+            style.margin.right = value;
+            style.margin_auto.right = automatic;
         }
 
-        (Property::MarginBottom, SpecifiedValue::EdgeLength(length)) => {
-            if let Some(value) = resolve_edge_length(*length, style.font_size) {
-                style.margin.bottom = value;
-            }
+        (Property::MarginBottom, SpecifiedValue::MarginLength(length)) => {
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
+
+            style.margin.bottom = value;
+            style.margin_auto.bottom = automatic;
         }
 
-        (Property::MarginLeft, SpecifiedValue::EdgeLength(length)) => {
-            if let Some(value) = resolve_edge_length(*length, style.font_size) {
-                style.margin.left = value;
-            }
+        (Property::MarginLeft, SpecifiedValue::MarginLength(length)) => {
+            let (value, automatic) = resolve_margin_length(*length, style.font_size);
+
+            style.margin.left = value;
+            style.margin_auto.left = automatic;
         }
 
         (Property::PaddingTop, SpecifiedValue::EdgeLength(length)) => {
@@ -1357,6 +1651,46 @@ fn apply_value(
 
         (Property::MaxHeight, SpecifiedValue::SizeLength(length)) => {
             style.max_height = resolve_size_length(*length, style.font_size);
+        }
+
+        (Property::FlexDirection, SpecifiedValue::FlexDirection(direction)) => {
+            style.flex_direction = *direction;
+        }
+
+        (Property::FlexWrap, SpecifiedValue::FlexWrap(flex_wrap)) => {
+            style.flex_wrap = *flex_wrap;
+        }
+
+        (Property::JustifyContent, SpecifiedValue::JustifyContent(justify)) => {
+            style.justify_content = *justify;
+        }
+
+        (Property::AlignItems, SpecifiedValue::AlignItems(align)) => {
+            style.align_items = *align;
+        }
+
+        (Property::AlignContent, SpecifiedValue::AlignContent(align)) => {
+            style.align_content = *align;
+        }
+
+        (Property::AlignSelf, SpecifiedValue::AlignSelf(align)) => {
+            style.align_self = *align;
+        }
+
+        (Property::Gap, SpecifiedValue::SizeLength(length)) => {
+            style.gap = resolve_size_length(*length, style.font_size);
+        }
+
+        (Property::FlexGrow, SpecifiedValue::Number(value)) => {
+            style.flex_grow = value.max(0.0);
+        }
+
+        (Property::FlexShrink, SpecifiedValue::Number(value)) => {
+            style.flex_shrink = value.max(0.0);
+        }
+
+        (Property::FlexBasis, SpecifiedValue::SizeLength(length)) => {
+            style.flex_basis = resolve_size_length(*length, style.font_size);
         }
 
         _ => {}
@@ -1759,7 +2093,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             )]
         }
 
-        "margin" => expand_edges(
+        "margin" => expand_margin_edges(
             value,
             [
                 Property::MarginTop,
@@ -1779,10 +2113,10 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             ],
         ),
 
-        "margin-top" => parse_edge_property(Property::MarginTop, value),
-        "margin-right" => parse_edge_property(Property::MarginRight, value),
-        "margin-bottom" => parse_edge_property(Property::MarginBottom, value),
-        "margin-left" => parse_edge_property(Property::MarginLeft, value),
+        "margin-top" => parse_margin_property(Property::MarginTop, value),
+        "margin-right" => parse_margin_property(Property::MarginRight, value),
+        "margin-bottom" => parse_margin_property(Property::MarginBottom, value),
+        "margin-left" => parse_margin_property(Property::MarginLeft, value),
 
         "padding-top" => parse_edge_property(Property::PaddingTop, value),
         "padding-right" => parse_edge_property(Property::PaddingRight, value),
@@ -1834,8 +2168,280 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
         "min-height" => parse_constraint_property(Property::MinHeight, value, false),
         "max-height" => parse_constraint_property(Property::MaxHeight, value, true),
 
+        "flex-direction" => parse_flex_direction(value)
+            .map(|direction| {
+                vec![(
+                    Property::FlexDirection,
+                    SpecifiedValue::FlexDirection(direction),
+                )]
+            })
+            .unwrap_or_default(),
+
+        "flex-wrap" => parse_flex_wrap(value)
+            .map(|flex_wrap| vec![(Property::FlexWrap, SpecifiedValue::FlexWrap(flex_wrap))])
+            .unwrap_or_default(),
+
+        "flex-flow" => parse_flex_flow_shorthand(value),
+
+        "justify-content" => parse_justify_content(value)
+            .map(|justify| {
+                vec![(
+                    Property::JustifyContent,
+                    SpecifiedValue::JustifyContent(justify),
+                )]
+            })
+            .unwrap_or_default(),
+
+        "align-items" => parse_align_items(value)
+            .map(|align| vec![(Property::AlignItems, SpecifiedValue::AlignItems(align))])
+            .unwrap_or_default(),
+
+        "align-content" => parse_align_content(value)
+            .map(|align| vec![(Property::AlignContent, SpecifiedValue::AlignContent(align))])
+            .unwrap_or_default(),
+
+        "align-self" => parse_align_self(value)
+            .map(|align| vec![(Property::AlignSelf, SpecifiedValue::AlignSelf(align))])
+            .unwrap_or_default(),
+
+        "gap" => parse_non_negative_size_property(Property::Gap, value),
+
+        "flex-grow" => parse_non_negative_number(Property::FlexGrow, value),
+
+        "flex-shrink" => parse_non_negative_number(Property::FlexShrink, value),
+
+        "flex-basis" => parse_size_property(Property::FlexBasis, value),
+
+        "flex" => parse_flex_shorthand(value),
+
         _ => Vec::new(),
     }
+}
+
+fn parse_flex_direction(value: &str) -> Option<FlexDirection> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "row" => Some(FlexDirection::Row),
+        "row-reverse" => Some(FlexDirection::RowReverse),
+        "column" => Some(FlexDirection::Column),
+        "column-reverse" => Some(FlexDirection::ColumnReverse),
+        _ => None,
+    }
+}
+
+fn parse_flex_wrap(value: &str) -> Option<FlexWrap> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nowrap" => Some(FlexWrap::NoWrap),
+        "wrap" => Some(FlexWrap::Wrap),
+        "wrap-reverse" => Some(FlexWrap::WrapReverse),
+        _ => None,
+    }
+}
+
+fn parse_flex_flow_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    let tokens: Vec<&str> = normalized.split_ascii_whitespace().collect();
+
+    if tokens.is_empty() || tokens.len() > 2 {
+        return Vec::new();
+    }
+
+    let mut direction = None;
+    let mut flex_wrap = None;
+
+    for token in tokens {
+        if let Some(parsed) = parse_flex_direction(token) {
+            if direction.is_some() {
+                return Vec::new();
+            }
+
+            direction = Some(parsed);
+            continue;
+        }
+
+        if let Some(parsed) = parse_flex_wrap(token) {
+            if flex_wrap.is_some() {
+                return Vec::new();
+            }
+
+            flex_wrap = Some(parsed);
+            continue;
+        }
+
+        return Vec::new();
+    }
+
+    vec![
+        (
+            Property::FlexDirection,
+            SpecifiedValue::FlexDirection(direction.unwrap_or(FlexDirection::Row)),
+        ),
+        (
+            Property::FlexWrap,
+            SpecifiedValue::FlexWrap(flex_wrap.unwrap_or(FlexWrap::NoWrap)),
+        ),
+    ]
+}
+
+fn parse_justify_content(value: &str) -> Option<JustifyContent> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "flex-start" | "start" => Some(JustifyContent::FlexStart),
+        "center" => Some(JustifyContent::Center),
+        "flex-end" | "end" => Some(JustifyContent::FlexEnd),
+        "space-between" => Some(JustifyContent::SpaceBetween),
+        _ => None,
+    }
+}
+
+fn parse_align_items(value: &str) -> Option<AlignItems> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "stretch" => Some(AlignItems::Stretch),
+        "flex-start" | "start" => Some(AlignItems::FlexStart),
+        "center" => Some(AlignItems::Center),
+        "flex-end" | "end" => Some(AlignItems::FlexEnd),
+        _ => None,
+    }
+}
+
+fn parse_align_content(value: &str) -> Option<AlignContent> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "stretch" => Some(AlignContent::Stretch),
+        "flex-start" | "start" => Some(AlignContent::FlexStart),
+        "center" => Some(AlignContent::Center),
+        "flex-end" | "end" => Some(AlignContent::FlexEnd),
+        "space-between" => Some(AlignContent::SpaceBetween),
+        _ => None,
+    }
+}
+
+fn parse_align_self(value: &str) -> Option<AlignSelf> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(AlignSelf::Auto),
+        "stretch" => Some(AlignSelf::Stretch),
+        "flex-start" | "start" => Some(AlignSelf::FlexStart),
+        "center" => Some(AlignSelf::Center),
+        "flex-end" | "end" => Some(AlignSelf::FlexEnd),
+        _ => None,
+    }
+}
+
+fn parse_non_negative_size_property(
+    property: Property,
+    value: &str,
+) -> Vec<(Property, SpecifiedValue)> {
+    parse_specified_length(value, true)
+        .filter(|length| !matches!(length, SpecifiedLength::Auto))
+        .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
+        .unwrap_or_default()
+}
+
+fn parse_non_negative_number(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    parse_non_negative_float(value.trim())
+        .map(|number| vec![(property, SpecifiedValue::Number(number))])
+        .unwrap_or_default()
+}
+
+fn parse_flex_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "none" => {
+            return vec![
+                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(0.0)),
+                (
+                    Property::FlexBasis,
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
+                ),
+            ];
+        }
+
+        "auto" => {
+            return vec![
+                (Property::FlexGrow, SpecifiedValue::Number(1.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
+                (
+                    Property::FlexBasis,
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
+                ),
+            ];
+        }
+
+        "initial" => {
+            return vec![
+                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
+                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
+                (
+                    Property::FlexBasis,
+                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
+                ),
+            ];
+        }
+
+        _ => {}
+    }
+
+    let tokens: Vec<&str> = normalized.split_ascii_whitespace().collect();
+
+    if tokens.is_empty() || tokens.len() > 3 {
+        return Vec::new();
+    }
+
+    let Some(grow) = parse_non_negative_float(tokens[0]) else {
+        return Vec::new();
+    };
+
+    let mut shrink = 1.0;
+    let mut basis = SpecifiedLength::Px(0.0);
+
+    match tokens.as_slice() {
+        [_] => {}
+
+        [_, second] => {
+            if let Some(number) = parse_non_negative_float(second) {
+                shrink = number;
+            } else if let Some(length) = parse_specified_length(second, true) {
+                basis = length;
+            } else {
+                return Vec::new();
+            }
+        }
+
+        [_, second, third] => {
+            let Some(number) = parse_non_negative_float(second) else {
+                return Vec::new();
+            };
+
+            let Some(length) = parse_specified_length(third, true) else {
+                return Vec::new();
+            };
+
+            shrink = number;
+            basis = length;
+        }
+
+        _ => {}
+    }
+
+    vec![
+        (Property::FlexGrow, SpecifiedValue::Number(grow)),
+        (Property::FlexShrink, SpecifiedValue::Number(shrink)),
+        (Property::FlexBasis, SpecifiedValue::SizeLength(basis)),
+    ]
+}
+
+fn parse_non_negative_float(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|number| number.is_finite() && *number >= 0.0)
+}
+
+fn parse_margin_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    parse_specified_length(value, true)
+        .filter(|length| !matches!(length, SpecifiedLength::Percent(_)))
+        .map(|length| vec![(property, SpecifiedValue::MarginLength(length))])
+        .unwrap_or_default()
 }
 
 fn parse_edge_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
@@ -1961,6 +2567,42 @@ fn parse_border_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
     declarations
 }
 
+fn expand_margin_edges(value: &str, properties: [Property; 4]) -> Vec<(Property, SpecifiedValue)> {
+    let parsed = value
+        .split_ascii_whitespace()
+        .map(|part| parse_specified_length(part, true))
+        .collect::<Option<Vec<_>>>();
+
+    let Some(values) = parsed else {
+        return Vec::new();
+    };
+
+    if values
+        .iter()
+        .any(|value| matches!(value, SpecifiedLength::Percent(_)))
+    {
+        return Vec::new();
+    }
+
+    let edges = match values.as_slice() {
+        [all] => [*all, *all, *all, *all],
+
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
+
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
+
+        [top, right, bottom, left] => [*top, *right, *bottom, *left],
+
+        _ => return Vec::new(),
+    };
+
+    properties
+        .into_iter()
+        .zip(edges)
+        .map(|(property, length)| (property, SpecifiedValue::MarginLength(length)))
+        .collect()
+}
+
 fn expand_edges(value: &str, properties: [Property; 4]) -> Vec<(Property, SpecifiedValue)> {
     let parsed = value
         .split_ascii_whitespace()
@@ -2060,6 +2702,17 @@ fn resolve_font_size(length: SpecifiedLength, inherited_size: f32) -> Option<f32
         SpecifiedLength::Rem(value) => Some(value * ROOT_FONT_SIZE_PX),
         SpecifiedLength::Percent(value) => Some(inherited_size * value / 100.0),
         SpecifiedLength::Auto => None,
+    }
+}
+
+fn resolve_margin_length(length: SpecifiedLength, font_size: f32) -> (f32, bool) {
+    match length {
+        SpecifiedLength::Auto => (0.0, true),
+
+        _ => (
+            resolve_edge_length(length, font_size).unwrap_or_default(),
+            false,
+        ),
     }
 }
 
@@ -2264,6 +2917,7 @@ struct StyleKey {
     font_family: FontFamily,
     underline: bool,
     margin: EdgeKey,
+    margin_auto: AutoEdges,
     padding: EdgeKey,
     border_width: EdgeKey,
     border_color: Option<Rgba>,
@@ -2275,6 +2929,16 @@ struct StyleKey {
     height: LengthKey,
     min_height: LengthKey,
     max_height: LengthKey,
+    flex_direction: FlexDirection,
+    flex_wrap: FlexWrap,
+    justify_content: JustifyContent,
+    align_items: AlignItems,
+    align_content: AlignContent,
+    align_self: AlignSelf,
+    gap: LengthKey,
+    flex_grow: u32,
+    flex_shrink: u32,
+    flex_basis: LengthKey,
 }
 
 impl From<&ComputedStyle> for StyleKey {
@@ -2289,6 +2953,7 @@ impl From<&ComputedStyle> for StyleKey {
             font_family: style.font_family,
             underline: style.underline,
             margin: EdgeKey::from(style.margin),
+            margin_auto: style.margin_auto,
             padding: EdgeKey::from(style.padding),
             border_width: EdgeKey::from(style.border_width),
             border_color: style.border_color,
@@ -2300,6 +2965,16 @@ impl From<&ComputedStyle> for StyleKey {
             height: LengthKey::from(style.height),
             min_height: LengthKey::from(style.min_height),
             max_height: LengthKey::from(style.max_height),
+            flex_direction: style.flex_direction,
+            flex_wrap: style.flex_wrap,
+            justify_content: style.justify_content,
+            align_items: style.align_items,
+            align_content: style.align_content,
+            align_self: style.align_self,
+            gap: LengthKey::from(style.gap),
+            flex_grow: style.flex_grow.to_bits(),
+            flex_shrink: style.flex_shrink.to_bits(),
+            flex_basis: LengthKey::from(style.flex_basis),
         }
     }
 }
@@ -2346,7 +3021,10 @@ mod tests {
 
     use phantom_dom::{Document, ElementData, NodeKind};
 
-    use super::{Display, Rgba, Stylesheet, compute_styles};
+    use super::{
+        AlignContent, AlignSelf, ComputedStyle, Display, FlexDirection, FlexWrap, Rgba, Stylesheet,
+        compute_styles,
+    };
 
     #[test]
     fn parses_compound_descendant_and_child_selectors() {
@@ -2602,6 +3280,239 @@ mod tests {
             styles.get(element).map(|style| style.border_width().left()),
             Some(0.0)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn flex_core_properties_are_computed() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "display: flex; \
+             flex-direction: column; \
+             justify-content: space-between; \
+             align-items: center; \
+             gap: 12px; \
+             flex-grow: 2; \
+             flex-shrink: 0.5; \
+             flex-basis: 80px"
+                .to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(computed.map(|style| style.display()), Some(Display::Flex));
+
+        assert_eq!(
+            computed.map(|style| style.flex_direction()),
+            Some(super::FlexDirection::Column)
+        );
+
+        assert_eq!(
+            computed.map(|style| style.justify_content()),
+            Some(super::JustifyContent::SpaceBetween)
+        );
+
+        assert_eq!(
+            computed.map(|style| style.align_items()),
+            Some(super::AlignItems::Center)
+        );
+
+        assert_eq!(
+            computed.map(|style| style.gap()),
+            Some(super::Length::Px(12.0))
+        );
+
+        assert_eq!(computed.map(|style| style.flex_grow()), Some(2.0));
+
+        assert_eq!(computed.map(|style| style.flex_shrink()), Some(0.5));
+
+        assert_eq!(
+            computed.map(|style| style.flex_basis()),
+            Some(super::Length::Px(80.0))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn flex_shorthand_expands_to_longhands() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert("style".to_owned(), "flex: 2 0.5 25%".to_owned());
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(computed.map(|style| style.flex_grow()), Some(2.0));
+
+        assert_eq!(computed.map(|style| style.flex_shrink()), Some(0.5));
+
+        assert_eq!(
+            computed.map(|style| style.flex_basis()),
+            Some(super::Length::Percent(25.0))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn flex_wrapping_and_alignment_properties_are_computed() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "display:flex;\
+             flex-direction:row-reverse;\
+             flex-wrap:wrap;\
+             align-content:space-between;\
+             align-self:center"
+                .to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(
+            computed.map(ComputedStyle::flex_direction),
+            Some(FlexDirection::RowReverse)
+        );
+
+        assert_eq!(computed.map(ComputedStyle::flex_wrap), Some(FlexWrap::Wrap));
+
+        assert_eq!(
+            computed.map(ComputedStyle::align_content),
+            Some(AlignContent::SpaceBetween)
+        );
+
+        assert_eq!(
+            computed.map(ComputedStyle::align_self),
+            Some(AlignSelf::Center)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn flex_flow_sets_direction_and_wrap_reverse() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "display:flex;\
+             flex-flow:column-reverse wrap-reverse"
+                .to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(
+            computed.map(ComputedStyle::flex_direction,),
+            Some(FlexDirection::ColumnReverse)
+        );
+
+        assert_eq!(
+            computed.map(ComputedStyle::flex_wrap,),
+            Some(FlexWrap::WrapReverse)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn flex_flow_single_component_resets_other_axis() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "flex-direction:column;\
+             flex-wrap:wrap;\
+             flex-flow:row-reverse"
+                .to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(
+            computed.map(ComputedStyle::flex_direction,),
+            Some(FlexDirection::RowReverse)
+        );
+
+        assert_eq!(
+            computed.map(ComputedStyle::flex_wrap,),
+            Some(FlexWrap::NoWrap)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn margin_auto_is_preserved_as_semantic_state() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "margin: 4px auto 8px; display: block".to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let style = styles.get(element).cloned().unwrap_or_default();
+
+        assert_eq!(style.margin().top(), 4.0);
+        assert_eq!(style.margin().right(), 0.0);
+        assert_eq!(style.margin().bottom(), 8.0);
+        assert_eq!(style.margin().left(), 0.0);
+        assert!(!style.margin_auto().top());
+        assert!(style.margin_auto().right());
+        assert!(!style.margin_auto().bottom());
+        assert!(style.margin_auto().left());
 
         Ok(())
     }

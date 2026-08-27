@@ -2391,6 +2391,7 @@ version = "0.0.1"
 dependencies = [
  "phantom-css",
  "phantom-dom",
+ "phantom-html",
  "phantom-text",
  "thiserror 2.0.20",
 ]

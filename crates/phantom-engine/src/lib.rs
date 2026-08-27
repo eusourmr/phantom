@@ -10,8 +10,9 @@ use phantom_dom::Document;
 use phantom_html::HtmlError;
 
 pub use phantom_css::{
-    BorderStyle, BoxSizing, ComputedStyle, Display, EdgeSizes, FontFamily, FontStyle, FontWeight,
-    Length, Rgba, StyleMap,
+    AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing, ComputedStyle, Display,
+    EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, JustifyContent, Length,
+    Rgba, StyleMap,
 };
 pub use phantom_layout::{
     LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect, build_layout_snapshot,
