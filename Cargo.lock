@@ -1563,6 +1563,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2343,6 +2345,7 @@ dependencies = [
  "image",
  "lucide-icons",
  "phantom-engine",
+ "phantom-image",
  "phantom-net",
  "winresource",
 ]
@@ -2372,6 +2375,7 @@ dependencies = [
  "phantom-css",
  "phantom-dom",
  "phantom-html",
+ "phantom-image",
  "phantom-layout",
  "phantom-paint",
  "thiserror 2.0.20",
@@ -2386,12 +2390,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "phantom-image"
+version = "0.0.1"
+dependencies = [
+ "image",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "phantom-layout"
 version = "0.0.1"
 dependencies = [
  "phantom-css",
  "phantom-dom",
  "phantom-html",
+ "phantom-image",
  "phantom-text",
  "thiserror 2.0.20",
 ]
@@ -2410,6 +2423,7 @@ name = "phantom-paint"
 version = "0.0.1"
 dependencies = [
  "phantom-css",
+ "phantom-image",
  "phantom-layout",
  "thiserror 2.0.20",
 ]

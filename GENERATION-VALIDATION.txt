@@ -1,12 +1,28 @@
-2B-10 GENERATION VALIDATION
+PHANTOM — 2C-2 GENERATION VALIDATION
 
 Static checks performed before packaging:
-- balanced Rust (), [] and {} delimiters in changed source files;
-- no newly introduced function above the project's 7-argument Clippy limit;
-- no unsafe block introduced;
-- no quality gate disabled;
-- no DOM dependency added to phantom-paint;
-- WPT slice is isolated as an integration test.
+- Rust (), [] and {} delimiters balanced in every changed .rs file.
+- No todo!, unimplemented!, panic!, dbg!, .unwrap() or .expect() introduced.
+- No quality gate disabled.
+- Integration-test crate has //! documentation.
+- phantom-image owns the codec dependency; no image-crate type crosses into DOM/Layout/Paint.
+- phantom-net uses an explicit bounded binary response path.
+- browser resource coordinator no longer needs to inspect LayoutKind directly;
+  it consumes Engine::image_requests().
+- decoded pixels are temporary and are not stored in DOM or LayoutSnapshot.
+- per-image decode limits, per-tab raster budget and per-document image count are explicit.
 
-The authoritative validation remains the user's Rust 1.95 workspace:
-cargo fmt / clippy / test / release build.
+This environment does not contain the Rust toolchain, so authoritative validation
+remains the user's Rust 1.95 workspace:
+
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p phantom-image --test raster_decode
+
+Then:
+
+taskkill /F /IM phantom-browser.exe
+cargo build --release -p phantom-browser
+.\target\release\phantom-browser.exe

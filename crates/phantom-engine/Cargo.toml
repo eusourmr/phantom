@@ -15,6 +15,7 @@ workspace = true
 phantom-css = { path = "../phantom-css" }
 phantom-dom = { path = "../phantom-dom" }
 phantom-html = { path = "../phantom-html" }
+phantom-image = { path = "../phantom-image" }
 phantom-layout = { path = "../phantom-layout" }
 phantom-paint = { path = "../phantom-paint" }
 thiserror.workspace = true

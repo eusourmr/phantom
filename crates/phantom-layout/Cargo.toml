@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 phantom-css = { path = "../phantom-css" }
 phantom-dom = { path = "../phantom-dom" }
+phantom-image = { path = "../phantom-image" }
 phantom-text = { path = "../phantom-text" }
 thiserror.workspace = true
 

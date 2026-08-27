@@ -1,17 +1,16 @@
 [package]
-name = "phantom-net"
+name = "phantom-image"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Bounded HTTP and HTTPS transport boundary for Phantom."
+description = "Safe image metadata and raster decode boundary for the Phantom web engine."
 publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
+image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg"] }
 thiserror.workspace = true
-ureq.workspace = true
-url.workspace = true

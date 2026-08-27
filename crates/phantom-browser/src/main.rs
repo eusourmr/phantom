@@ -11,6 +11,7 @@
     windows_subsystem = "windows"
 )]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -20,13 +21,19 @@ use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
     Engine, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle, PaintFontWeight, PaintList,
-    PaintRect,
+    PaintRect, PaintTextRange,
 };
-use phantom_net::{NetworkClient, NetworkError, TextResponse};
+use phantom_image::{
+    DecodedImage, ImageDecodeLimits, ImageDecoder, ImageMetadata, ImageResourceId,
+    RasterImageDecoder,
+};
+use phantom_net::{HttpUrl, NetworkClient, NetworkError, TextResponse};
 
 const APP_NAME: &str = "Phantom";
 const APP_VERSION: &str = "0.0.1";
 const LUCIDE_FONT_NAME: &str = "phantom-lucide";
+const MAX_IMAGES_PER_DOCUMENT: usize = 64;
+const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 
 const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.png");
 
@@ -44,12 +51,38 @@ struct PendingNavigation {
     action: NavigationAction,
 }
 
+struct ImageLoadRequest {
+    resource: ImageResourceId,
+    url: HttpUrl,
+}
+
+struct LoadedImage {
+    metadata: ImageMetadata,
+    decoded: DecodedImage,
+}
+
+struct ImageLoadEvent {
+    resource: ImageResourceId,
+    result: Result<LoadedImage, String>,
+}
+
+struct PendingImageBatch {
+    receiver: Receiver<ImageLoadEvent>,
+    remaining: usize,
+    total: usize,
+}
+
 struct BrowserTab {
     engine: Engine,
     address: String,
     title: String,
     status: String,
     pending: Option<PendingNavigation>,
+    pending_images: Option<PendingImageBatch>,
+    image_textures: BTreeMap<ImageResourceId, egui::TextureHandle>,
+    loaded_images: usize,
+    failed_images: usize,
+    raster_bytes: u64,
     page_loaded: bool,
     history: Vec<String>,
     history_index: Option<usize>,
@@ -63,6 +96,11 @@ impl BrowserTab {
             title: "Nova aba".to_owned(),
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
             pending: None,
+            pending_images: None,
+            image_textures: BTreeMap::new(),
+            loaded_images: 0,
+            failed_images: 0,
+            raster_bytes: 0,
             page_loaded: false,
             history: Vec::new(),
             history_index: None,
@@ -80,6 +118,10 @@ impl BrowserTab {
 
     fn is_loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    fn is_loading_images(&self) -> bool {
+        self.pending_images.is_some()
     }
 }
 
@@ -171,9 +213,12 @@ impl PhantomApp {
         }
     }
 
-    fn poll_navigation(&mut self) {
+    fn poll_navigation(&mut self, context: &egui::Context) {
+        let network = self.network.clone();
+
         for tab in &mut self.tabs {
-            poll_tab_navigation(tab);
+            poll_tab_navigation(tab, &network);
+            poll_tab_images(tab, context);
         }
     }
 
@@ -434,7 +479,7 @@ impl PhantomApp {
 
                 let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
 
-                paint_page(ui, origin, paint);
+                paint_page(ui, origin, paint, &tab.image_textures);
             });
     }
 
@@ -588,10 +633,14 @@ impl PhantomApp {
 impl eframe::App for PhantomApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
-        self.poll_navigation();
+        self.poll_navigation(ui.ctx());
         self.update_window_title(ui.ctx());
 
-        if self.tabs.iter().any(BrowserTab::is_loading) {
+        if self
+            .tabs
+            .iter()
+            .any(|tab| tab.is_loading() || tab.is_loading_images())
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
 
@@ -622,6 +671,7 @@ fn start_navigation(
         return;
     }
 
+    tab.pending_images = None;
     tab.address = target.clone();
     tab.status = format!("Carregando {target} …");
 
@@ -646,7 +696,7 @@ fn start_navigation(
     }
 }
 
-fn poll_tab_navigation(tab: &mut BrowserTab) {
+fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient) {
     let receive_result = tab
         .pending
         .as_ref()
@@ -666,12 +716,19 @@ fn poll_tab_navigation(tab: &mut BrowserTab) {
                     tab.address = final_url.clone();
                     tab.title = title_from_url(&final_url);
                     tab.page_loaded = true;
+                    tab.image_textures.clear();
+                    tab.loaded_images = 0;
+                    tab.failed_images = 0;
+                    tab.raster_bytes = 0;
+
                     tab.status = format!(
                         "HTTP {status_code} · {body_bytes} bytes · {} nós · {} caixas · {} comandos",
                         tab.engine.document().len(),
                         tab.engine.layout().len(),
                         tab.engine.paint_list().len()
                     );
+
+                    start_image_loading(network, tab, &final_url);
                 }
 
                 Err(error) => {
@@ -691,6 +748,236 @@ fn poll_tab_navigation(tab: &mut BrowserTab) {
         }
 
         Some((_, Err(TryRecvError::Empty))) | None => {}
+    }
+}
+
+fn start_image_loading(network: &NetworkClient, tab: &mut BrowserTab, document_url: &str) {
+    tab.pending_images = None;
+
+    let Ok(base_url) = HttpUrl::parse(document_url) else {
+        return;
+    };
+
+    let requests = collect_image_requests(tab, &base_url);
+
+    if requests.is_empty() {
+        return;
+    }
+
+    let total = requests.len();
+    let client = network.clone();
+    let (sender, receiver) = mpsc::channel();
+
+    let thread_result = thread::Builder::new()
+        .name("phantom-images".to_owned())
+        .spawn(move || {
+            let decoder = RasterImageDecoder;
+            let limits = ImageDecodeLimits::new(8_192, 8_192, 16_777_216, 67_108_864);
+
+            for request in requests {
+                let result = fetch_and_decode_image(&client, &decoder, limits, &request.url);
+
+                if sender
+                    .send(ImageLoadEvent {
+                        resource: request.resource,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+    match thread_result {
+        Ok(_handle) => {
+            tab.pending_images = Some(PendingImageBatch {
+                receiver,
+                remaining: total,
+                total,
+            });
+
+            tab.status = format!("Página pronta · carregando {total} imagens…");
+        }
+
+        Err(error) => {
+            tab.failed_images = total;
+            tab.status = format!("Página pronta · worker de imagens indisponível: {error}");
+        }
+    }
+}
+
+fn collect_image_requests(tab: &BrowserTab, base_url: &HttpUrl) -> Vec<ImageLoadRequest> {
+    let mut requests = Vec::new();
+
+    for image_request in tab.engine.image_requests() {
+        let Ok(url) = base_url.resolve(image_request.source()) else {
+            continue;
+        };
+
+        requests.push(ImageLoadRequest {
+            resource: image_request.resource(),
+            url,
+        });
+
+        if requests.len() >= MAX_IMAGES_PER_DOCUMENT {
+            break;
+        }
+    }
+
+    requests
+}
+
+fn fetch_and_decode_image(
+    network: &NetworkClient,
+    decoder: &dyn ImageDecoder,
+    limits: ImageDecodeLimits,
+    url: &HttpUrl,
+) -> Result<LoadedImage, String> {
+    let response = network
+        .fetch_bytes(url)
+        .map_err(|error| error.to_string())?;
+
+    if !(200..=299).contains(&response.status()) {
+        return Err(format!("HTTP {} ao carregar imagem", response.status(),));
+    }
+
+    let metadata = decoder
+        .probe(response.body(), limits)
+        .map_err(|error| error.to_string())?;
+
+    let decoded = decoder
+        .decode(response.body(), limits)
+        .map_err(|error| error.to_string())?;
+
+    Ok(LoadedImage { metadata, decoded })
+}
+
+fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
+    const MAX_IMAGES_PER_FRAME: usize = 8;
+
+    for _ in 0..MAX_IMAGES_PER_FRAME {
+        let receive_result = tab
+            .pending_images
+            .as_ref()
+            .map(|pending| pending.receiver.try_recv());
+
+        match receive_result {
+            Some(Ok(event)) => {
+                if let Some(pending) = tab.pending_images.as_mut() {
+                    pending.remaining = pending.remaining.saturating_sub(1);
+                }
+
+                install_loaded_image(tab, context, event);
+            }
+
+            Some(Err(TryRecvError::Disconnected)) => {
+                let unresolved = tab
+                    .pending_images
+                    .as_ref()
+                    .map_or(0, |pending| pending.remaining);
+
+                tab.failed_images = tab.failed_images.saturating_add(unresolved);
+                tab.pending_images = None;
+                update_image_status(tab);
+                break;
+            }
+
+            Some(Err(TryRecvError::Empty)) | None => {
+                break;
+            }
+        }
+    }
+
+    let completed = tab
+        .pending_images
+        .as_ref()
+        .is_some_and(|pending| pending.remaining == 0);
+
+    if completed {
+        tab.pending_images = None;
+        update_image_status(tab);
+    }
+}
+
+fn install_loaded_image(tab: &mut BrowserTab, context: &egui::Context, event: ImageLoadEvent) {
+    let LoadedImage { metadata, decoded } = match event.result {
+        Ok(loaded) => loaded,
+        Err(_error) => {
+            tab.failed_images = tab.failed_images.saturating_add(1);
+            update_image_status(tab);
+            return;
+        }
+    };
+
+    let viewport_width = tab.engine.layout().viewport_width();
+
+    if tab
+        .engine
+        .install_image_metadata(event.resource, metadata, viewport_width)
+        .is_err()
+    {
+        tab.failed_images = tab.failed_images.saturating_add(1);
+        update_image_status(tab);
+        return;
+    }
+
+    let decoded_bytes = u64::try_from(decoded.rgba8().len()).unwrap_or(u64::MAX);
+
+    let Some(next_raster_bytes) = tab
+        .raster_bytes
+        .checked_add(decoded_bytes)
+        .filter(|bytes| *bytes <= MAX_TAB_RASTER_BYTES)
+    else {
+        tab.failed_images = tab.failed_images.saturating_add(1);
+        update_image_status(tab);
+        return;
+    };
+
+    let Some(texture) = decoded_image_texture(context, event.resource, &decoded) else {
+        tab.failed_images = tab.failed_images.saturating_add(1);
+        update_image_status(tab);
+        return;
+    };
+
+    tab.image_textures.insert(event.resource, texture);
+    tab.raster_bytes = next_raster_bytes;
+    tab.loaded_images = tab.loaded_images.saturating_add(1);
+
+    update_image_status(tab);
+}
+
+fn decoded_image_texture(
+    context: &egui::Context,
+    resource: ImageResourceId,
+    decoded: &DecodedImage,
+) -> Option<egui::TextureHandle> {
+    let width = usize::try_from(decoded.size().width()).ok()?;
+
+    let height = usize::try_from(decoded.size().height()).ok()?;
+
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([width, height], decoded.rgba8());
+
+    Some(context.load_texture(
+        format!("phantom-web-image-{}", resource.as_u64(),),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
+}
+
+fn update_image_status(tab: &mut BrowserTab) {
+    if let Some(pending) = tab.pending_images.as_ref() {
+        let completed = pending.total.saturating_sub(pending.remaining);
+
+        tab.status = format!(
+            "Página pronta · imagens {completed}/{} · {} exibidas · {} falhas",
+            pending.total, tab.loaded_images, tab.failed_images,
+        );
+    } else if tab.loaded_images > 0 || tab.failed_images > 0 {
+        tab.status = format!(
+            "Página pronta · {} imagens exibidas · {} falhas",
+            tab.loaded_images, tab.failed_images,
+        );
     }
 }
 
@@ -776,13 +1063,37 @@ fn truncate_text(text: &str, maximum_characters: usize) -> String {
     truncated
 }
 
-fn paint_page(ui: &mut egui::Ui, origin: egui::Pos2, paint: &PaintList) {
+fn paint_page(
+    ui: &mut egui::Ui,
+    origin: egui::Pos2,
+    paint: &PaintList,
+    image_textures: &BTreeMap<ImageResourceId, egui::TextureHandle>,
+) {
     for command in paint.commands() {
         match command {
             PaintCommand::FillRect { rect, color } => {
                 let target = egui_rect(origin, *rect);
 
                 ui.painter().rect_filled(target, 0.0, egui_color(*color));
+            }
+
+            PaintCommand::Image {
+                rect,
+                resource,
+                alt,
+            } => {
+                let target = egui_rect(origin, *rect);
+
+                if let Some(texture) = image_textures.get(resource) {
+                    ui.painter().image(
+                        texture.id(),
+                        target,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                } else {
+                    paint_image_placeholder(ui, target, paint, *alt);
+                }
             }
 
             PaintCommand::Text {
@@ -822,6 +1133,31 @@ fn paint_page(ui: &mut egui::Ui, origin: egui::Pos2, paint: &PaintList) {
                 ui.put(egui_rect(origin, *rect), egui::Label::new(rich_text).wrap());
             }
         }
+    }
+}
+
+fn paint_image_placeholder(
+    ui: &mut egui::Ui,
+    target: egui::Rect,
+    paint: &PaintList,
+    alt: Option<PaintTextRange>,
+) {
+    ui.painter()
+        .rect_filled(target, 0.0, egui::Color32::from_gray(36));
+
+    if let Some(alt_range) = alt
+        && let Some(content) = paint.text(alt_range)
+        && !content.is_empty()
+    {
+        ui.put(
+            target,
+            egui::Label::new(
+                egui::RichText::new(content)
+                    .size(13.0)
+                    .color(egui::Color32::from_gray(190)),
+            )
+            .wrap(),
+        );
     }
 }
 

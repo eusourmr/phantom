@@ -14,9 +14,14 @@ pub use phantom_css::{
     EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, JustifyContent, Length,
     Rgba, StyleMap,
 };
+pub use phantom_image::{
+    DecodedImage, ImageCatalog, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat,
+    ImageMetadata, ImageResourceId, IntrinsicSize, probe_image,
+};
 pub use phantom_layout::{
     LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect, build_layout_snapshot,
-    build_layout_snapshot_with_shaper,
+    build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
+    build_layout_snapshot_with_shaper_and_images,
 };
 pub use phantom_paint::{
     PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle, PaintFontWeight,
@@ -26,6 +31,31 @@ pub use phantom_paint::{
 use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
+
+/// One image subresource request discovered in the active document snapshot.
+///
+/// The request contains only the opaque engine resource identifier and the raw
+/// HTML source reference. URL resolution, fetching and decoding remain outside
+/// the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageRequest {
+    resource: ImageResourceId,
+    source: String,
+}
+
+impl ImageRequest {
+    /// Returns the opaque resource identifier used by layout and paint.
+    #[must_use]
+    pub const fn resource(&self) -> ImageResourceId {
+        self.resource
+    }
+
+    /// Returns the raw image source reference from the document.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
 
 /// High-level lifecycle state of a Phantom engine instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +91,7 @@ pub enum EngineError {
 pub struct Engine {
     document: Document,
     styles: StyleMap,
+    images: ImageCatalog,
     layout: LayoutSnapshot,
     paint: PaintList,
     state: EngineState,
@@ -79,6 +110,7 @@ impl Engine {
         Self {
             document: Document::new(),
             styles: StyleMap::default(),
+            images: ImageCatalog::default(),
             layout: LayoutSnapshot::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             paint: PaintList::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             state: EngineState::Idle,
@@ -103,6 +135,12 @@ impl Engine {
         &self.styles
     }
 
+    /// Returns image metadata registered for the active document generation.
+    #[must_use]
+    pub const fn images(&self) -> &ImageCatalog {
+        &self.images
+    }
+
     /// Returns the active cold layout snapshot.
     #[must_use]
     pub const fn layout(&self) -> &LayoutSnapshot {
@@ -113,6 +151,35 @@ impl Engine {
     #[must_use]
     pub const fn paint_list(&self) -> &PaintList {
         &self.paint
+    }
+
+    /// Returns image subresources discovered in the active layout snapshot.
+    ///
+    /// This is a narrow resource-discovery boundary. The browser shell does
+    /// not need to inspect layout box variants in order to coordinate network
+    /// fetching.
+    #[must_use]
+    pub fn image_requests(&self) -> Vec<ImageRequest> {
+        self.layout
+            .boxes()
+            .iter()
+            .filter_map(|layout_box| {
+                let LayoutKind::Image { resource, .. } = layout_box.kind() else {
+                    return None;
+                };
+
+                let source = self.layout.image_source_for(layout_box)?.trim();
+
+                if source.is_empty() {
+                    return None;
+                }
+
+                Some(ImageRequest {
+                    resource,
+                    source: source.to_owned(),
+                })
+            })
+            .collect()
     }
 
     /// Parses HTML and replaces all engine snapshots.
@@ -140,16 +207,40 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let document = phantom_html::parse(source)?;
         let styles = phantom_css::compute_styles(&document);
-        let layout = build_layout_snapshot(&document, &styles, viewport_width)?;
+        let images = ImageCatalog::default();
+        let layout =
+            build_layout_snapshot_with_images(&document, &styles, viewport_width, &images)?;
         let paint = build_paint_list(&layout, &styles)?;
 
         self.document = document;
         self.styles = styles;
+        self.images = images;
         self.layout = layout;
         self.paint = paint;
         self.state = EngineState::Ready;
 
         Ok(())
+    }
+
+    /// Registers intrinsic metadata for one image resource and recomputes
+    /// geometry/paint for the active document.
+    ///
+    /// Resource identifiers are intentionally opaque. The current engine
+    /// generation maps an image element's `NodeId::as_u64()` to
+    /// [`ImageResourceId`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if relayout or paint generation fails.
+    pub fn install_image_metadata(
+        &mut self,
+        resource: ImageResourceId,
+        metadata: ImageMetadata,
+        viewport_width: f32,
+    ) -> Result<(), EngineError> {
+        self.images.insert(resource, metadata);
+
+        self.relayout(viewport_width)
     }
 
     /// Recalculates geometry and paint commands for a changed viewport width.
@@ -160,7 +251,12 @@ impl Engine {
     ///
     /// Returns [`EngineError`] if layout or paint generation fails.
     pub fn relayout(&mut self, viewport_width: f32) -> Result<(), EngineError> {
-        let layout = build_layout_snapshot(&self.document, &self.styles, viewport_width)?;
+        let layout = build_layout_snapshot_with_images(
+            &self.document,
+            &self.styles,
+            viewport_width,
+            &self.images,
+        )?;
 
         let paint = build_paint_list(&layout, &self.styles)?;
 
@@ -289,6 +385,24 @@ mod tests {
         assert!((initial_width - 500.0).abs() < f32::EPSILON);
         assert!((relayout_width - 300.0).abs() < f32::EPSILON);
         assert!(!engine.paint_list().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn exposes_image_requests_without_browser_layout_inspection() -> Result<(), EngineError> {
+        let mut engine = Engine::new();
+
+        engine
+            .load_html("<img src=\"/media/hero.png\" width=\"40\" height=\"20\" alt=\"Hero\">")?;
+
+        let requests = engine.image_requests();
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests.first().map(|request| request.source()),
+            Some("/media/hero.png"),
+        );
 
         Ok(())
     }

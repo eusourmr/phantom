@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 use phantom_css::{FontFamily, FontStyle, FontWeight, Rgba, StyleMap};
+use phantom_image::ImageResourceId;
 use phantom_layout::{LayoutBox, LayoutKind, LayoutSnapshot, Rect as LayoutRect};
 use thiserror::Error;
 
@@ -214,6 +215,18 @@ pub enum PaintCommand {
         color: PaintColor,
     },
 
+    /// Paints one replaced image resource inside its content box.
+    Image {
+        /// Geometry of the image content box.
+        rect: PaintRect,
+
+        /// Opaque resource identifier resolved by the renderer/resource layer.
+        resource: ImageResourceId,
+
+        /// Optional alternative text stored in the shared paint text buffer.
+        alt: Option<PaintTextRange>,
+    },
+
     /// Paints one laid-out UTF-8 text fragment.
     Text {
         /// Geometry produced by inline layout.
@@ -351,6 +364,14 @@ pub fn build_paint_list(
                 push_border(&mut paint, layout_box, styles);
             }
 
+            LayoutKind::Image { resource, .. } => {
+                push_background(&mut paint, layout_box, styles);
+
+                push_border(&mut paint, layout_box, styles);
+
+                push_image(&mut paint, layout, layout_box, resource)?;
+            }
+
             LayoutKind::Text { underline, .. } => {
                 push_text(&mut paint, layout, layout_box, styles, underline)?;
             }
@@ -444,6 +465,51 @@ fn push_border(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap)
             color,
         });
     }
+}
+
+fn push_image(
+    paint: &mut PaintList,
+    layout: &LayoutSnapshot,
+    layout_box: &LayoutBox,
+    resource: ImageResourceId,
+) -> Result<(), PaintError> {
+    let rect = layout_box.rect();
+    let border = layout_box.border();
+    let padding = layout_box.padding();
+
+    let x = rect.x() + border.left() + padding.left();
+
+    let y = rect.y() + border.top() + padding.top();
+
+    let width =
+        (rect.width() - border.left() - border.right() - padding.left() - padding.right()).max(0.0);
+
+    let height =
+        (rect.height() - border.top() - border.bottom() - padding.top() - padding.bottom())
+            .max(0.0);
+
+    let alt = if let Some(alt) = layout.image_alt_for(layout_box)
+        && !alt.is_empty()
+    {
+        let start =
+            u32::try_from(paint.text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
+
+        let len = u32::try_from(alt.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
+
+        paint.text.push_str(alt);
+
+        Some(PaintTextRange { start, len })
+    } else {
+        None
+    };
+
+    paint.commands.push(PaintCommand::Image {
+        rect: PaintRect::new(x, y, width, height),
+        resource,
+        alt,
+    });
+
+    Ok(())
 }
 
 fn push_text(

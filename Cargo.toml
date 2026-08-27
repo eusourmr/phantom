@@ -8,6 +8,7 @@ members = [
     "crates/phantom-dom",
     "crates/phantom-engine",
     "crates/phantom-html",
+    "crates/phantom-image",
     "crates/phantom-layout",
     "crates/phantom-net",
     "crates/phantom-paint",
