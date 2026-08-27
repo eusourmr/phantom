@@ -1,28 +1,33 @@
-PHANTOM — 2C-2 GENERATION VALIDATION
+PHANTOM — 2C-3 GENERATION VALIDATION
 
-Static checks performed before packaging:
-- Rust (), [] and {} delimiters balanced in every changed .rs file.
-- No todo!, unimplemented!, panic!, dbg!, .unwrap() or .expect() introduced.
-- No quality gate disabled.
-- Integration-test crate has //! documentation.
-- phantom-image owns the codec dependency; no image-crate type crosses into DOM/Layout/Paint.
-- phantom-net uses an explicit bounded binary response path.
-- browser resource coordinator no longer needs to inspect LayoutKind directly;
-  it consumes Engine::image_requests().
-- decoded pixels are temporary and are not stored in DOM or LayoutSnapshot.
-- per-image decode limits, per-tab raster budget and per-document image count are explicit.
+BASE USED:
+- 2C-1 complete package + missing-docs fix
+- 2C-2 image fetch/decode/raster package
+- 2C-2 FIX 1 HttpUrl boundary
+- 2C-2 FIX 2 ImageRequest test
+- 2B-10 validated CSS baseline for the style file (2C-1/2C-2 did not replace CSS)
 
-This environment does not contain the Rust toolchain, so authoritative validation
-remains the user's Rust 1.95 workspace:
+STATIC CHECKS PERFORMED BEFORE PACKAGING:
+- changed Rust files have balanced (), [] and {} delimiters;
+- no todo!, unimplemented!, panic!, dbg!, .unwrap() or .expect() introduced;
+- no warning/clippy allow was added;
+- no unsafe code introduced;
+- Paint still has no DOM dependency;
+- responsive candidate selection is owned by Engine, not Browser/Paint;
+- WebP codec types remain hidden behind phantom-image;
+- decoded pixels are not stored in DOM or LayoutSnapshot;
+- resource cache is bounded and document-generation scoped;
+- <source> is already classified as a void element by the existing Phantom HTML parser baseline;
+- integration tests include crate-level //! documentation.
 
+LIMITATION:
+This execution environment does not contain cargo/rustc. The authoritative
+compile/lint/test validation is the user's Rust 1.95 workspace.
+
+REQUIRED GATES:
 cargo fmt --all
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p phantom-engine --test responsive_images
 cargo test -p phantom-image --test raster_decode
-
-Then:
-
-taskkill /F /IM phantom-browser.exe
-cargo build --release -p phantom-browser
-.\target\release\phantom-browser.exe

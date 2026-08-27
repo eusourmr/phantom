@@ -1,45 +1,48 @@
-PHANTOM — ETAPA 2C-2
-IMAGE FETCH + DECODE + RASTER PAINT
+PHANTOM — ETAPA 2C-3
+RESPONSIVE IMAGES + OBJECT SIZING + RESOURCE CACHE V1
 
-Aplicar sobre a 2C-1 + fix1 validados.
+BASE OBRIGATÓRIA:
+2C-2 homologada + FIX 1 + FIX 2.
 
-ARQUIVOS COMPLETOS:
-- crates/phantom-net/Cargo.toml
-- crates/phantom-net/src/lib.rs
+ARQUIVOS COMPLETOS MODIFICADOS:
+- crates/phantom-css/src/lib.rs
+- crates/phantom-engine/src/lib.rs
+- crates/phantom-engine/tests/responsive_images.rs
 - crates/phantom-image/Cargo.toml
 - crates/phantom-image/src/lib.rs
 - crates/phantom-image/tests/raster_decode.rs
-- crates/phantom-image/tests/fixtures/rgba-2x1.png
-- crates/phantom-image/tests/fixtures/rgb-2x1.jpg
-- crates/phantom-browser/Cargo.toml
+- crates/phantom-image/tests/fixtures/rgba-2x1.webp
+- crates/phantom-net/src/lib.rs
+- crates/phantom-paint/src/lib.rs
 - crates/phantom-browser/src/main.rs
-- docs/ENGINE-2C2-IMAGE-FETCH-DECODE-RASTER.md
-- docs/STANDARDS-MAP-IMAGE-LOADING.md
+- docs/ENGINE-2C3-RESPONSIVE-IMAGES-OBJECT-CACHE.md
+- docs/STANDARDS-MAP-RESPONSIVE-IMAGES.md
 
-NOVO:
-- fetch binário bounded no phantom-net
-- PNG raster decode real
-- JPEG raster decode real
-- ImageDecoder continua isolando codec
-- resolução de src relativo contra URL final do documento
-- worker de imagens fora da thread da UI
-- carregamento progressivo
-- metadata -> relayout sem reparse/re-cascade
-- RGBA8 -> textura egui
-- PaintCommand::Image revela raster real
-- placeholder continua para falha/formato ainda não suportado
-- limite de 64 imagens por documento nesta fase
-- limite aproximado de 256 MiB de raster/textura por tab
-- fixtures e integration tests de PNG/JPEG
+ENTRA NESTA VERSÃO:
+- srcset 1x/2x etc.
+- srcset 400w/800w etc.
+- sizes: px/vw + media simples min-width/max-width
+- picture/source
+- seleção por viewport e DPR
+- object-fit: fill/contain/cover/none/scale-down
+- object-position: keywords + porcentagens
+- WebP estático
+- deduplicação por URL no documento
+- cache de raster bounded por documento/tab
+- reaproveitamento de uma textura entre múltiplos ImageResourceId
+- testes executáveis de responsive images
+- fixture real WebP 2x1
 
-LIMITES EXPLÍCITOS:
-- GIF: probe sim, decode não
-- WebP/AVIF: ainda não
-- srcset/sizes/picture: ainda não
-- <base>: ainda não integrado ao resource resolver
-- CSS background-image: ainda não
-- object-fit/object-position: ainda não
-- cache compartilhado: ainda não
+NÃO É DECLARADO COMO COMPLETO:
+- algoritmo WHATWG integral de srcset/sizes
+- media queries complexas
+- sizes=auto completo
+- HTTP cache / Cache-Control / ETag / Vary
+- GIF animado
+- WebP animado
+- AVIF
+- data:/blob:
+- CSS background-image
 
 GATES:
 
@@ -47,20 +50,13 @@ cargo fmt --all
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p phantom-engine --test responsive_images
 cargo test -p phantom-image --test raster_decode
 
-Somente se TODOS passarem:
+SE TODOS PASSAREM:
 
 taskkill /F /IM phantom-browser.exe
 cargo build --release -p phantom-browser
 .\target\release\phantom-browser.exe
 
-TESTE VISUAL:
-1. abrir uma página com PNG/JPEG usando src normal;
-2. confirmar placeholder primeiro;
-3. confirmar substituição progressiva pela imagem real;
-4. testar página pública como globo.com;
-5. observar no status quantidade exibida/falhas.
-
-PRÓXIMO MARCO RECOMENDADO:
-2C-3 — Responsive Images + Object Sizing + Resource Cache v1.
+NÃO RELAXAR WARNINGS OU CLIPPY PARA FAZER O BUILD PASSAR.
