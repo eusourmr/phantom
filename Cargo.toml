@@ -1,20 +1,37 @@
 [workspace]
 resolver = "2"
+
 members = [
+    "crates/phantom-browser",
     "crates/phantom-core",
-    "crates/phantom-security",
+    "crates/phantom-css",
     "crates/phantom-dom",
     "crates/phantom-engine",
-    "crates/phantom-browser",
+    "crates/phantom-html",
+    "crates/phantom-layout",
+    "crates/phantom-net",
+    "crates/phantom-paint",
+    "crates/phantom-security",
+    "crates/phantom-text",
 ]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.85"
 license = "MPL-2.0"
-repository = "https://github.com/eusourmr/phantom-"
-authors = ["Phantom Contributors"]
+rust-version = "1.95"
+repository = "https://github.com/eusourmr/phantom"
+
+[workspace.dependencies]
+eframe = { version = "=0.36.1", default-features = true }
+thiserror = "=2.0.20"
+ureq = { version = "=3.4.0", features = [
+    "rustls-webpki-roots",
+    "gzip",
+    "brotli",
+    "charset",
+] }
+url = "=2.5.7"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

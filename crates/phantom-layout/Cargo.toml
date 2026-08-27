@@ -1,11 +1,11 @@
 [package]
-name = "phantom-engine"
+name = "phantom-layout"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "High-level orchestration layer for the Phantom web engine."
+description = "Cold block and inline layout snapshots for Phantom."
 publish = false
 
 [lints]
@@ -14,7 +14,5 @@ workspace = true
 [dependencies]
 phantom-css = { path = "../phantom-css" }
 phantom-dom = { path = "../phantom-dom" }
-phantom-html = { path = "../phantom-html" }
-phantom-layout = { path = "../phantom-layout" }
-phantom-paint = { path = "../phantom-paint" }
+phantom-text = { path = "../phantom-text" }
 thiserror.workspace = true

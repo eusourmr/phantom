@@ -1,0 +1,16 @@
+[package]
+name = "phantom-html"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Independent HTML tokenizer and tree builder for Phantom."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+phantom-dom = { path = "../phantom-dom" }
+thiserror.workspace = true

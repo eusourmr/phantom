@@ -1,15 +1,23 @@
 [package]
 name = "phantom-browser"
-description = "Native browser shell for Phantom"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
-
-[dependencies]
-phantom-core = { path = "../phantom-core" }
-phantom-engine = { path = "../phantom-engine" }
+description = "Native desktop shell for the Phantom independent web browser."
+publish = false
+build = "build.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+eframe.workspace = true
+image = { version = "=0.25.8", default-features = false, features = ["png"] }
+lucide-icons = "=1.34.0"
+phantom-engine = { path = "../phantom-engine" }
+phantom-net = { path = "../phantom-net" }
+
+[build-dependencies]
+winresource = "=0.1.31"

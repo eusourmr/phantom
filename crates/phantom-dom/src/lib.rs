@@ -1,36 +1,93 @@
-//! Minimal, invariant-preserving DOM foundations.
+//! Minimal document object model used by the Phantom rendering engine.
 //!
-//! This is intentionally not an HTML parser. It provides a safe tree model on
-//! which the future parser can build.
+//! The DOM owns its nodes, element attributes, and parent/child
+//! relationships. Nodes are referenced through stable identifiers rather
+//! than external pointers.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
-use std::error::Error;
-use std::fmt;
 
-/// Stable node identifier inside one document.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+use thiserror::Error;
+
+/// Stable identifier for a node stored inside a [`Document`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(u64);
 
 impl NodeId {
+    /// Returns the raw numeric identifier.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0
     }
 }
 
-/// Supported node categories in the foundation model.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Data associated with an HTML element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementData {
+    tag_name: String,
+    attributes: BTreeMap<String, String>,
+}
+
+impl ElementData {
+    /// Creates an element without attributes.
+    #[must_use]
+    pub fn new(tag_name: impl Into<String>) -> Self {
+        Self {
+            tag_name: tag_name.into(),
+            attributes: BTreeMap::new(),
+        }
+    }
+
+    /// Creates an element with an owned attribute map.
+    #[must_use]
+    pub fn with_attributes(
+        tag_name: impl Into<String>,
+        attributes: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            tag_name: tag_name.into(),
+            attributes,
+        }
+    }
+
+    /// Returns the element tag name.
+    #[must_use]
+    pub fn tag_name(&self) -> &str {
+        &self.tag_name
+    }
+
+    /// Returns all attributes attached to the element.
+    #[must_use]
+    pub const fn attributes(&self) -> &BTreeMap<String, String> {
+        &self.attributes
+    }
+
+    /// Returns one attribute value by its normalized name.
+    #[must_use]
+    pub fn attribute(&self, name: &str) -> Option<&str> {
+        self.attributes.get(name).map(String::as_str)
+    }
+}
+
+/// Data represented by a DOM node.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
+    /// Root document node.
     Document,
-    Element(String),
+
+    /// HTML element.
+    Element(ElementData),
+
+    /// Text content.
     Text(String),
+
+    /// HTML comment content.
     Comment(String),
 }
 
-/// Read-only DOM node.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One node stored inside a [`Document`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     id: NodeId,
     parent: Option<NodeId>,
@@ -39,39 +96,47 @@ pub struct Node {
 }
 
 impl Node {
+    /// Returns this node's stable identifier.
     #[must_use]
-    pub const fn id(&self) -> NodeId { self.id }
+    pub const fn id(&self) -> NodeId {
+        self.id
+    }
 
+    /// Returns the parent node identifier, if this node has a parent.
     #[must_use]
-    pub const fn parent(&self) -> Option<NodeId> { self.parent }
+    pub const fn parent(&self) -> Option<NodeId> {
+        self.parent
+    }
 
+    /// Returns the identifiers of this node's direct children.
     #[must_use]
-    pub fn children(&self) -> &[NodeId] { &self.children }
+    pub fn children(&self) -> &[NodeId] {
+        &self.children
+    }
 
+    /// Returns the semantic data represented by this node.
     #[must_use]
-    pub const fn kind(&self) -> &NodeKind { &self.kind }
-}
-
-/// Errors raised while preserving document invariants.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DomError {
-    ParentNotFound(NodeId),
-    NodeIdExhausted,
-}
-
-impl fmt::Display for DomError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ParentNotFound(id) => write!(formatter, "parent node {} was not found", id.0),
-            Self::NodeIdExhausted => formatter.write_str("DOM node identifier space exhausted"),
-        }
+    pub const fn kind(&self) -> &NodeKind {
+        &self.kind
     }
 }
 
-impl Error for DomError {}
+/// Errors raised while preserving DOM invariants.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum DomError {
+    /// The requested parent node does not exist in the document.
+    #[error("parent node {0:?} was not found")]
+    ParentNotFound(NodeId),
 
-/// One DOM document with a single immutable root identity.
-#[derive(Clone, Debug)]
+    /// The numeric node identifier space has been exhausted.
+    #[error("DOM node identifier space exhausted")]
+    NodeIdExhausted,
+}
+
+/// Owned DOM document.
+///
+/// Nodes are stored in an internal arena and are referenced using [`NodeId`].
+#[derive(Debug, Clone)]
 pub struct Document {
     root: NodeId,
     next_id: u64,
@@ -79,41 +144,77 @@ pub struct Document {
 }
 
 impl Default for Document {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Document {
+    /// Creates a new document containing only its root document node.
     #[must_use]
     pub fn new() -> Self {
         let root = NodeId(0);
+
         let root_node = Node {
             id: root,
             parent: None,
             children: Vec::new(),
             kind: NodeKind::Document,
         };
+
         let mut nodes = BTreeMap::new();
         nodes.insert(root, root_node);
 
-        Self { root, next_id: 1, nodes }
+        Self {
+            root,
+            next_id: 1,
+            nodes,
+        }
     }
 
+    /// Returns the root node identifier.
     #[must_use]
-    pub const fn root(&self) -> NodeId { self.root }
+    pub const fn root(&self) -> NodeId {
+        self.root
+    }
 
+    /// Returns a node by identifier.
     #[must_use]
-    pub fn node(&self, id: NodeId) -> Option<&Node> { self.nodes.get(&id) }
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(&id)
+    }
 
-    /// Appends a newly-created node below an existing parent while preserving
-    /// parent/child consistency and preventing cycles by construction.
+    /// Iterates over every node in stable identifier order.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+
+    /// Creates and attaches a new child below `parent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomError::ParentNotFound`] when `parent` does not exist.
+    /// Returns [`DomError::NodeIdExhausted`] if another node identifier cannot
+    /// be allocated.
     pub fn append_child(&mut self, parent: NodeId, kind: NodeKind) -> Result<NodeId, DomError> {
         if !self.nodes.contains_key(&parent) {
             return Err(DomError::ParentNotFound(parent));
         }
 
         let id = NodeId(self.next_id);
-        self.next_id = self.next_id.checked_add(1).ok_or(DomError::NodeIdExhausted)?;
-        let node = Node { id, parent: Some(parent), children: Vec::new(), kind };
+
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(DomError::NodeIdExhausted)?;
+
+        let node = Node {
+            id,
+            parent: Some(parent),
+            children: Vec::new(),
+            kind,
+        };
+
         self.nodes.insert(id, node);
 
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
@@ -123,33 +224,57 @@ impl Document {
         Ok(id)
     }
 
+    /// Returns the number of nodes currently stored in the document.
     #[must_use]
-    pub fn len(&self) -> usize { self.nodes.len() }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
 
+    /// Returns `true` when the document contains no nodes.
+    ///
+    /// A normally constructed [`Document`] is never empty because it always
+    /// contains its root node.
     #[must_use]
-    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, NodeKind};
+    use super::{Document, DomError, ElementData, Node, NodeKind};
 
     #[test]
-    fn document_starts_with_one_root() {
+    fn new_document_contains_root() {
         let document = Document::new();
+
         assert_eq!(document.len(), 1);
         assert!(!document.is_empty());
-        assert_eq!(document.node(document.root()).map(|node| node.parent()), Some(None));
+
+        assert_eq!(document.node(document.root()).map(Node::parent), Some(None));
     }
 
     #[test]
-    fn append_child_keeps_links_consistent() -> Result<(), Box<dyn std::error::Error>> {
+    fn append_child_preserves_relationship() -> Result<(), DomError> {
         let mut document = Document::new();
         let root = document.root();
-        let child = document.append_child(root, NodeKind::Element("html".to_owned()))?;
 
-        assert_eq!(document.node(child).map(|node| node.parent()), Some(Some(root)));
-        assert_eq!(document.node(root).map(|node| node.children()), Some(&[child][..]));
+        let child = document.append_child(root, NodeKind::Element(ElementData::new("html")))?;
+
+        assert_eq!(document.node(child).map(Node::parent), Some(Some(root)));
+
+        assert_eq!(document.node(root).map(Node::children), Some(&[child][..]));
+
         Ok(())
+    }
+
+    #[test]
+    fn element_attributes_can_be_read() {
+        let mut attributes = std::collections::BTreeMap::new();
+        attributes.insert("href".to_owned(), "https://example.com".to_owned());
+
+        let element = ElementData::with_attributes("a", attributes);
+
+        assert_eq!(element.attribute("href"), Some("https://example.com"));
     }
 }

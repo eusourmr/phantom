@@ -1,0 +1,12 @@
+[package]
+name = "phantom-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Renderer-independent font metrics and text shaping boundary for Phantom."
+publish = false
+
+[lints]
+workspace = true

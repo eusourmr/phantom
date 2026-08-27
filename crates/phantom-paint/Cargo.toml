@@ -1,11 +1,11 @@
 [package]
-name = "phantom-engine"
+name = "phantom-paint"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "High-level orchestration layer for the Phantom web engine."
+description = "DOM-independent paint-list generation for the Phantom web engine."
 publish = false
 
 [lints]
@@ -13,8 +13,5 @@ workspace = true
 
 [dependencies]
 phantom-css = { path = "../phantom-css" }
-phantom-dom = { path = "../phantom-dom" }
-phantom-html = { path = "../phantom-html" }
 phantom-layout = { path = "../phantom-layout" }
-phantom-paint = { path = "../phantom-paint" }
 thiserror.workspace = true
