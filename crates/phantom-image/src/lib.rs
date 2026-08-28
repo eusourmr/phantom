@@ -24,7 +24,6 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use image::AnimationDecoder as ImageAnimationDecoder;
-use image::metadata::LoopCount as ImageLoopCount;
 
 use thiserror::Error;
 
@@ -568,9 +567,9 @@ fn decode_gif_animation(
     image_limits: ImageDecodeLimits,
     animation_limits: AnimationDecodeLimits,
 ) -> Result<DecodedAnimation, ImageError> {
+    let loop_count = gif_loop_count(bytes)?;
     let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
         .map_err(|_| ImageError::DecodeFailed)?;
-    let loop_count = animation_loop_count(decoder.loop_count());
     collect_animation_frames(
         decoder.into_frames(),
         size,
@@ -586,9 +585,9 @@ fn decode_webp_animation(
     image_limits: ImageDecodeLimits,
     animation_limits: AnimationDecodeLimits,
 ) -> Result<DecodedAnimation, ImageError> {
+    let loop_count = webp_loop_count(bytes)?;
     let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes))
         .map_err(|_| ImageError::DecodeFailed)?;
-    let loop_count = animation_loop_count(decoder.loop_count());
     collect_animation_frames(
         decoder.into_frames(),
         size,
@@ -655,10 +654,142 @@ fn frame_delay_millis(delay: image::Delay) -> u64 {
     numerator.saturating_add(denominator.saturating_sub(1)) / denominator
 }
 
-fn animation_loop_count(loop_count: ImageLoopCount) -> AnimationLoopCount {
-    match loop_count {
-        ImageLoopCount::Infinite => AnimationLoopCount::Infinite,
-        ImageLoopCount::Finite(count) => AnimationLoopCount::Finite(count.get()),
+fn gif_loop_count(bytes: &[u8]) -> Result<AnimationLoopCount, ImageError> {
+    if bytes.len() < 13 || (!bytes.starts_with(b"GIF87a") && !bytes.starts_with(b"GIF89a")) {
+        return Err(ImageError::DecodeFailed);
+    }
+
+    let mut cursor = 13_usize;
+    let packed_fields = bytes[10];
+    if packed_fields & 0x80 != 0 {
+        let entries = 1_usize << (usize::from(packed_fields & 0x07) + 1);
+        cursor = cursor
+            .checked_add(entries.saturating_mul(3))
+            .ok_or(ImageError::DecodeFailed)?;
+    }
+
+    while let Some(&block_kind) = bytes.get(cursor) {
+        match block_kind {
+            0x21 => {
+                let label = *bytes.get(cursor + 1).ok_or(ImageError::DecodeFailed)?;
+                cursor = cursor.checked_add(2).ok_or(ImageError::DecodeFailed)?;
+                let first_block_size =
+                    usize::from(*bytes.get(cursor).ok_or(ImageError::DecodeFailed)?);
+                cursor = cursor.checked_add(1).ok_or(ImageError::DecodeFailed)?;
+                let first_block_end = cursor
+                    .checked_add(first_block_size)
+                    .ok_or(ImageError::DecodeFailed)?;
+                let first_block = bytes
+                    .get(cursor..first_block_end)
+                    .ok_or(ImageError::DecodeFailed)?;
+                cursor = first_block_end;
+
+                if label == 0xFF && (first_block == b"NETSCAPE2.0" || first_block == b"ANIMEXTS1.0")
+                {
+                    let loop_block_end = cursor.checked_add(5).ok_or(ImageError::DecodeFailed)?;
+                    let loop_block = bytes
+                        .get(cursor..loop_block_end)
+                        .ok_or(ImageError::DecodeFailed)?;
+                    if loop_block[0] != 3 || loop_block[1] != 1 || loop_block[4] != 0 {
+                        return Err(ImageError::DecodeFailed);
+                    }
+                    return Ok(gif_container_loop_count(u16::from_le_bytes([
+                        loop_block[2],
+                        loop_block[3],
+                    ])));
+                }
+
+                if first_block_size != 0 {
+                    cursor = skip_sub_blocks(bytes, cursor)?;
+                }
+            }
+            0x2C => {
+                let descriptor_end = cursor.checked_add(10).ok_or(ImageError::DecodeFailed)?;
+                let descriptor = bytes
+                    .get(cursor..descriptor_end)
+                    .ok_or(ImageError::DecodeFailed)?;
+                cursor = descriptor_end;
+                if descriptor[9] & 0x80 != 0 {
+                    let entries = 1_usize << (usize::from(descriptor[9] & 0x07) + 1);
+                    cursor = cursor
+                        .checked_add(entries.saturating_mul(3))
+                        .ok_or(ImageError::DecodeFailed)?;
+                }
+                cursor = cursor.checked_add(1).ok_or(ImageError::DecodeFailed)?;
+                cursor = skip_sub_blocks(bytes, cursor)?;
+            }
+            0x3B => return Ok(AnimationLoopCount::Finite(1)),
+            _ => return Err(ImageError::DecodeFailed),
+        }
+    }
+
+    Err(ImageError::DecodeFailed)
+}
+
+fn skip_sub_blocks(bytes: &[u8], mut cursor: usize) -> Result<usize, ImageError> {
+    loop {
+        let size = usize::from(*bytes.get(cursor).ok_or(ImageError::DecodeFailed)?);
+        cursor = cursor.checked_add(1).ok_or(ImageError::DecodeFailed)?;
+        if size == 0 {
+            return Ok(cursor);
+        }
+        cursor = cursor.checked_add(size).ok_or(ImageError::DecodeFailed)?;
+        if cursor > bytes.len() {
+            return Err(ImageError::DecodeFailed);
+        }
+    }
+}
+
+fn webp_loop_count(bytes: &[u8]) -> Result<AnimationLoopCount, ImageError> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return Err(ImageError::DecodeFailed);
+    }
+
+    let mut cursor = 12_usize;
+    while cursor < bytes.len() {
+        let header_end = cursor.checked_add(8).ok_or(ImageError::DecodeFailed)?;
+        let header = bytes
+            .get(cursor..header_end)
+            .ok_or(ImageError::DecodeFailed)?;
+        let chunk_size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let chunk_size = usize::try_from(chunk_size).map_err(|_| ImageError::DecodeFailed)?;
+        let data_start = header_end;
+        let data_end = data_start
+            .checked_add(chunk_size)
+            .ok_or(ImageError::DecodeFailed)?;
+        let data = bytes
+            .get(data_start..data_end)
+            .ok_or(ImageError::DecodeFailed)?;
+
+        if &header[0..4] == b"ANIM" {
+            let loop_bytes = data.get(4..6).ok_or(ImageError::DecodeFailed)?;
+            return Ok(webp_container_loop_count(u16::from_le_bytes([
+                loop_bytes[0],
+                loop_bytes[1],
+            ])));
+        }
+
+        cursor = data_end
+            .checked_add(chunk_size & 1)
+            .ok_or(ImageError::DecodeFailed)?;
+    }
+
+    Err(ImageError::DecodeFailed)
+}
+
+const fn gif_container_loop_count(count: u16) -> AnimationLoopCount {
+    if count == 0 {
+        AnimationLoopCount::Infinite
+    } else {
+        AnimationLoopCount::Finite(count as u32 + 1)
+    }
+}
+
+const fn webp_container_loop_count(count: u16) -> AnimationLoopCount {
+    if count == 0 {
+        AnimationLoopCount::Infinite
+    } else {
+        AnimationLoopCount::Finite(count as u32)
     }
 }
 
@@ -902,8 +1033,8 @@ fn is_sof_marker(marker: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DecodedImage, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat, IntrinsicSize,
-        RasterImageDecoder, probe_image,
+        AnimationLoopCount, DecodedImage, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat,
+        IntrinsicSize, RasterImageDecoder, gif_loop_count, probe_image, webp_loop_count,
     };
 
     #[test]
@@ -1003,6 +1134,42 @@ mod tests {
 
         assert_eq!(result, Err(ImageError::UnsupportedDecodeFormat));
 
+        Ok(())
+    }
+
+    #[test]
+    fn reads_gif_infinite_and_finite_loop_metadata() -> Result<(), ImageError> {
+        let mut bytes = include_bytes!("../tests/fixtures/animated-2x1.gif").to_vec();
+        assert_eq!(gif_loop_count(&bytes)?, AnimationLoopCount::Infinite);
+        let loop_count_offset = bytes
+            .windows(3)
+            .position(|window| window == [0x03, 0x01, 0x00])
+            .ok_or(ImageError::DecodeFailed)?
+            + 2;
+        bytes[loop_count_offset] = 2;
+        assert_eq!(gif_loop_count(&bytes)?, AnimationLoopCount::Finite(3));
+        Ok(())
+    }
+
+    #[test]
+    fn gif_without_loop_extension_plays_once() -> Result<(), ImageError> {
+        let bytes = [
+            b'G', b'I', b'F', b'8', b'9', b'a', 1, 0, 1, 0, 0, 0, 0, 0x21, 0xFE, 0, 0x3B,
+        ];
+        assert_eq!(gif_loop_count(&bytes)?, AnimationLoopCount::Finite(1));
+        Ok(())
+    }
+
+    #[test]
+    fn reads_webp_infinite_and_finite_loop_metadata() -> Result<(), ImageError> {
+        let mut bytes = include_bytes!("../tests/fixtures/animated-2x1.webp").to_vec();
+        assert_eq!(webp_loop_count(&bytes)?, AnimationLoopCount::Infinite);
+        let anim_offset = bytes
+            .windows(4)
+            .position(|window| window == b"ANIM")
+            .ok_or(ImageError::DecodeFailed)?;
+        bytes[anim_offset + 12] = 2;
+        assert_eq!(webp_loop_count(&bytes)?, AnimationLoopCount::Finite(2));
         Ok(())
     }
 }

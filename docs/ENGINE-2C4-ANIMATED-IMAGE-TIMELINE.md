@@ -68,6 +68,10 @@ resource-safety policy and must not be presented as a Web Platform rule.
 Finite animations stop on their final frame. Infinite animations continue while
 the tab exists.
 
+Loop metadata is parsed inside `phantom-image`, without exposing codec-library
+types across the crate boundary. GIF uses the `NETSCAPE2.0`/`ANIMEXTS1.0`
+application extension; animated WebP uses the `ANIM` chunk.
+
 Only the active tab requests animation repaints. Background tabs therefore do
 not create repaint work, although their monotonic animation phase advances.
 
