@@ -1879,13 +1879,14 @@ fn initial_style(node: &Node, parent: Option<&ComputedStyle>) -> ComputedStyle {
     style
 }
 
+// PHANTOM_2C13_FORM_UA_DISPLAY
 fn default_display(tag: &str) -> Display {
     match tag {
         "head" | "style" | "script" | "meta" | "link" | "title" | "base" => Display::None,
 
-        "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
-        | "li" | "section" | "article" | "main" | "header" | "footer" | "nav" | "blockquote"
-        | "pre" | "hr" => Display::Block,
+        "html" | "body" | "form" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul"
+        | "ol" | "li" | "section" | "article" | "main" | "header" | "footer" | "nav"
+        | "blockquote" | "pre" | "hr" => Display::Block,
 
         _ => Display::Inline,
     }

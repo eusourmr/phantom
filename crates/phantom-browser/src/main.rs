@@ -21,8 +21,9 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
-    Engine, ImageLoading, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily,
-    PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange, ResourcePriority,
+    Engine, FormControlId, FormControlKind, FormSubmissionError, ImageLoading, ObjectFit,
+    ObjectPosition, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle, PaintFontWeight,
+    PaintList, PaintRect, PaintTextRange, ResourcePriority,
 };
 use phantom_image::{
     AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
@@ -280,6 +281,8 @@ struct PendingSiteIcon {
 }
 struct BrowserTab {
     engine: Engine,
+    form_values: BTreeMap<FormControlId, String>,
+    form_values_generation: u64,
     address: String,
     title: String,
     pinned: bool,
@@ -308,6 +311,8 @@ impl BrowserTab {
     fn new() -> Self {
         Self {
             engine: Engine::new(),
+            form_values: BTreeMap::new(),
+            form_values_generation: 0,
             address: String::new(),
             title: "Nova aba".to_owned(),
             pinned: false,
@@ -986,72 +991,164 @@ impl PhantomApp {
     }
 
     // PHANTOM_2C12_LINK_INTERACTION_UX
+    // PHANTOM_2C13_BROWSER_INPUTS_I
     fn rendered_page(&mut self, ui: &mut egui::Ui) {
         let active_index = self.active_tab;
+
+        {
+            let tab = &mut self.tabs[active_index];
+
+            if tab.form_values_generation != tab.document_generation {
+                tab.form_values.clear();
+                tab.form_values_generation = tab.document_generation;
+            }
+        }
+
         let document_url = self.tabs[active_index]
             .history_index
             .and_then(|index| self.tabs[active_index].history.get(index))
             .cloned()
             .unwrap_or_else(|| self.tabs[active_index].address.clone());
+
         let command_modifier = ui.ctx().input(|input| input.modifiers.command);
+        let controls = self.tabs[active_index].engine.form_control_regions();
 
-        let tab = &self.tabs[active_index];
-        let paint = tab.engine.paint_list();
-        let document_width = paint.viewport_width().max(1.0);
-        let document_height = paint.content_height().max(1.0);
-        let mut visible_range = (0.0_f32, ui.available_height().max(1.0));
-        let mut hovered_link = None::<String>;
-        let mut link_activation = None::<(String, bool)>;
+        {
+            let tab = &mut self.tabs[active_index];
 
-        egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .show_viewport(ui, |ui, viewport| {
-                let canvas_width = document_width.max(ui.available_width());
-                let canvas_height = document_height + 72.0;
+            for control in &controls {
+                if matches!(
+                    control.kind(),
+                    FormControlKind::Text | FormControlKind::Search
+                ) {
+                    tab.form_values
+                        .entry(control.id())
+                        .or_insert_with(|| control.initial_value().to_owned());
+                }
+            }
+        }
 
-                let (canvas_rect, canvas_response) = ui.allocate_exact_size(
-                    egui::vec2(canvas_width, canvas_height),
-                    egui::Sense::click(),
-                );
+        let (visible_range, hovered_link, link_activation, form_activation) = {
+            let tab = &mut self.tabs[active_index];
+            let engine = &tab.engine;
+            let paint = engine.paint_list();
+            let image_textures = &tab.image_textures;
+            let form_values = &mut tab.form_values;
 
-                let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
-                let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
-                visible_range = (
-                    (viewport.top() - origin.y).max(0.0),
-                    (viewport.bottom() - origin.y).max(0.0),
-                );
+            let document_width = paint.viewport_width().max(1.0);
+            let document_height = paint.content_height().max(1.0);
+            let mut visible_range = (0.0_f32, ui.available_height().max(1.0));
+            let mut hovered_link = None::<String>;
+            let mut link_activation = None::<(String, bool)>;
+            let mut form_activation = None;
+            let mut pointer_over_control = false;
 
-                paint_page(ui, origin, paint, &tab.image_textures);
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show_viewport(ui, |ui, viewport| {
+                    let canvas_width = document_width.max(ui.available_width());
+                    let canvas_height = document_height + 72.0;
 
-                if canvas_response.hovered()
-                    && let Some(pointer) = ui.ctx().pointer_hover_pos()
-                    && let Some(link) = tab
-                        .engine
-                        .link_at(pointer.x - origin.x, pointer.y - origin.y)
-                {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-
-                    let resolved = HttpUrl::parse(&document_url)
-                        .ok()
-                        .and_then(|base| base.resolve(link.href()).ok());
-
-                    hovered_link = Some(
-                        resolved
-                            .as_ref()
-                            .map(|url| url.as_str().to_owned())
-                            .unwrap_or_else(|| link.href().to_owned()),
+                    let (canvas_rect, canvas_response) = ui.allocate_exact_size(
+                        egui::vec2(canvas_width, canvas_height),
+                        egui::Sense::click(),
                     );
 
-                    if canvas_response.clicked()
-                        && let Some(target) = resolved
-                    {
-                        link_activation = Some((
-                            target.as_str().to_owned(),
-                            link.opens_new_context() || command_modifier,
-                        ));
+                    let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
+                    let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
+
+                    visible_range = (
+                        (viewport.top() - origin.y).max(0.0),
+                        (viewport.bottom() - origin.y).max(0.0),
+                    );
+
+                    paint_page(ui, origin, paint, image_textures);
+
+                    for control in &controls {
+                        let rect = control.rect();
+                        let widget_rect = egui::Rect::from_min_size(
+                            origin + egui::vec2(rect.x(), rect.y()),
+                            egui::vec2(rect.width().max(1.0), rect.height().max(1.0)),
+                        );
+
+                        let response = match control.kind() {
+                            FormControlKind::Text | FormControlKind::Search => {
+                                let value = form_values
+                                    .entry(control.id())
+                                    .or_insert_with(|| control.initial_value().to_owned());
+
+                                let mut edit = egui::TextEdit::singleline(value)
+                                    .hint_text(control.placeholder());
+
+                                if !control.enabled() {
+                                    edit = edit.interactive(false);
+                                }
+
+                                ui.place(widget_rect, edit)
+                            }
+
+                            FormControlKind::Submit => {
+                                ui.place(widget_rect, egui::Button::new(control.label()))
+                            }
+                        };
+
+                        pointer_over_control |= response.hovered();
+
+                        match control.kind() {
+                            FormControlKind::Text | FormControlKind::Search => {
+                                if control.enabled()
+                                    && response.lost_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                                {
+                                    form_activation = Some((control.form(), None));
+                                }
+                            }
+
+                            FormControlKind::Submit => {
+                                if control.enabled() && response.clicked() {
+                                    form_activation = Some((control.form(), Some(control.id())));
+                                }
+                            }
+                        }
                     }
-                }
-            });
+
+                    if !pointer_over_control
+                        && canvas_response.hovered()
+                        && let Some(pointer) = ui.ctx().pointer_hover_pos()
+                        && let Some(link) =
+                            engine.link_at(pointer.x - origin.x, pointer.y - origin.y)
+                    {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+
+                        let resolved = HttpUrl::parse(&document_url)
+                            .ok()
+                            .and_then(|base| base.resolve(link.href()).ok());
+
+                        hovered_link = Some(
+                            resolved
+                                .as_ref()
+                                .map(|url| url.as_str().to_owned())
+                                .unwrap_or_else(|| link.href().to_owned()),
+                        );
+
+                        if canvas_response.clicked()
+                            && let Some(target) = resolved
+                        {
+                            link_activation = Some((
+                                target.as_str().to_owned(),
+                                link.opens_new_context() || command_modifier,
+                            ));
+                        }
+                    }
+                });
+
+            (
+                visible_range,
+                hovered_link,
+                link_activation,
+                form_activation,
+            )
+        };
 
         if let Some(target) = hovered_link.as_deref() {
             egui::Area::new(egui::Id::new("phantom-link-target-preview"))
@@ -1073,7 +1170,11 @@ impl PhantomApp {
                 });
         }
 
-        let visible_images = visible_image_resources(paint, visible_range.0, visible_range.1);
+        let visible_images = visible_image_resources(
+            self.tabs[active_index].engine.paint_list(),
+            visible_range.0,
+            visible_range.1,
+        );
         let now = Instant::now();
         let network = self.network.clone();
 
@@ -1096,7 +1197,56 @@ impl PhantomApp {
             }
         }
 
-        if let Some((target, open_new_context)) = link_activation {
+        if let Some((form, submitter)) = form_activation {
+            let submission = {
+                let tab = &self.tabs[active_index];
+                tab.engine
+                    .build_get_form_submission(form, submitter, &tab.form_values)
+            };
+
+            match submission {
+                Ok(submission) => {
+                    let target = HttpUrl::parse(&document_url)
+                        .and_then(|base| {
+                            if submission.action().is_empty() {
+                                Ok(base)
+                            } else {
+                                base.resolve(submission.action())
+                            }
+                        })
+                        .map(|url| url.with_query_pairs(submission.fields()));
+
+                    match target {
+                        Ok(target) => {
+                            let tab = &mut self.tabs[active_index];
+                            start_navigation(
+                                &network,
+                                tab,
+                                target.as_str().to_owned(),
+                                NavigationAction::New,
+                            );
+                        }
+
+                        Err(error) => {
+                            self.tabs[active_index].status =
+                                format!("Form action bloqueada Â· {error}");
+                        }
+                    }
+                }
+
+                Err(FormSubmissionError::UnsupportedMethod(method)) => {
+                    self.tabs[active_index].status = format!(
+                        "Form method ainda nÃ£o suportado Â· {}",
+                        method.to_ascii_uppercase()
+                    );
+                }
+
+                Err(FormSubmissionError::FormNotFound) => {
+                    self.tabs[active_index].status =
+                        "FormulÃ¡rio nÃ£o encontrado no documento ativo".to_owned();
+                }
+            }
+        } else if let Some((target, open_new_context)) = link_activation {
             if open_new_context {
                 self.open_new_tab();
                 let tab = self.active_tab_mut();

@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use phantom_dom::{Document, ElementData, NodeId, NodeKind};
 use phantom_html::HtmlError;
 
@@ -19,8 +21,8 @@ pub use phantom_image::{
     ImageMetadata, ImageResourceId, IntrinsicSize, probe_image,
 };
 pub use phantom_layout::{
-    LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect, build_layout_snapshot,
-    build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
+    ControlKind, LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect,
+    build_layout_snapshot, build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
     build_layout_snapshot_with_shaper_and_images,
 };
 pub use phantom_paint::{
@@ -32,6 +34,144 @@ use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 
+// PHANTOM_2C13_FORM_NAVIGATION_I
+/// Stable document-generation-local identifier for one form control.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FormControlId(u64);
+
+impl FormControlId {
+    /// Returns the underlying DOM identifier value.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable document-generation-local identifier for one `<form>`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FormId(u64);
+
+impl FormId {
+    /// Returns the underlying DOM identifier value.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Browser-control role supported by Form Navigation I.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormControlKind {
+    /// `<input type=text>` or omitted type.
+    Text,
+    /// `<input type=search>`.
+    Search,
+    /// `<input type=submit>` or a submit `<button>`.
+    Submit,
+}
+
+/// One visible form-control region derived from the cold layout snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormControlRegion {
+    id: FormControlId,
+    form: FormId,
+    kind: FormControlKind,
+    rect: Rect,
+    name: Option<String>,
+    initial_value: String,
+    placeholder: String,
+    label: String,
+    enabled: bool,
+}
+
+impl FormControlRegion {
+    /// Returns the control identifier.
+    #[must_use]
+    pub const fn id(&self) -> FormControlId {
+        self.id
+    }
+
+    /// Returns the owning form.
+    #[must_use]
+    pub const fn form(&self) -> FormId {
+        self.form
+    }
+
+    /// Returns the supported control role.
+    #[must_use]
+    pub const fn kind(&self) -> FormControlKind {
+        self.kind
+    }
+
+    /// Returns the document-coordinate widget rectangle.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Returns the HTML control name when declared.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Returns the initial HTML value.
+    #[must_use]
+    pub fn initial_value(&self) -> &str {
+        &self.initial_value
+    }
+
+    /// Returns the placeholder text for editable controls.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Returns the browser-visible control label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Returns whether the HTML `disabled` attribute is absent.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Deterministic GET form submission prepared by the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormGetSubmission {
+    action: String,
+    fields: Vec<(String, String)>,
+}
+
+impl FormGetSubmission {
+    /// Returns the raw form action reference. Empty means the current document.
+    #[must_use]
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Returns successful name/value pairs in DOM order.
+    #[must_use]
+    pub fn fields(&self) -> &[(String, String)] {
+        &self.fields
+    }
+}
+
+/// Errors produced while preparing the bounded Form Navigation I subset.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum FormSubmissionError {
+    /// The requested form does not exist in the active document.
+    #[error("form not found in active document")]
+    FormNotFound,
+
+    /// The form requests a method not implemented by Form Navigation I.
+    #[error("unsupported form method: {0}")]
+    UnsupportedMethod(String),
+}
 // PHANTOM_2C12_LINK_NAVIGATION_I
 /// One clickable hyperlink region in the active cold layout snapshot.
 ///
@@ -284,6 +424,156 @@ impl Engine {
         &self.paint
     }
 
+    /// Returns visible controls supported by Browser Inputs I.
+    ///
+    /// Hidden inputs participate in submission but deliberately have no visual
+    /// region. Unsupported control types remain outside this first slice.
+    #[must_use]
+    pub fn form_control_regions(&self) -> Vec<FormControlRegion> {
+        self.layout
+            .boxes()
+            .iter()
+            .filter_map(|layout_box| {
+                let LayoutKind::Control { kind } = layout_box.kind() else {
+                    return None;
+                };
+
+                let node_id = layout_box.source_node();
+                let element = element_for(&self.document, node_id)?;
+                let form_node = form_for_node(&self.document, node_id)?;
+                let form = FormId(form_node.as_u64());
+
+                let kind = match kind {
+                    ControlKind::TextInput => FormControlKind::Text,
+                    ControlKind::SearchInput => FormControlKind::Search,
+                    ControlKind::SubmitButton => FormControlKind::Submit,
+                };
+
+                let initial_value = element.attribute("value").unwrap_or_default().to_owned();
+                let placeholder = element
+                    .attribute("placeholder")
+                    .unwrap_or_default()
+                    .to_owned();
+
+                Some(FormControlRegion {
+                    id: FormControlId(node_id.as_u64()),
+                    form,
+                    kind,
+                    rect: layout_box.rect(),
+                    name: element.attribute("name").map(str::to_owned),
+                    initial_value,
+                    placeholder,
+                    label: form_control_label(&self.document, node_id, element, kind),
+                    enabled: element.attribute("disabled").is_none(),
+                })
+            })
+            .collect()
+    }
+
+    /// Builds a deterministic GET submission for one form.
+    ///
+    /// The current-value map is owned by the browser shell; the immutable DOM is
+    /// not mutated merely because a user edits an input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FormSubmissionError::FormNotFound`] for an unknown form or
+    /// [`FormSubmissionError::UnsupportedMethod`] for non-GET forms.
+    pub fn build_get_form_submission(
+        &self,
+        form: FormId,
+        submitter: Option<FormControlId>,
+        values: &BTreeMap<FormControlId, String>,
+    ) -> Result<FormGetSubmission, FormSubmissionError> {
+        let form_node = self
+            .document
+            .nodes()
+            .find(|node| node.id().as_u64() == form.as_u64())
+            .filter(|node| {
+                matches!(
+                    node.kind(),
+                    NodeKind::Element(element) if element.tag_name() == "form"
+                )
+            })
+            .ok_or(FormSubmissionError::FormNotFound)?;
+
+        let NodeKind::Element(form_element) = form_node.kind() else {
+            return Err(FormSubmissionError::FormNotFound);
+        };
+
+        let method = form_element
+            .attribute("method")
+            .unwrap_or("get")
+            .trim()
+            .to_ascii_lowercase();
+
+        if !method.is_empty() && method != "get" {
+            return Err(FormSubmissionError::UnsupportedMethod(method));
+        }
+
+        let action = form_element
+            .attribute("action")
+            .unwrap_or_default()
+            .to_owned();
+
+        let mut fields = Vec::new();
+
+        for node in self.document.nodes() {
+            let NodeKind::Element(element) = node.kind() else {
+                continue;
+            };
+
+            if form_for_node(&self.document, node.id()) != Some(form_node.id()) {
+                continue;
+            }
+
+            if element.attribute("disabled").is_some() {
+                continue;
+            }
+
+            let Some(name) = element.attribute("name").filter(|name| !name.is_empty()) else {
+                continue;
+            };
+
+            let control_id = FormControlId(node.id().as_u64());
+
+            match element.tag_name() {
+                "input" => {
+                    let input_type = normalized_input_type(element);
+
+                    match input_type.as_str() {
+                        "" | "text" | "search" | "hidden" => {
+                            let value = values.get(&control_id).cloned().unwrap_or_else(|| {
+                                element.attribute("value").unwrap_or_default().to_owned()
+                            });
+
+                            fields.push((name.to_owned(), value));
+                        }
+
+                        "submit" if submitter == Some(control_id) => {
+                            fields.push((
+                                name.to_owned(),
+                                element.attribute("value").unwrap_or_default().to_owned(),
+                            ));
+                        }
+
+                        _ => {}
+                    }
+                }
+
+                "button" if button_is_submit(element) && submitter == Some(control_id) => {
+                    fields.push((
+                        name.to_owned(),
+                        element.attribute("value").unwrap_or_default().to_owned(),
+                    ));
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok(FormGetSubmission { action, fields })
+    }
     /// Returns clickable hyperlink regions for the active layout snapshot.
     ///
     /// Regions are generated only for visible text/image layout fragments that
@@ -492,6 +782,93 @@ impl Engine {
     }
 }
 
+fn form_for_node(document: &Document, node_id: NodeId) -> Option<NodeId> {
+    let mut current = document.node(node_id)?.parent();
+
+    while let Some(current_id) = current {
+        let node = document.node(current_id)?;
+
+        if let NodeKind::Element(element) = node.kind()
+            && element.tag_name() == "form"
+        {
+            return Some(current_id);
+        }
+
+        current = node.parent();
+    }
+
+    None
+}
+
+fn normalized_input_type(element: &ElementData) -> String {
+    element
+        .attribute("type")
+        .unwrap_or("text")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn button_is_submit(element: &ElementData) -> bool {
+    matches!(
+        element
+            .attribute("type")
+            .unwrap_or("submit")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "" | "submit"
+    )
+}
+
+fn form_control_label(
+    document: &Document,
+    node_id: NodeId,
+    element: &ElementData,
+    kind: FormControlKind,
+) -> String {
+    match kind {
+        FormControlKind::Text | FormControlKind::Search => String::new(),
+
+        FormControlKind::Submit if element.tag_name() == "input" => element
+            .attribute("value")
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Submit")
+            .to_owned(),
+
+        FormControlKind::Submit => {
+            let text = descendant_text_content(document, node_id);
+            if text.trim().is_empty() {
+                "Submit".to_owned()
+            } else {
+                text.trim().to_owned()
+            }
+        }
+    }
+}
+
+fn descendant_text_content(document: &Document, node_id: NodeId) -> String {
+    let Some(node) = document.node(node_id) else {
+        return String::new();
+    };
+
+    let mut text = String::new();
+    let mut stack = node.children().iter().rev().copied().collect::<Vec<_>>();
+
+    while let Some(current_id) = stack.pop() {
+        let Some(current) = document.node(current_id) else {
+            continue;
+        };
+
+        match current.kind() {
+            NodeKind::Text(value) => text.push_str(value),
+            NodeKind::Document | NodeKind::Element(_) | NodeKind::Comment(_) => {}
+        }
+
+        stack.extend(current.children().iter().rev().copied());
+    }
+
+    text
+}
 fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkRegion> {
     layout
         .boxes()

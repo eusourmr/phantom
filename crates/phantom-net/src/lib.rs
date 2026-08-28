@@ -84,6 +84,26 @@ impl HttpUrl {
         Self::from_url(joined)
     }
 
+    // PHANTOM_2C13_FORM_QUERY_URL
+    /// Returns this HTTP(S) URL with its query replaced by form-style pairs.
+    ///
+    /// Encoding is delegated to `url::Url` rather than implemented manually.
+    /// The URL fragment, if any, is preserved.
+    #[must_use]
+    pub fn with_query_pairs(&self, pairs: &[(String, String)]) -> Self {
+        let mut url = self.0.clone();
+        url.set_query(None);
+
+        if !pairs.is_empty() {
+            url.query_pairs_mut().extend_pairs(
+                pairs
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            );
+        }
+
+        Self(url)
+    }
     /// Returns the serialized absolute URL.
     #[must_use]
     pub fn as_str(&self) -> &str {
