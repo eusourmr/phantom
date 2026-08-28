@@ -22,7 +22,7 @@ use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
     Engine, ImageLoading, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily,
-    PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange,
+    PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange, ResourcePriority,
 };
 use phantom_image::{
     AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
@@ -60,7 +60,9 @@ struct ImageLoadRequest {
     url: HttpUrl,
     isolation_key: NetworkIsolationKey,
     loading: ImageLoading,
+    priority: ResourcePriority,
     top: f32,
+    preload_only: bool,
 }
 
 enum LoadedRaster {
@@ -71,6 +73,17 @@ enum LoadedRaster {
 struct LoadedImage {
     metadata: ImageMetadata,
     raster: LoadedRaster,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceLoadKind {
+    Preload,
+    Image,
+}
+
+enum LoadedResource {
+    Preloaded,
+    Image(LoadedImage),
 }
 
 #[derive(Clone)]
@@ -233,7 +246,8 @@ struct ImageLoadEvent {
     generation: u64,
     resources: Vec<ImageResourceId>,
     cache_key: String,
-    result: Result<LoadedImage, String>,
+    kind: ResourceLoadKind,
+    result: Result<LoadedResource, String>,
 }
 
 struct CachedImage {
@@ -261,6 +275,7 @@ struct BrowserTab {
     engine: Engine,
     address: String,
     title: String,
+    pinned: bool,
     status: String,
     pending: Option<PendingNavigation>,
     pending_images: Option<PendingImageBatch>,
@@ -271,6 +286,8 @@ struct BrowserTab {
     cache_clock: u64,
     loaded_images: usize,
     failed_images: usize,
+    preloaded_resources: usize,
+    failed_preloads: usize,
     raster_bytes: u64,
     page_loaded: bool,
     history: Vec<String>,
@@ -284,6 +301,7 @@ impl BrowserTab {
             engine: Engine::new(),
             address: String::new(),
             title: "Nova aba".to_owned(),
+            pinned: false,
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
             pending: None,
             pending_images: None,
@@ -294,6 +312,8 @@ impl BrowserTab {
             cache_clock: 0,
             loaded_images: 0,
             failed_images: 0,
+            preloaded_resources: 0,
+            failed_preloads: 0,
             raster_bytes: 0,
             page_loaded: false,
             history: Vec::new(),
@@ -357,7 +377,7 @@ struct PhantomApp {
 impl PhantomApp {
     fn new(context: &eframe::CreationContext<'_>) -> Self {
         configure_fonts(&context.egui_ctx);
-        context.egui_ctx.set_visuals(egui::Visuals::light());
+        context.egui_ctx.set_theme(egui::ThemePreference::System);
 
         Self {
             network: NetworkClient::new(),
@@ -408,9 +428,64 @@ impl PhantomApp {
         }
     }
 
+    fn toggle_tab_pinned(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        let was_active = index == self.active_tab;
+        let new_pinned = !self.tabs[index].pinned;
+        let mut tab = self.tabs.remove(index);
+
+        if index < self.active_tab {
+            self.active_tab = self.active_tab.saturating_sub(1);
+        }
+
+        tab.pinned = new_pinned;
+
+        let insert_index = if new_pinned {
+            self.tabs
+                .iter()
+                .position(|candidate| !candidate.pinned)
+                .unwrap_or(self.tabs.len())
+        } else {
+            self.tabs
+                .iter()
+                .rposition(|candidate| candidate.pinned)
+                .map_or(0, |position| position.saturating_add(1))
+        };
+
+        self.tabs.insert(insert_index, tab);
+
+        if was_active {
+            self.active_tab = insert_index;
+        } else if insert_index <= self.active_tab {
+            self.active_tab = self.active_tab.saturating_add(1);
+        }
+    }
+
     fn handle_shortcuts(&mut self, context: &egui::Context) {
-        let focus_location =
-            context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::L));
+        let (focus_location, new_tab, close_tab, reload) = context.input(|input| {
+            let command = input.modifiers.command;
+            (
+                command && input.key_pressed(egui::Key::L),
+                command && input.key_pressed(egui::Key::T),
+                command && input.key_pressed(egui::Key::W),
+                command && input.key_pressed(egui::Key::R),
+            )
+        });
+
+        if new_tab {
+            self.open_new_tab();
+        }
+
+        if close_tab {
+            self.close_tab(self.active_tab);
+        }
+
+        if reload {
+            self.execute_navigation_command(NavigationUiCommand::Reload);
+        }
 
         if focus_location {
             self.floating_bar_forced = true;
@@ -503,61 +578,132 @@ impl PhantomApp {
         let context = ui.ctx().clone();
         let mut activate_tab = None;
         let mut close_tab = None;
+        let mut toggle_pin_tab = None;
+        let mut reload_tab = None;
         let mut create_tab = false;
         let mut minimize = false;
         let mut toggle_maximize = false;
         let mut close_window = false;
         let mut start_drag = false;
+        let panel_fill = ui.visuals().panel_fill;
 
         egui::Panel::top("phantom-top-chrome")
-            .exact_size(46.0)
+            .exact_size(44.0)
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(247, 249, 252))
-                    .inner_margin(egui::Margin::symmetric(8, 6)),
+                    .fill(panel_fill)
+                    .inner_margin(egui::Margin::symmetric(7, 5)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(icon) = &self.app_icon {
-                        ui.image((icon.id(), egui::vec2(28.0, 28.0)));
+                        ui.image((icon.id(), egui::vec2(27.0, 27.0)));
                     }
 
-                    ui.add_space(2.0);
+                    ui.add_space(3.0);
 
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let is_active = index == self.active_tab;
                         let title = tab_title(tab);
+                        let width = if tab.pinned { 42.0 } else { 168.0 };
                         let fill = if is_active {
-                            egui::Color32::WHITE
+                            ui.visuals().extreme_bg_color
                         } else {
-                            egui::Color32::TRANSPARENT
+                            ui.visuals().faint_bg_color
                         };
 
-                        let tab_response = ui.add_sized(
-                            [136.0, 30.0],
-                            egui::Button::new(egui::RichText::new(title).size(13.0)).fill(fill),
-                        );
+                        let tab_frame = egui::Frame::new()
+                            .fill(fill)
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(5, 3))
+                            .show(ui, |ui| {
+                                ui.set_width(width);
+
+                                ui.horizontal(|ui| {
+                                    let tab_response = if tab.pinned {
+                                        ui.add_sized(
+                                            [28.0, 24.0],
+                                            egui::Button::new(lucide_text(Icon::Pin, 14.0))
+                                                .frame(false),
+                                        )
+                                    } else {
+                                        ui.add_sized(
+                                            [(width - 36.0).max(80.0), 24.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(title.clone()).size(13.0),
+                                            )
+                                            .frame(false),
+                                        )
+                                    };
+
+                                    let close_clicked = !tab.pinned
+                                        && icon_button(ui, Icon::X, true, [25.0, 24.0], 13.0)
+                                            .on_hover_text("Fechar aba Â· Ctrl+W")
+                                            .clicked();
+
+                                    (tab_response, close_clicked)
+                                })
+                                .inner
+                            });
+
+                        let (tab_response, close_clicked) = tab_frame.inner;
+                        let tab_response = tab_response.on_hover_text(if tab.pinned {
+                            format!("{} Â· aba fixada", tab.title)
+                        } else {
+                            tab.title.clone()
+                        });
 
                         if tab_response.clicked() {
                             activate_tab = Some(index);
                         }
 
-                        let close_response = icon_button(ui, Icon::X, true, [28.0, 30.0], 15.0)
-                            .on_hover_text("Fechar aba");
+                        tab_response.context_menu(|ui| {
+                            let pin_label = if tab.pinned {
+                                "Desafixar aba"
+                            } else {
+                                "Fixar aba"
+                            };
 
-                        if close_response.clicked() {
+                            if ui.button(pin_label).clicked() {
+                                toggle_pin_tab = Some(index);
+                                ui.close();
+                            }
+
+                            if ui.button("Recarregar Â· Ctrl+R").clicked() {
+                                reload_tab = Some(index);
+                                ui.close();
+                            }
+
+                            ui.separator();
+
+                            if ui.button("Fechar aba Â· Ctrl+W").clicked() {
+                                close_tab = Some(index);
+                                ui.close();
+                            }
+                        });
+
+                        if close_clicked {
                             close_tab = Some(index);
                         }
                     }
 
-                    if icon_button(ui, Icon::Plus, true, [32.0, 30.0], 17.0)
-                        .on_hover_text("Nova aba")
+                    if icon_button(ui, Icon::Plus, true, [31.0, 30.0], 16.0)
+                        .on_hover_text("Nova aba Â· Ctrl+T")
                         .clicked()
                     {
                         create_tab = true;
                     }
 
-                    let drag_width = (ui.available_width() - 114.0).max(16.0);
+                    const WINDOW_CONTROL_WIDTH: f32 = 38.0;
+                    const WINDOW_CONTROLS_GAP: f32 = 2.0;
+                    const WINDOW_CONTROLS_LEFT_GAP: f32 = 8.0;
+                    const WINDOW_CONTROLS_RIGHT_PADDING: f32 = 20.0;
+
+                    let controls_width = WINDOW_CONTROLS_LEFT_GAP
+                        + WINDOW_CONTROL_WIDTH * 3.0
+                        + WINDOW_CONTROLS_GAP * 2.0
+                        + WINDOW_CONTROLS_RIGHT_PADDING;
+                    let drag_width = (ui.available_width() - controls_width).max(16.0);
                     let (_, drag_response) = ui.allocate_exact_size(
                         egui::vec2(drag_width, 30.0),
                         egui::Sense::click_and_drag(),
@@ -571,26 +717,41 @@ impl PhantomApp {
                         toggle_maximize = true;
                     }
 
-                    if icon_button(ui, Icon::Minus, true, [36.0, 30.0], 16.0)
+                    ui.add_space(WINDOW_CONTROLS_LEFT_GAP);
+
+                    if icon_button(ui, Icon::Minus, true, [WINDOW_CONTROL_WIDTH, 30.0], 15.0)
                         .on_hover_text("Minimizar")
                         .clicked()
                     {
                         minimize = true;
                     }
 
-                    if icon_button(ui, Icon::Square, true, [36.0, 30.0], 14.0)
-                        .on_hover_text("Maximizar / restaurar")
-                        .clicked()
+                    ui.add_space(WINDOW_CONTROLS_GAP);
+
+                    if icon_button(
+                        ui,
+                        Icon::Maximize2,
+                        true,
+                        [WINDOW_CONTROL_WIDTH, 30.0],
+                        13.5,
+                    )
+                    .on_hover_text("Maximizar / restaurar")
+                    .clicked()
                     {
                         toggle_maximize = true;
                     }
 
-                    if icon_button(ui, Icon::X, true, [36.0, 30.0], 17.0)
+                    ui.add_space(WINDOW_CONTROLS_GAP);
+
+                    if icon_button(ui, Icon::X, true, [WINDOW_CONTROL_WIDTH, 30.0], 15.0)
                         .on_hover_text("Fechar Phantom")
                         .clicked()
                     {
                         close_window = true;
                     }
+
+                    // 2C-9 FIX 5 â€” native-window inset
+                    ui.add_space(WINDOW_CONTROLS_RIGHT_PADDING);
                 });
             });
 
@@ -600,6 +761,17 @@ impl PhantomApp {
             self.active_tab = index;
             self.floating_bar_forced = false;
             self.focus_address_next_frame = false;
+        }
+
+        if let Some(index) = toggle_pin_tab {
+            self.toggle_tab_pinned(index);
+        }
+
+        if let Some(index) = reload_tab
+            && index < self.tabs.len()
+        {
+            self.active_tab = index;
+            self.execute_navigation_command(NavigationUiCommand::Reload);
         }
 
         if let Some(index) = close_tab {
@@ -739,8 +911,8 @@ impl PhantomApp {
             .order(egui::Order::Foreground)
             .show(context, |ui| {
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(250, 251, 253))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(210)))
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                     .corner_radius(18)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
@@ -893,7 +1065,7 @@ impl eframe::App for PhantomApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::WHITE)
+                    .fill(ui.visuals().panel_fill)
                     .inner_margin(10),
             )
             .show(ui, |ui| {
@@ -975,6 +1147,8 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                     tab.cache_clock = 0;
                     tab.loaded_images = 0;
                     tab.failed_images = 0;
+                    tab.preloaded_resources = 0;
+                    tab.failed_preloads = 0;
                     tab.raster_bytes = 0;
 
                     tab.status = format!(
@@ -1019,14 +1193,18 @@ fn start_image_loading(
         return;
     };
 
-    let requests = collect_image_requests(tab, &base_url, device_pixel_ratio);
+    let mut requests = collect_preload_requests(tab, &base_url, device_pixel_ratio);
+    requests.extend(collect_image_requests(tab, &base_url, device_pixel_ratio));
+    requests.sort_by(resource_request_order);
 
     if requests.is_empty() {
         return;
     }
 
     let (immediate, deferred): (Vec<_>, Vec<_>) = requests.into_iter().partition(|request| {
-        request.loading == ImageLoading::Eager || request.top <= LAZY_LOAD_MARGIN * 2.0
+        request.preload_only
+            || request.loading == ImageLoading::Eager
+            || request.top <= LAZY_LOAD_MARGIN * 2.0
     });
     tab.deferred_images = deferred;
 
@@ -1066,14 +1244,26 @@ fn start_image_batch(
                     break;
                 }
                 let cache_key = request.url.as_str().to_owned();
-                let result = fetch_and_decode_image(
-                    &client,
-                    &decoder,
-                    limits,
-                    animation_limits,
-                    &request.isolation_key,
-                    &request.url,
-                );
+                let (kind, result) = if request.preload_only {
+                    (
+                        ResourceLoadKind::Preload,
+                        preload_image(&client, &request.isolation_key, &request.url)
+                            .map(|()| LoadedResource::Preloaded),
+                    )
+                } else {
+                    (
+                        ResourceLoadKind::Image,
+                        fetch_and_decode_image(
+                            &client,
+                            &decoder,
+                            limits,
+                            animation_limits,
+                            &request.isolation_key,
+                            &request.url,
+                        )
+                        .map(LoadedResource::Image),
+                    )
+                };
 
                 if worker_cancelled.load(Ordering::Acquire) {
                     break;
@@ -1084,6 +1274,7 @@ fn start_image_batch(
                         generation,
                         resources: request.resources,
                         cache_key,
+                        kind,
                         result,
                     })
                     .is_err()
@@ -1113,6 +1304,43 @@ fn start_image_batch(
     }
 }
 
+fn collect_preload_requests(
+    tab: &BrowserTab,
+    base_url: &HttpUrl,
+    device_pixel_ratio: f32,
+) -> Vec<ImageLoadRequest> {
+    let isolation_key = NetworkIsolationKey::from_top_level(base_url);
+    let mut grouped = BTreeMap::<String, (HttpUrl, ResourcePriority)>::new();
+
+    for preload in tab
+        .engine
+        .image_preload_requests_for_device(device_pixel_ratio)
+    {
+        let Ok(url) = base_url.resolve(preload.source()) else {
+            continue;
+        };
+        let key = url.as_str().to_owned();
+
+        grouped
+            .entry(key)
+            .and_modify(|(_, priority)| *priority = (*priority).min(preload.priority()))
+            .or_insert((url, preload.priority()));
+    }
+
+    grouped
+        .into_values()
+        .map(|(url, priority)| ImageLoadRequest {
+            resources: Vec::new(),
+            url,
+            isolation_key: isolation_key.clone(),
+            loading: ImageLoading::Eager,
+            priority,
+            top: 0.0,
+            preload_only: true,
+        })
+        .collect()
+}
+
 fn collect_image_requests(
     tab: &mut BrowserTab,
     base_url: &HttpUrl,
@@ -1121,7 +1349,16 @@ fn collect_image_requests(
     let discovered = tab.engine.image_requests_for_device(device_pixel_ratio);
     let isolation_key = NetworkIsolationKey::from_top_level(base_url);
 
-    let mut grouped = BTreeMap::<String, (HttpUrl, Vec<ImageResourceId>, ImageLoading, f32)>::new();
+    let mut grouped = BTreeMap::<
+        String,
+        (
+            HttpUrl,
+            Vec<ImageResourceId>,
+            ImageLoading,
+            ResourcePriority,
+            f32,
+        ),
+    >::new();
     let mut element_count = 0_usize;
 
     for image_request in discovered {
@@ -1138,9 +1375,10 @@ fn collect_image_requests(
 
         grouped
             .entry(key)
-            .and_modify(|(_, resources, loading, top)| {
+            .and_modify(|(_, resources, loading, priority, top)| {
                 resources.push(image_request.resource());
                 *loading = (*loading).min(image_request.loading());
+                *priority = (*priority).min(image_request.priority());
                 *top = top.min(image_request.top());
             })
             .or_insert_with(|| {
@@ -1148,6 +1386,7 @@ fn collect_image_requests(
                     url,
                     vec![image_request.resource()],
                     image_request.loading(),
+                    image_request.priority(),
                     image_request.top(),
                 )
             });
@@ -1155,7 +1394,7 @@ fn collect_image_requests(
 
     let mut requests = Vec::new();
 
-    for (cache_key, (url, resources, loading, top)) in grouped {
+    for (cache_key, (url, resources, loading, priority, top)) in grouped {
         if bind_cached_image(tab, &cache_key, &resources) {
             continue;
         }
@@ -1165,17 +1404,23 @@ fn collect_image_requests(
             url,
             isolation_key: isolation_key.clone(),
             loading,
+            priority,
             top,
+            preload_only: false,
         });
     }
 
-    requests.sort_by(|left, right| {
-        left.loading
-            .cmp(&right.loading)
-            .then_with(|| left.top.total_cmp(&right.top))
-    });
+    requests.sort_by(resource_request_order);
 
     requests
+}
+
+fn resource_request_order(left: &ImageLoadRequest, right: &ImageLoadRequest) -> std::cmp::Ordering {
+    left.priority
+        .cmp(&right.priority)
+        .then_with(|| right.preload_only.cmp(&left.preload_only))
+        .then_with(|| left.loading.cmp(&right.loading))
+        .then_with(|| left.top.total_cmp(&right.top))
 }
 
 fn bind_cached_image(tab: &mut BrowserTab, cache_key: &str, resources: &[ImageResourceId]) -> bool {
@@ -1210,6 +1455,25 @@ fn bind_cached_image(tab: &mut BrowserTab, cache_key: &str, resources: &[ImageRe
 
     tab.loaded_images = tab.loaded_images.saturating_add(installed);
     true
+}
+
+fn preload_image(
+    network: &NetworkClient,
+    isolation_key: &NetworkIsolationKey,
+    url: &HttpUrl,
+) -> Result<(), String> {
+    let response = network
+        .fetch_bytes_partitioned(isolation_key, url)
+        .map_err(|error| error.to_string())?;
+
+    if !(200..=299).contains(&response.status()) {
+        return Err(format!(
+            "HTTP {} ao prÃ©-carregar imagem",
+            response.status()
+        ));
+    }
+
+    Ok(())
 }
 
 fn fetch_and_decode_image(
@@ -1355,13 +1619,26 @@ fn visible_image_resources(
 
 fn install_loaded_image(tab: &mut BrowserTab, context: &egui::Context, event: ImageLoadEvent) {
     let resource_count = event.resources.len();
-    let LoadedImage { metadata, raster } = match event.result {
+    let loaded = match event.result {
         Ok(loaded) => loaded,
         Err(_error) => {
-            tab.failed_images = tab.failed_images.saturating_add(resource_count);
+            match event.kind {
+                ResourceLoadKind::Preload => {
+                    tab.failed_preloads = tab.failed_preloads.saturating_add(1);
+                }
+                ResourceLoadKind::Image => {
+                    tab.failed_images = tab.failed_images.saturating_add(resource_count);
+                }
+            }
             update_image_status(tab);
             return;
         }
+    };
+
+    let LoadedResource::Image(LoadedImage { metadata, raster }) = loaded else {
+        tab.preloaded_resources = tab.preloaded_resources.saturating_add(1);
+        update_image_status(tab);
+        return;
     };
 
     let Some(resource_name) = event.resources.first().copied() else {
@@ -1530,30 +1807,38 @@ fn update_image_status(tab: &mut BrowserTab) {
         let completed = pending.total.saturating_sub(pending.remaining);
 
         tab.status = format!(
-            "Página pronta · imagens {completed}/{} · {} exibidas · {} animadas · {} falhas",
+            "PÃ¡gina pronta Â· recursos {completed}/{} Â· {} imagens Â· {} preloads Â· {} animadas Â· {} falhas img Â· {} falhas preload",
             pending.total,
             tab.loaded_images,
+            tab.preloaded_resources,
             animated_image_count(tab),
             tab.failed_images,
+            tab.failed_preloads,
         );
     } else if !tab.deferred_images.is_empty() {
         tab.status = format!(
-            "Página pronta · {} imagens exibidas · {} adiadas · {} animadas · {} falhas",
+            "PÃ¡gina pronta Â· {} imagens Â· {} adiadas Â· {} preloads Â· {} animadas Â· {} falhas img",
             tab.loaded_images,
             tab.deferred_images.len(),
+            tab.preloaded_resources,
             animated_image_count(tab),
             tab.failed_images,
         );
-    } else if tab.loaded_images > 0 || tab.failed_images > 0 {
+    } else if tab.loaded_images > 0
+        || tab.failed_images > 0
+        || tab.preloaded_resources > 0
+        || tab.failed_preloads > 0
+    {
         tab.status = format!(
-            "Página pronta · {} imagens exibidas · {} animadas · {} falhas",
+            "PÃ¡gina pronta Â· {} imagens Â· {} preloads Â· {} animadas Â· {} falhas img Â· {} falhas preload",
             tab.loaded_images,
+            tab.preloaded_resources,
             animated_image_count(tab),
             tab.failed_images,
+            tab.failed_preloads,
         );
     }
 }
-
 fn commit_history(tab: &mut BrowserTab, action: NavigationAction, final_url: &str) {
     match action {
         NavigationAction::New => {
@@ -1880,11 +2165,13 @@ fn icon_button(
     icon_size: f32,
 ) -> egui::Response {
     ui.add_enabled_ui(enabled, |ui| {
-        ui.add_sized(size, egui::Button::new(lucide_text(icon, icon_size)))
+        ui.add_sized(
+            size,
+            egui::Button::new(lucide_text(icon, icon_size)).frame(false),
+        )
     })
     .inner
 }
-
 fn decode_image(bytes: &[u8]) -> Option<image::RgbaImage> {
     image::load_from_memory(bytes)
         .ok()
@@ -1998,6 +2285,43 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].loading, ImageLoading::Eager);
         assert_eq!(requests[1].loading, ImageLoading::Lazy);
+
+        Ok(())
+    }
+    #[test]
+    fn fetchpriority_orders_images_before_loading_distance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine.load_html(
+            "<img src=\"low.png\" fetchpriority=\"low\"><img src=\"auto.png\"><img src=\"high.png\" fetchpriority=\"high\">",
+        )?;
+        let base_url = HttpUrl::parse("https://example.com/page")?;
+
+        let requests = collect_image_requests(&mut tab, &base_url, 1.0);
+
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].priority, ResourcePriority::High);
+        assert_eq!(requests[1].priority, ResourcePriority::Auto);
+        assert_eq!(requests[2].priority, ResourcePriority::Low);
+
+        Ok(())
+    }
+
+    #[test]
+    fn preload_is_scheduled_before_same_priority_image() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine.load_html(
+            "<link rel=\"preload\" as=\"image\" href=\"hero.png\" fetchpriority=\"high\"><img src=\"visible.png\" fetchpriority=\"high\">",
+        )?;
+        let base_url = HttpUrl::parse("https://example.com/page")?;
+
+        let mut requests = collect_preload_requests(&tab, &base_url, 1.0);
+        requests.extend(collect_image_requests(&mut tab, &base_url, 1.0));
+        requests.sort_by(resource_request_order);
+
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].preload_only);
+        assert!(!requests[1].preload_only);
 
         Ok(())
     }

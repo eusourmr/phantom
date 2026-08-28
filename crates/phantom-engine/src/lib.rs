@@ -42,6 +42,7 @@ pub struct ImageRequest {
     resource: ImageResourceId,
     source: String,
     loading: ImageLoading,
+    priority: ResourcePriority,
     top: f32,
     bottom: f32,
 }
@@ -55,6 +56,30 @@ pub enum ImageLoading {
 
     /// Defer fetching until the image approaches the visual viewport.
     Lazy,
+}
+
+/// Fetch priority hint exposed by HTML `fetchpriority`.
+///
+/// Ordering is intentional: `High < Auto < Low`, allowing normal Rust sorting
+/// to place higher-priority work first without numeric magic constants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResourcePriority {
+    /// User-agent scheduling should prefer this resource over normal work.
+    High,
+
+    /// Use the browser's normal scheduling policy.
+    #[default]
+    Auto,
+
+    /// User-agent scheduling may defer this resource behind normal work.
+    Low,
+}
+
+/// One `<link rel="preload" as="image">` hint discovered in the document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImagePreloadRequest {
+    source: String,
+    priority: ResourcePriority,
 }
 
 impl ImageRequest {
@@ -76,6 +101,12 @@ impl ImageRequest {
         self.loading
     }
 
+    /// Returns the normalized `fetchpriority` scheduling hint.
+    #[must_use]
+    pub const fn priority(&self) -> ResourcePriority {
+        self.priority
+    }
+
     /// Returns the image border-box top in document coordinates.
     #[must_use]
     pub const fn top(&self) -> f32 {
@@ -86,6 +117,20 @@ impl ImageRequest {
     #[must_use]
     pub const fn bottom(&self) -> f32 {
         self.bottom
+    }
+}
+
+impl ImagePreloadRequest {
+    /// Returns the raw preload source reference from the document.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the normalized preload `fetchpriority` hint.
+    #[must_use]
+    pub const fn priority(&self) -> ResourcePriority {
+        self.priority
     }
 }
 
@@ -214,19 +259,56 @@ impl Engine {
 
                 let node_id = layout_box.source_node();
                 let source = select_image_source(&self.document, node_id, viewport_width, dpr)?;
-                let loading = element_for(&self.document, node_id)
+                let element = element_for(&self.document, node_id);
+                let loading = element
                     .and_then(|element| element.attribute("loading"))
                     .filter(|value| value.eq_ignore_ascii_case("lazy"))
                     .map_or(ImageLoading::Eager, |_| ImageLoading::Lazy);
+                let priority = element.map_or(ResourcePriority::Auto, |element| {
+                    resource_priority(element.attribute("fetchpriority"))
+                });
                 let rect = layout_box.rect();
 
                 Some(ImageRequest {
                     resource,
                     source,
                     loading,
+                    priority,
                     top: rect.y(),
                     bottom: rect.bottom(),
                 })
+            })
+            .collect()
+    }
+
+    /// Returns image preload hints for a default device-pixel ratio.
+    #[must_use]
+    pub fn image_preload_requests(&self) -> Vec<ImagePreloadRequest> {
+        self.image_preload_requests_for_device(1.0)
+    }
+
+    /// Returns `<link rel="preload" as="image">` requests selected for the
+    /// supplied device-pixel ratio.
+    ///
+    /// This initial standards slice supports `href`, `imagesrcset`,
+    /// `imagesizes`, simple `media`, supported image `type`, and
+    /// `fetchpriority`. Fetching remains outside the engine.
+    #[must_use]
+    pub fn image_preload_requests_for_device(
+        &self,
+        device_pixel_ratio: f32,
+    ) -> Vec<ImagePreloadRequest> {
+        let viewport_width = self.layout.viewport_width().max(1.0);
+        let dpr = device_pixel_ratio.max(0.1);
+
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+
+                preload_image_from_element(element, viewport_width, dpr)
             })
             .collect()
     }
@@ -402,6 +484,57 @@ fn select_from_element(element: &ElementData, viewport_width: f32, dpr: f32) -> 
         .map(str::trim)
         .filter(|source| !source.is_empty())
         .map(str::to_owned)
+}
+
+fn resource_priority(value: Option<&str>) -> ResourcePriority {
+    match value.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("high") => ResourcePriority::High,
+        Some(value) if value.eq_ignore_ascii_case("low") => ResourcePriority::Low,
+        _ => ResourcePriority::Auto,
+    }
+}
+
+fn preload_image_from_element(
+    element: &ElementData,
+    viewport_width: f32,
+    dpr: f32,
+) -> Option<ImagePreloadRequest> {
+    if element.tag_name() != "link"
+        || !rel_has_token(element.attribute("rel"), "preload")
+        || !element
+            .attribute("as")
+            .is_some_and(|value| value.eq_ignore_ascii_case("image"))
+        || !supported_source_type(element.attribute("type"))
+        || !media_matches(element.attribute("media"), viewport_width)
+    {
+        return None;
+    }
+
+    let source = element
+        .attribute("imagesrcset")
+        .and_then(|srcset| {
+            select_srcset(srcset, element.attribute("imagesizes"), viewport_width, dpr)
+        })
+        .or_else(|| {
+            element
+                .attribute("href")
+                .map(str::trim)
+                .filter(|source| !source.is_empty())
+                .map(str::to_owned)
+        })?;
+
+    Some(ImagePreloadRequest {
+        source,
+        priority: resource_priority(element.attribute("fetchpriority")),
+    })
+}
+
+fn rel_has_token(value: Option<&str>, token: &str) -> bool {
+    value.is_some_and(|value| {
+        value
+            .split_ascii_whitespace()
+            .any(|candidate| candidate.eq_ignore_ascii_case(token))
+    })
 }
 
 fn element_for(document: &Document, node_id: NodeId) -> Option<&ElementData> {
