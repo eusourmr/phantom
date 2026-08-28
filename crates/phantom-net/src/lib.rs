@@ -2,8 +2,8 @@
 //!
 //! The web engine owns navigation and Web Platform semantics. This crate owns
 //! HTTP(S) URL validation, relative HTTP(S) resource resolution, transport
-//! mechanics, bounded response policy, and the partitioned in-memory HTTP cache
-//! revalidation layer used by binary subresources.
+//! mechanics, bounded response policy, and partitioned in-memory HTTP caches
+//! used by documents and binary subresources.
 //!
 //! Text documents and binary subresources use separate byte budgets so image
 //! loading cannot silently turn the navigation path into an unbounded download
@@ -11,7 +11,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -23,9 +23,12 @@ use url::Url;
 
 const DEFAULT_MAX_TEXT_BODY_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_MAX_BINARY_BODY_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_TEXT_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_TEXT_CACHE_ENTRIES: usize = 32;
 const DEFAULT_MAX_BINARY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_BINARY_CACHE_ENTRIES: usize = 128;
 const MAX_BINARY_FETCH_ATTEMPTS: usize = 2;
+const MAX_DOCUMENT_REDIRECTS: usize = 10;
 const IMAGE_ACCEPT: &str =
     "image/webp,image/png,image/jpeg,image/gif;q=0.95,image/*;q=0.5,*/*;q=0.1";
 
@@ -205,6 +208,18 @@ pub enum UrlError {
     CredentialsNotAllowed,
 }
 
+// PHANTOM_2C11_DOCUMENT_CACHE
+/// Fetch behavior requested by the top-level document navigator.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DocumentRequestMode {
+    /// Normal navigation may reuse a fresh cached document representation.
+    #[default]
+    Navigate,
+
+    /// Reload bypasses freshness reuse and asks the origin to revalidate.
+    Reload,
+}
+
 /// HTTP response decoded as text for the document pipeline.
 #[derive(Clone, Debug)]
 pub struct TextResponse {
@@ -212,7 +227,9 @@ pub struct TextResponse {
     final_url: String,
     status: u16,
     content_type: Option<String>,
-    body: String,
+    redirect_count: usize,
+    body: Arc<str>,
+    cache_status: CacheStatus,
 }
 
 impl TextResponse {
@@ -240,10 +257,16 @@ impl TextResponse {
         self.content_type.as_deref()
     }
 
+    /// Number of HTTP redirect hops followed before the final response.
+    #[must_use]
+    pub const fn redirect_count(&self) -> usize {
+        self.redirect_count
+    }
+
     /// Decoded response body.
     #[must_use]
     pub fn body(&self) -> &str {
-        &self.body
+        self.body.as_ref()
     }
 
     /// UTF-8 byte count held by the decoded body.
@@ -251,9 +274,16 @@ impl TextResponse {
     pub fn body_bytes(&self) -> usize {
         self.body.len()
     }
+
+    /// Reports whether the document came from network, fresh cache, or HTTP
+    /// conditional revalidation.
+    #[must_use]
+    pub const fn cache_status(&self) -> CacheStatus {
+        self.cache_status
+    }
 }
 
-/// Origin of a binary response relative to Phantom's in-memory HTTP cache.
+/// Origin of a response relative to Phantom's in-memory HTTP caches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheStatus {
     /// A network response was required and no reusable representation existed.
@@ -367,6 +397,37 @@ impl CachePolicy {
 }
 
 #[derive(Clone, Debug)]
+struct CachedTextResponse {
+    final_url: String,
+    status: u16,
+    content_type: Option<String>,
+    body: Arc<str>,
+    validators: CacheValidators,
+    policy: CachePolicy,
+    stored_at: Instant,
+    last_used: u64,
+}
+
+impl CachedTextResponse {
+    fn to_response(
+        &self,
+        requested_url: &str,
+        redirect_count: usize,
+        cache_status: CacheStatus,
+    ) -> TextResponse {
+        TextResponse {
+            requested_url: requested_url.to_owned(),
+            final_url: self.final_url.clone(),
+            status: self.status,
+            content_type: self.content_type.clone(),
+            redirect_count,
+            body: self.body.clone(),
+            cache_status,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct CachedBinaryResponse {
     final_url: String,
     status: u16,
@@ -403,6 +464,74 @@ impl PartitionedCacheKey {
             isolation_key: isolation_key.clone(),
             resource_url: resource_url.to_owned(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct TextHttpCache {
+    entries: BTreeMap<PartitionedCacheKey, CachedTextResponse>,
+    body_bytes: u64,
+    clock: u64,
+    max_body_bytes: u64,
+    max_entries: usize,
+}
+
+impl TextHttpCache {
+    fn new(max_body_bytes: u64, max_entries: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            body_bytes: 0,
+            clock: 0,
+            max_body_bytes: max_body_bytes.max(1),
+            max_entries: max_entries.max(1),
+        }
+    }
+
+    fn get(&mut self, key: &PartitionedCacheKey) -> Option<CachedTextResponse> {
+        self.clock = self.clock.saturating_add(1);
+        let last_used = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = last_used;
+        Some(entry.clone())
+    }
+
+    fn remove(&mut self, key: &PartitionedCacheKey) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.body_bytes = self
+                .body_bytes
+                .saturating_sub(u64::try_from(entry.body.len()).unwrap_or(u64::MAX));
+        }
+    }
+
+    fn insert(&mut self, key: PartitionedCacheKey, mut entry: CachedTextResponse) {
+        let entry_bytes = u64::try_from(entry.body.len()).unwrap_or(u64::MAX);
+        if entry_bytes > self.max_body_bytes {
+            self.remove(&key);
+            return;
+        }
+
+        self.remove(&key);
+        self.clock = self.clock.saturating_add(1);
+        entry.last_used = self.clock;
+
+        while self.entries.len() >= self.max_entries
+            || self.body_bytes.saturating_add(entry_bytes) > self.max_body_bytes
+        {
+            let victim = self
+                .entries
+                .iter()
+                .min_by_key(|(_, candidate)| candidate.last_used)
+                .map(|(candidate_key, _)| candidate_key.clone());
+
+            let Some(victim_key) = victim else {
+                break;
+            };
+
+            self.remove(&victim_key);
+        }
+
+        self.body_bytes = self.body_bytes.saturating_add(entry_bytes);
+        self.entries.insert(key, entry);
     }
 }
 
@@ -476,15 +605,15 @@ impl BinaryHttpCache {
 
 /// Reusable network client used by browser resource coordinators.
 ///
-/// Clones share one bounded, process-memory binary cache. Every reusable binary
-/// entry is partitioned by [`NetworkIsolationKey`] before the resource URL is
-/// considered. The cache is not persisted to disk and does not cache document
-/// text in this milestone.
+/// Clones share bounded process-memory document and binary caches. Every
+/// reusable entry is partitioned by [`NetworkIsolationKey`] before its URL is
+/// considered. Neither cache is persisted to disk.
 #[derive(Clone)]
 pub struct NetworkClient {
     agent: ureq::Agent,
     max_text_body_bytes: u64,
     max_binary_body_bytes: u64,
+    text_cache: Arc<Mutex<TextHttpCache>>,
     binary_cache: Arc<Mutex<BinaryHttpCache>>,
 }
 
@@ -492,7 +621,7 @@ impl Default for NetworkClient {
     fn default() -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .max_redirects(10)
+            .max_redirects(0)
             .max_response_header_size(64 * 1024)
             .timeout_global(Some(Duration::from_secs(30)))
             .user_agent("Phantom/0.0.1 (+https://github.com/eusourmr/phantom)")
@@ -502,6 +631,10 @@ impl Default for NetworkClient {
             agent: ureq::Agent::new_with_config(config),
             max_text_body_bytes: DEFAULT_MAX_TEXT_BODY_BYTES,
             max_binary_body_bytes: DEFAULT_MAX_BINARY_BODY_BYTES,
+            text_cache: Arc::new(Mutex::new(TextHttpCache::new(
+                DEFAULT_MAX_TEXT_CACHE_BYTES,
+                DEFAULT_MAX_TEXT_CACHE_ENTRIES,
+            ))),
             binary_cache: Arc::new(Mutex::new(BinaryHttpCache::new(
                 DEFAULT_MAX_BINARY_CACHE_BYTES,
                 DEFAULT_MAX_BINARY_CACHE_ENTRIES,
@@ -558,49 +691,278 @@ impl NetworkClient {
         client
     }
 
-    /// Fetches an HTTP(S) resource and decodes it as text.
+    /// Builds a client with explicit response, document-cache and binary-cache
+    /// limits. This constructor is intended for deterministic cache tests.
+    #[must_use]
+    pub fn with_all_cache_limits(
+        max_text_body_bytes: u64,
+        max_binary_body_bytes: u64,
+        max_text_cache_bytes: u64,
+        max_text_cache_entries: usize,
+        max_binary_cache_bytes: u64,
+        max_binary_cache_entries: usize,
+    ) -> Self {
+        let mut client = Self::with_cache_limits(
+            max_text_body_bytes,
+            max_binary_body_bytes,
+            max_binary_cache_bytes,
+            max_binary_cache_entries,
+        );
+        client.text_cache = Arc::new(Mutex::new(TextHttpCache::new(
+            max_text_cache_bytes,
+            max_text_cache_entries,
+        )));
+        client
+    }
+
+    /// Fetches an HTTP(S) document using normal navigation cache semantics.
+    ///
+    /// Fresh cached documents may satisfy a navigation without network I/O.
+    /// Stale entries with validators are conditionally revalidated. Redirects
+    /// remain explicit and bounded by Phantom.
     ///
     /// # Errors
     ///
     /// Returns [`NetworkError`] for rejected URLs, transport failures, invalid
-    /// redirect targets, or responses exceeding the configured text budget.
+    /// redirect targets, redirect loops, excessive redirect chains, standalone
+    /// `304 Not Modified`, or responses exceeding the configured text budget.
     pub fn fetch_text(&self, input: &str) -> Result<TextResponse, NetworkError> {
-        let url = HttpUrl::parse(input)?;
-        let requested_url = url.as_str().to_owned();
+        self.fetch_text_with_mode(input, DocumentRequestMode::Navigate)
+    }
 
-        let mut response = self
-            .agent
-            .get(url.as_str())
-            .header(
+    /// Reloads an HTTP(S) document, bypassing fresh-cache reuse and requesting
+    /// origin revalidation with `Cache-Control: max-age=0`.
+    ///
+    /// Cached `ETag` and `Last-Modified` validators are sent when available. A
+    /// valid `304 Not Modified` response refreshes metadata and reuses the
+    /// cached body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkError`] under the same conditions as [`Self::fetch_text`].
+    pub fn reload_text(&self, input: &str) -> Result<TextResponse, NetworkError> {
+        self.fetch_text_with_mode(input, DocumentRequestMode::Reload)
+    }
+
+    /// Fetches a top-level document using an explicit navigation cache mode.
+    ///
+    /// Redirect responses themselves are not cached in this milestone. When a
+    /// redirect reaches a final URL that already has a fresh representation,
+    /// normal navigation may reuse that final cached representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkError`] for URL, redirect, transport, body or invalid
+    /// revalidation failures.
+    pub fn fetch_text_with_mode(
+        &self,
+        input: &str,
+        mode: DocumentRequestMode,
+    ) -> Result<TextResponse, NetworkError> {
+        let mut current_url = HttpUrl::parse(input)?;
+        let requested_url = current_url.as_str().to_owned();
+        let mut visited = BTreeSet::new();
+        visited.insert(redirect_visit_key(&current_url));
+        let mut redirect_count = 0_usize;
+
+        loop {
+            let isolation_key = NetworkIsolationKey::from_top_level(&current_url);
+            let cache_key = PartitionedCacheKey::new(&isolation_key, current_url.as_str());
+            let cached = self.cached_text(&cache_key);
+            let now = Instant::now();
+
+            if mode == DocumentRequestMode::Navigate
+                && let Some(entry) = cached.as_ref()
+                && entry.policy.fresh(entry.stored_at, now)
+            {
+                return Ok(entry.to_response(&requested_url, redirect_count, CacheStatus::Fresh));
+            }
+
+            let mut request = self.agent.get(current_url.as_str()).header(
                 "Accept",
                 "text/html,application/xhtml+xml,text/css,text/plain;q=0.9,*/*;q=0.5",
-            )
-            .call()
-            .map_err(|error| NetworkError::Request(error.to_string()))?;
+            );
 
-        let status = response.status().as_u16();
-        let final_url = HttpUrl::parse(&response.get_uri().to_string())?;
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+            if mode == DocumentRequestMode::Reload {
+                request = request.header("Cache-Control", "max-age=0");
+            }
 
-        let body = response
-            .body_mut()
-            .with_config()
-            .limit(self.max_text_body_bytes)
-            .lossy_utf8(true)
-            .read_to_string()
-            .map_err(|error| NetworkError::Body(error.to_string()))?;
+            if let Some(entry) = cached.as_ref() {
+                if let Some(etag) = entry.validators.etag.as_deref() {
+                    request = request.header("If-None-Match", etag);
+                }
 
-        Ok(TextResponse {
-            requested_url,
-            final_url: final_url.as_str().to_owned(),
-            status,
-            content_type,
-            body,
-        })
+                if let Some(last_modified) = entry.validators.last_modified.as_deref() {
+                    request = request.header("If-Modified-Since", last_modified);
+                }
+            }
+
+            let mut response = request
+                .call()
+                .map_err(|error| NetworkError::Request(error.to_string()))?;
+            let status = response.status().as_u16();
+
+            if is_document_redirect_status(status) {
+                self.remove_cached_text(&cache_key);
+
+                if redirect_count >= MAX_DOCUMENT_REDIRECTS {
+                    return Err(NetworkError::RedirectLimitExceeded {
+                        limit: MAX_DOCUMENT_REDIRECTS,
+                    });
+                }
+
+                let location = response
+                    .headers()
+                    .get("location")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(NetworkError::RedirectMissingLocation { status })?;
+
+                let next_url = current_url.resolve(location)?;
+                let next_key = redirect_visit_key(&next_url);
+
+                if !visited.insert(next_key.clone()) {
+                    return Err(NetworkError::RedirectLoop(next_key));
+                }
+
+                current_url = next_url;
+                redirect_count = redirect_count.saturating_add(1);
+                continue;
+            }
+
+            let final_url = HttpUrl::parse(&response.get_uri().to_string())?;
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let etag = response
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let last_modified = response
+                .headers()
+                .get("last-modified")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let cache_control = response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let age = response
+                .headers()
+                .get("age")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let vary = response
+                .headers()
+                .get("vary")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+
+            if status == 304 {
+                let Some(existing) = cached.as_ref() else {
+                    return Err(NetworkError::UnexpectedNotModified);
+                };
+
+                let validators = CacheValidators {
+                    etag: etag.or_else(|| existing.validators.etag.clone()),
+                    last_modified: last_modified
+                        .or_else(|| existing.validators.last_modified.clone()),
+                };
+
+                let policy = if cache_control.is_some() || vary.is_some() {
+                    cache_policy(
+                        cache_control.as_deref(),
+                        age.as_deref(),
+                        vary.as_deref(),
+                        validators.has_any(),
+                    )
+                } else {
+                    existing.policy.clone()
+                };
+
+                let refreshed = CachedTextResponse {
+                    final_url: final_url.as_str().to_owned(),
+                    status: existing.status,
+                    content_type: content_type.or_else(|| existing.content_type.clone()),
+                    body: existing.body.clone(),
+                    validators,
+                    policy,
+                    stored_at: Instant::now(),
+                    last_used: 0,
+                };
+
+                if refreshed.policy.store {
+                    self.store_cached_text(cache_key.clone(), refreshed.clone());
+                } else {
+                    self.remove_cached_text(&cache_key);
+                }
+
+                return Ok(refreshed.to_response(
+                    &requested_url,
+                    redirect_count,
+                    CacheStatus::Revalidated,
+                ));
+            }
+
+            let body: Arc<str> = response
+                .body_mut()
+                .with_config()
+                .limit(self.max_text_body_bytes)
+                .lossy_utf8(true)
+                .read_to_string()
+                .map_err(|error| NetworkError::Body(error.to_string()))?
+                .into();
+
+            let text_response = TextResponse {
+                requested_url: requested_url.clone(),
+                final_url: final_url.as_str().to_owned(),
+                status,
+                content_type: content_type.clone(),
+                redirect_count,
+                body: body.clone(),
+                cache_status: CacheStatus::Miss,
+            };
+
+            if status == 200 {
+                let validators = CacheValidators {
+                    etag,
+                    last_modified,
+                };
+                let policy = cache_policy(
+                    cache_control.as_deref(),
+                    age.as_deref(),
+                    vary.as_deref(),
+                    validators.has_any(),
+                );
+
+                if policy.store {
+                    self.store_cached_text(
+                        cache_key,
+                        CachedTextResponse {
+                            final_url: text_response.final_url.clone(),
+                            status,
+                            content_type,
+                            body,
+                            validators,
+                            policy,
+                            stored_at: Instant::now(),
+                            last_used: 0,
+                        },
+                    );
+                } else {
+                    self.remove_cached_text(&cache_key);
+                }
+            } else {
+                self.remove_cached_text(&cache_key);
+            }
+
+            return Ok(text_response);
+        }
     }
 
     /// Fetches a bounded binary HTTP(S) subresource inside an explicit network
@@ -814,6 +1176,30 @@ impl NetworkClient {
         ))
     }
 
+    fn cached_text(&self, key: &PartitionedCacheKey) -> Option<CachedTextResponse> {
+        let Ok(mut cache) = self.text_cache.lock() else {
+            return None;
+        };
+
+        cache.get(key)
+    }
+
+    fn store_cached_text(&self, key: PartitionedCacheKey, entry: CachedTextResponse) {
+        let Ok(mut cache) = self.text_cache.lock() else {
+            return;
+        };
+
+        cache.insert(key, entry);
+    }
+
+    fn remove_cached_text(&self, key: &PartitionedCacheKey) {
+        let Ok(mut cache) = self.text_cache.lock() else {
+            return;
+        };
+
+        cache.remove(key);
+    }
+
     fn cached_binary(&self, key: &PartitionedCacheKey) -> Option<CachedBinaryResponse> {
         let Ok(mut cache) = self.binary_cache.lock() else {
             return None;
@@ -900,7 +1286,7 @@ fn cache_policy(
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let fresh_seconds = max_age_seconds.unwrap_or(0).saturating_sub(age_seconds);
-    let vary_supported = vary_allows_fixed_image_request(vary);
+    let vary_supported = vary_allows_fixed_accept_request(vary);
     let has_explicit_cache_semantics =
         max_age_seconds.is_some() || stale_if_error_seconds.is_some() || no_cache || has_validator;
 
@@ -920,7 +1306,7 @@ fn trim_http_quotes(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-fn vary_allows_fixed_image_request(vary: Option<&str>) -> bool {
+fn vary_allows_fixed_accept_request(vary: Option<&str>) -> bool {
     let Some(value) = vary else {
         return true;
     };
@@ -929,6 +1315,16 @@ fn vary_allows_fixed_image_request(vary: Option<&str>) -> bool {
         let name = raw_name.trim();
         !name.is_empty() && name != "*" && name.eq_ignore_ascii_case("accept")
     })
+}
+
+fn redirect_visit_key(url: &HttpUrl) -> String {
+    let mut normalized = url.0.clone();
+    normalized.set_fragment(None);
+    normalized.as_str().to_owned()
+}
+
+fn is_document_redirect_status(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
 /// Errors emitted by Phantom's network boundary.
@@ -941,6 +1337,24 @@ pub enum NetworkError {
     /// The response body could not be read within configured limits.
     #[error("response body failed: {0}")]
     Body(String),
+
+    /// A redirect response omitted a usable `Location` header.
+    #[error("HTTP {status} redirect is missing a usable Location header")]
+    RedirectMissingLocation {
+        /// Redirect status code that omitted the target.
+        status: u16,
+    },
+
+    /// A redirect chain revisited a URL already seen in the same navigation.
+    #[error("redirect loop detected at {0}")]
+    RedirectLoop(String),
+
+    /// A redirect chain exceeded Phantom's bounded navigation policy.
+    #[error("redirect limit exceeded ({limit} hops)")]
+    RedirectLimitExceeded {
+        /// Maximum number of redirect hops allowed for one document fetch.
+        limit: usize,
+    },
 
     /// A 304 response arrived without a cached representation to validate.
     #[error("received HTTP 304 without a cached representation")]
@@ -955,7 +1369,7 @@ pub enum NetworkError {
 mod tests {
     use super::{
         CachePolicy, HttpUrl, NetworkClient, NetworkIsolationKey, UrlError, cache_policy,
-        trim_http_quotes, vary_allows_fixed_image_request,
+        trim_http_quotes, vary_allows_fixed_accept_request,
     };
     use std::time::{Duration, Instant};
 
@@ -1055,11 +1469,11 @@ mod tests {
 
     #[test]
     fn unsupported_vary_is_not_cached() {
-        assert!(vary_allows_fixed_image_request(None));
-        assert!(vary_allows_fixed_image_request(Some("Accept")));
-        assert!(!vary_allows_fixed_image_request(Some("*")));
-        assert!(!vary_allows_fixed_image_request(Some("Accept-Encoding")));
-        assert!(!vary_allows_fixed_image_request(Some(
+        assert!(vary_allows_fixed_accept_request(None));
+        assert!(vary_allows_fixed_accept_request(Some("Accept")));
+        assert!(!vary_allows_fixed_accept_request(Some("*")));
+        assert!(!vary_allows_fixed_accept_request(Some("Accept-Encoding")));
+        assert!(!vary_allows_fixed_accept_request(Some(
             "Accept, Accept-Encoding"
         )));
     }

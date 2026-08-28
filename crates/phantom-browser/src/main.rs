@@ -37,6 +37,7 @@ const LUCIDE_FONT_NAME: &str = "phantom-lucide";
 const MAX_IMAGES_PER_DOCUMENT: usize = 64;
 const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const LAZY_LOAD_MARGIN: f32 = 768.0;
+const MAX_RECENTLY_CLOSED_TABS: usize = 10;
 
 const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.png");
 
@@ -271,6 +272,12 @@ impl Drop for PendingImageBatch {
     }
 }
 
+// PHANTOM_2C11_SITE_ICON_LIFECYCLE
+struct PendingSiteIcon {
+    receiver: Receiver<Result<DecodedImage, String>>,
+    generation: u64,
+    source: String,
+}
 struct BrowserTab {
     engine: Engine,
     address: String,
@@ -279,8 +286,10 @@ struct BrowserTab {
     status: String,
     pending: Option<PendingNavigation>,
     pending_images: Option<PendingImageBatch>,
+    pending_site_icon: Option<PendingSiteIcon>,
     deferred_images: Vec<ImageLoadRequest>,
     image_textures: BTreeMap<ImageResourceId, ImageTextureBinding>,
+    site_icon: Option<egui::TextureHandle>,
     visible_images: BTreeSet<ImageResourceId>,
     image_cache: BTreeMap<String, CachedImage>,
     cache_clock: u64,
@@ -305,8 +314,10 @@ impl BrowserTab {
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
             pending: None,
             pending_images: None,
+            pending_site_icon: None,
             deferred_images: Vec::new(),
             image_textures: BTreeMap::new(),
+            site_icon: None,
             visible_images: BTreeSet::new(),
             image_cache: BTreeMap::new(),
             cache_clock: 0,
@@ -336,7 +347,7 @@ impl BrowserTab {
     }
 
     fn is_loading_images(&self) -> bool {
-        self.pending_images.is_some()
+        self.pending_images.is_some() || self.pending_site_icon.is_some()
     }
 
     fn animation_repaint_after(&self, now: Instant) -> Option<Duration> {
@@ -351,6 +362,7 @@ impl BrowserTab {
         if let Some(pending) = self.pending_images.take() {
             pending.cancelled.store(true, Ordering::Release);
         }
+        self.pending_site_icon = None;
         self.deferred_images.clear();
     }
 }
@@ -363,15 +375,46 @@ enum NavigationUiCommand {
     Reload,
 }
 
+// 2C-10 â€” recently closed tabs
+#[derive(Clone, Debug)]
+struct ClosedTabSnapshot {
+    address: String,
+    title: String,
+    pinned: bool,
+    history: Vec<String>,
+    history_index: Option<usize>,
+}
+
+impl ClosedTabSnapshot {
+    fn capture(tab: &BrowserTab) -> Option<Self> {
+        let address = tab
+            .history_index
+            .and_then(|index| tab.history.get(index))
+            .cloned()
+            .unwrap_or_else(|| tab.address.trim().to_owned());
+
+        if address.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            address,
+            title: tab.title.clone(),
+            pinned: tab.pinned,
+            history: tab.history.clone(),
+            history_index: tab.history_index,
+        })
+    }
+}
 struct PhantomApp {
     network: NetworkClient,
     tabs: Vec<BrowserTab>,
     active_tab: usize,
     page_logo: Option<egui::TextureHandle>,
-    app_icon: Option<egui::TextureHandle>,
     floating_bar_forced: bool,
     focus_address_next_frame: bool,
     window_maximized: bool,
+    recently_closed_tabs: Vec<ClosedTabSnapshot>,
 }
 
 impl PhantomApp {
@@ -384,10 +427,10 @@ impl PhantomApp {
             tabs: vec![BrowserTab::new()],
             active_tab: 0,
             page_logo: load_texture(&context.egui_ctx, "phantom-page-logo", PAGE_LOGO_BYTES),
-            app_icon: load_texture(&context.egui_ctx, "phantom-app-icon", APP_ICON_BYTES),
             floating_bar_forced: true,
             focus_address_next_frame: true,
             window_maximized: false,
+            recently_closed_tabs: Vec::new(),
         }
     }
 
@@ -411,6 +454,8 @@ impl PhantomApp {
             return;
         }
 
+        self.remember_closed_tab(index);
+
         if self.tabs.len() == 1 {
             self.tabs[0] = BrowserTab::new();
             self.active_tab = 0;
@@ -428,6 +473,67 @@ impl PhantomApp {
         }
     }
 
+    fn remember_closed_tab(&mut self, index: usize) {
+        let Some(snapshot) = self.tabs.get(index).and_then(ClosedTabSnapshot::capture) else {
+            return;
+        };
+
+        self.recently_closed_tabs.push(snapshot);
+        if self.recently_closed_tabs.len() > MAX_RECENTLY_CLOSED_TABS {
+            self.recently_closed_tabs.remove(0);
+        }
+    }
+
+    fn reopen_last_closed_tab(&mut self) {
+        let Some(snapshot) = self.recently_closed_tabs.pop() else {
+            return;
+        };
+
+        let target = snapshot.address.clone();
+        let mut tab = BrowserTab::new();
+        tab.address = snapshot.address;
+        tab.title = snapshot.title;
+        tab.pinned = snapshot.pinned;
+        tab.history = snapshot.history;
+        tab.history_index = snapshot.history_index;
+        if tab.history.is_empty() {
+            tab.history.push(target.clone());
+            tab.history_index = Some(0);
+        }
+
+        let replace_blank = self.tabs.len() == 1
+            && !self.tabs[0].page_loaded
+            && self.tabs[0].address.trim().is_empty()
+            && self.tabs[0].history.is_empty();
+
+        let insert_index = if replace_blank {
+            self.tabs[0] = tab;
+            0
+        } else {
+            let insert_index = if tab.pinned {
+                self.tabs
+                    .iter()
+                    .position(|candidate| !candidate.pinned)
+                    .unwrap_or(self.tabs.len())
+            } else {
+                self.tabs.len()
+            };
+            self.tabs.insert(insert_index, tab);
+            insert_index
+        };
+
+        self.active_tab = insert_index;
+        self.floating_bar_forced = false;
+        self.focus_address_next_frame = false;
+
+        let network = self.network.clone();
+        start_navigation(
+            &network,
+            &mut self.tabs[insert_index],
+            target,
+            NavigationAction::Reload,
+        );
+    }
     fn toggle_tab_pinned(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
@@ -465,11 +571,13 @@ impl PhantomApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
-        let (focus_location, new_tab, close_tab, reload) = context.input(|input| {
+        let (focus_location, new_tab, reopen_closed, close_tab, reload) = context.input(|input| {
             let command = input.modifiers.command;
+            let shift = input.modifiers.shift;
             (
                 command && input.key_pressed(egui::Key::L),
-                command && input.key_pressed(egui::Key::T),
+                command && !shift && input.key_pressed(egui::Key::T),
+                command && shift && input.key_pressed(egui::Key::T),
                 command && input.key_pressed(egui::Key::W),
                 command && input.key_pressed(egui::Key::R),
             )
@@ -477,6 +585,10 @@ impl PhantomApp {
 
         if new_tab {
             self.open_new_tab();
+        }
+
+        if reopen_closed {
+            self.reopen_last_closed_tab();
         }
 
         if close_tab {
@@ -497,13 +609,13 @@ impl PhantomApp {
             self.focus_address_next_frame = false;
         }
     }
-
     fn poll_navigation(&mut self, context: &egui::Context) {
         let network = self.network.clone();
 
         for tab in &mut self.tabs {
             poll_tab_navigation(tab, &network, context.pixels_per_point());
             poll_tab_images(tab, context);
+            poll_tab_site_icon(tab, context);
         }
     }
 
@@ -581,6 +693,7 @@ impl PhantomApp {
         let mut toggle_pin_tab = None;
         let mut reload_tab = None;
         let mut create_tab = false;
+        let mut reopen_closed_tab = false;
         let mut minimize = false;
         let mut toggle_maximize = false;
         let mut close_window = false;
@@ -596,12 +709,6 @@ impl PhantomApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if let Some(icon) = &self.app_icon {
-                        ui.image((icon.id(), egui::vec2(27.0, 27.0)));
-                    }
-
-                    ui.add_space(3.0);
-
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let is_active = index == self.active_tab;
                         let title = tab_title(tab);
@@ -620,22 +727,50 @@ impl PhantomApp {
                                 ui.set_width(width);
 
                                 ui.horizontal(|ui| {
+                                    let has_site_icon = tab.site_icon.is_some();
                                     let tab_response = if tab.pinned {
-                                        ui.add_sized(
-                                            [28.0, 24.0],
-                                            egui::Button::new(lucide_text(Icon::Pin, 14.0))
-                                                .frame(false),
-                                        )
+                                        if let Some(site_icon) = &tab.site_icon {
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::vec2(28.0, 24.0),
+                                                egui::Sense::click(),
+                                            );
+                                            let icon_rect = egui::Rect::from_center_size(
+                                                rect.center(),
+                                                egui::vec2(18.0, 18.0),
+                                            );
+                                            ui.painter().image(
+                                                site_icon.id(),
+                                                icon_rect,
+                                                unit_uv(),
+                                                egui::Color32::WHITE,
+                                            );
+                                            response
+                                        } else {
+                                            ui.add_sized(
+                                                [28.0, 24.0],
+                                                egui::Button::new(lucide_text(Icon::Pin, 14.0))
+                                                    .frame(false),
+                                            )
+                                        }
                                     } else {
+                                        if let Some(site_icon) = &tab.site_icon {
+                                            ui.image((site_icon.id(), egui::vec2(16.0, 16.0)));
+                                        }
+
+                                        let title_width = if has_site_icon {
+                                            (width - 56.0).max(64.0)
+                                        } else {
+                                            (width - 36.0).max(80.0)
+                                        };
+
                                         ui.add_sized(
-                                            [(width - 36.0).max(80.0), 24.0],
+                                            [title_width, 24.0],
                                             egui::Button::new(
                                                 egui::RichText::new(title.clone()).size(13.0),
                                             )
                                             .frame(false),
                                         )
                                     };
-
                                     let close_clicked = !tab.pinned
                                         && icon_button(ui, Icon::X, true, [25.0, 24.0], 13.0)
                                             .on_hover_text("Fechar aba Â· Ctrl+W")
@@ -703,6 +838,13 @@ impl PhantomApp {
                         + WINDOW_CONTROL_WIDTH * 3.0
                         + WINDOW_CONTROLS_GAP * 2.0
                         + WINDOW_CONTROLS_RIGHT_PADDING;
+                    if !self.recently_closed_tabs.is_empty()
+                        && icon_button(ui, Icon::History, true, [31.0, 30.0], 15.0)
+                            .on_hover_text("Reabrir Ãºltima aba fechada Â· Ctrl+Shift+T")
+                            .clicked()
+                    {
+                        reopen_closed_tab = true;
+                    }
                     let drag_width = (ui.available_width() - controls_width).max(16.0);
                     let (_, drag_response) = ui.allocate_exact_size(
                         egui::vec2(drag_width, 30.0),
@@ -782,6 +924,10 @@ impl PhantomApp {
             self.open_new_tab();
         }
 
+        if reopen_closed_tab {
+            self.reopen_last_closed_tab();
+        }
+
         if start_drag {
             context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
@@ -839,13 +985,23 @@ impl PhantomApp {
         });
     }
 
+    // PHANTOM_2C12_LINK_INTERACTION_UX
     fn rendered_page(&mut self, ui: &mut egui::Ui) {
         let active_index = self.active_tab;
+        let document_url = self.tabs[active_index]
+            .history_index
+            .and_then(|index| self.tabs[active_index].history.get(index))
+            .cloned()
+            .unwrap_or_else(|| self.tabs[active_index].address.clone());
+        let command_modifier = ui.ctx().input(|input| input.modifiers.command);
+
         let tab = &self.tabs[active_index];
         let paint = tab.engine.paint_list();
         let document_width = paint.viewport_width().max(1.0);
         let document_height = paint.content_height().max(1.0);
         let mut visible_range = (0.0_f32, ui.available_height().max(1.0));
+        let mut hovered_link = None::<String>;
+        let mut link_activation = None::<(String, bool)>;
 
         egui::ScrollArea::both()
             .auto_shrink([false, false])
@@ -853,13 +1009,12 @@ impl PhantomApp {
                 let canvas_width = document_width.max(ui.available_width());
                 let canvas_height = document_height + 72.0;
 
-                let (canvas_rect, _response) = ui.allocate_exact_size(
+                let (canvas_rect, canvas_response) = ui.allocate_exact_size(
                     egui::vec2(canvas_width, canvas_height),
-                    egui::Sense::hover(),
+                    egui::Sense::click(),
                 );
 
                 let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
-
                 let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
                 visible_range = (
                     (viewport.top() - origin.y).max(0.0),
@@ -867,25 +1022,91 @@ impl PhantomApp {
                 );
 
                 paint_page(ui, origin, paint, &tab.image_textures);
+
+                if canvas_response.hovered()
+                    && let Some(pointer) = ui.ctx().pointer_hover_pos()
+                    && let Some(link) = tab
+                        .engine
+                        .link_at(pointer.x - origin.x, pointer.y - origin.y)
+                {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+
+                    let resolved = HttpUrl::parse(&document_url)
+                        .ok()
+                        .and_then(|base| base.resolve(link.href()).ok());
+
+                    hovered_link = Some(
+                        resolved
+                            .as_ref()
+                            .map(|url| url.as_str().to_owned())
+                            .unwrap_or_else(|| link.href().to_owned()),
+                    );
+
+                    if canvas_response.clicked()
+                        && let Some(target) = resolved
+                    {
+                        link_activation = Some((
+                            target.as_str().to_owned(),
+                            link.opens_new_context() || command_modifier,
+                        ));
+                    }
+                }
             });
+
+        if let Some(target) = hovered_link.as_deref() {
+            egui::Area::new(egui::Id::new("phantom-link-target-preview"))
+                .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ))
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::symmetric(8, 5))
+                        .show(ui, |ui| {
+                            ui.set_max_width(560.0);
+                            ui.label(egui::RichText::new(target).size(11.0).weak());
+                        });
+                });
+        }
 
         let visible_images = visible_image_resources(paint, visible_range.0, visible_range.1);
         let now = Instant::now();
         let network = self.network.clone();
-        let tab = &mut self.tabs[active_index];
-        tab.visible_images = visible_images;
-        for (resource, binding) in &tab.image_textures {
-            binding.set_animation_active(tab.visible_images.contains(resource), now);
+
+        {
+            let tab = &mut self.tabs[active_index];
+            tab.visible_images = visible_images;
+
+            for (resource, binding) in &tab.image_textures {
+                binding.set_animation_active(tab.visible_images.contains(resource), now);
+            }
+
+            activate_deferred_images(&network, tab, visible_range.1);
+
+            if tab.pending_images.is_some() {
+                ui.ctx().request_repaint_after(Duration::from_millis(50));
+            }
+
+            if let Some(delay) = tab.animation_repaint_after(now) {
+                ui.ctx().request_repaint_after(delay);
+            }
         }
-        activate_deferred_images(&network, tab, visible_range.1);
-        if tab.pending_images.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(50));
-        }
-        if let Some(delay) = tab.animation_repaint_after(now) {
-            ui.ctx().request_repaint_after(delay);
+
+        if let Some((target, open_new_context)) = link_activation {
+            if open_new_context {
+                self.open_new_tab();
+                let tab = self.active_tab_mut();
+                start_navigation(&network, tab, target, NavigationAction::New);
+            } else if active_index < self.tabs.len() {
+                let tab = &mut self.tabs[active_index];
+                start_navigation(&network, tab, target, NavigationAction::New);
+            }
         }
     }
-
     fn floating_navigation(&mut self, context: &egui::Context) {
         let pointer_in_zone = pointer_in_navigation_zone(context);
         let visible = self.floating_bar_forced || pointer_in_zone;
@@ -1095,7 +1316,11 @@ fn start_navigation(
     let thread_result = thread::Builder::new()
         .name("phantom-network".to_owned())
         .spawn(move || {
-            let result = client.fetch_text(&target);
+            let result = if matches!(action, NavigationAction::Reload) {
+                client.reload_text(&target)
+            } else {
+                client.fetch_text(&target)
+            };
             let _ = sender.send(result);
         });
 
@@ -1142,6 +1367,7 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                     tab.page_loaded = true;
                     tab.cancel_image_work();
                     tab.image_textures.clear();
+                    tab.site_icon = None;
                     tab.visible_images.clear();
                     tab.image_cache.clear();
                     tab.cache_clock = 0;
@@ -1158,6 +1384,7 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                         tab.engine.paint_list().len()
                     );
 
+                    start_site_icon_loading(network, tab, &final_url);
                     start_image_loading(network, tab, &final_url, device_pixel_ratio);
                 }
 
@@ -1181,6 +1408,113 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
     }
 }
 
+fn start_site_icon_loading(network: &NetworkClient, tab: &mut BrowserTab, document_url: &str) {
+    tab.pending_site_icon = None;
+
+    let Some(request) = tab.engine.site_icon_request() else {
+        return;
+    };
+    let Ok(base_url) = HttpUrl::parse(document_url) else {
+        return;
+    };
+    let Ok(url) = base_url.resolve(request.source()) else {
+        return;
+    };
+
+    let isolation_key = NetworkIsolationKey::from_top_level(&base_url);
+    let generation = tab.document_generation;
+    let source = url.as_str().to_owned();
+    let client = network.clone();
+    let (sender, receiver) = mpsc::channel();
+
+    let thread_result = thread::Builder::new()
+        .name("phantom-site-icon".to_owned())
+        .spawn(move || {
+            let result = fetch_and_decode_site_icon(&client, &isolation_key, &url);
+            let _ = sender.send(result);
+        });
+
+    if thread_result.is_ok() {
+        tab.pending_site_icon = Some(PendingSiteIcon {
+            receiver,
+            generation,
+            source,
+        });
+    }
+}
+
+fn fetch_and_decode_site_icon(
+    network: &NetworkClient,
+    isolation_key: &NetworkIsolationKey,
+    url: &HttpUrl,
+) -> Result<DecodedImage, String> {
+    let response = network
+        .fetch_bytes_partitioned(isolation_key, url)
+        .map_err(|error| error.to_string())?;
+
+    if !(200..=299).contains(&response.status()) {
+        return Err(format!(
+            "HTTP {} while loading site icon",
+            response.status()
+        ));
+    }
+
+    let decoder = RasterImageDecoder;
+    let limits = ImageDecodeLimits::new(512, 512, 262_144, 1_048_576);
+    let metadata = decoder
+        .probe(response.body(), limits)
+        .map_err(|error| error.to_string())?;
+
+    if image_is_animated(response.body(), metadata) {
+        let animation = decoder
+            .decode_animation(
+                response.body(),
+                limits,
+                AnimationDecodeLimits::new(8, 8 * 1024 * 1024),
+            )
+            .map_err(|error| error.to_string())?;
+
+        let Some(frame) = animation.frames().first() else {
+            return Err("animated site icon has no decodable frame".to_owned());
+        };
+        return Ok(frame.image().clone());
+    }
+
+    decoder
+        .decode(response.body(), limits)
+        .map_err(|error| error.to_string())
+}
+
+fn poll_tab_site_icon(tab: &mut BrowserTab, context: &egui::Context) {
+    let receive_result = tab.pending_site_icon.as_ref().map(|pending| {
+        (
+            pending.generation,
+            pending.source.clone(),
+            pending.receiver.try_recv(),
+        )
+    });
+
+    match receive_result {
+        Some((generation, _, _)) if generation != tab.document_generation => {
+            tab.pending_site_icon = None;
+        }
+        Some((generation, source, Ok(Ok(decoded)))) => {
+            tab.pending_site_icon = None;
+            if let Some(texture) = decoded_image_texture_named(
+                context,
+                format!("phantom-site-icon-{generation}-{source}"),
+                &decoded,
+            ) {
+                tab.site_icon = Some(texture);
+            }
+        }
+        Some((_generation, _source, Ok(Err(_))))
+        | Some((_generation, _source, Err(TryRecvError::Disconnected))) => {
+            tab.pending_site_icon = None;
+        }
+        Some((_, _, Err(TryRecvError::Empty))) | None => {}
+    }
+}
 fn start_image_loading(
     network: &NetworkClient,
     tab: &mut BrowserTab,

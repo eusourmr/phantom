@@ -32,6 +32,41 @@ use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 
+// PHANTOM_2C12_LINK_NAVIGATION_I
+/// One clickable hyperlink region in the active cold layout snapshot.
+///
+/// URL resolution deliberately remains outside the engine. `href` is preserved
+/// exactly as declared so browser navigation can resolve it against the
+/// committed document URL through `phantom-net`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkRegion {
+    href: String,
+    rect: Rect,
+    opens_new_context: bool,
+}
+
+impl LinkRegion {
+    /// Returns the raw `href` value declared by the nearest ancestor anchor.
+    #[must_use]
+    pub fn href(&self) -> &str {
+        &self.href
+    }
+
+    /// Returns the clickable rectangle in document coordinates.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Returns whether HTML `target="_blank"` requested a new browsing context.
+    ///
+    /// Named browsing contexts other than `_blank` are intentionally outside
+    /// this first navigation slice.
+    #[must_use]
+    pub const fn opens_new_context(&self) -> bool {
+        self.opens_new_context
+    }
+}
 /// One image subresource request discovered in the active document snapshot.
 ///
 /// The request contains only the opaque engine resource identifier and the raw
@@ -82,6 +117,16 @@ pub struct ImagePreloadRequest {
     priority: ResourcePriority,
 }
 
+// PHANTOM_2C11_SITE_IDENTITY_I
+/// One site icon explicitly declared by the active document.
+///
+/// Site Identity I intentionally does not synthesize `/favicon.ico`. The
+/// browser fetches only a document-declared `<link rel="icon" href="...">`
+/// whose MIME type is compatible with Phantom's current raster decoder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteIconRequest {
+    source: String,
+}
 impl ImageRequest {
     /// Returns the opaque resource identifier used by layout and paint.
     #[must_use]
@@ -134,6 +179,13 @@ impl ImagePreloadRequest {
     }
 }
 
+impl SiteIconRequest {
+    /// Returns the raw icon URL reference declared by the document.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
 /// High-level lifecycle state of a Phantom engine instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineState {
@@ -171,6 +223,7 @@ pub struct Engine {
     images: ImageCatalog,
     layout: LayoutSnapshot,
     paint: PaintList,
+    links: Vec<LinkRegion>,
     state: EngineState,
 }
 
@@ -190,6 +243,7 @@ impl Engine {
             images: ImageCatalog::default(),
             layout: LayoutSnapshot::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             paint: PaintList::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
+            links: Vec::new(),
             state: EngineState::Idle,
         }
     }
@@ -230,6 +284,26 @@ impl Engine {
         &self.paint
     }
 
+    /// Returns clickable hyperlink regions for the active layout snapshot.
+    ///
+    /// Regions are generated only for visible text/image layout fragments that
+    /// descend from an `<a href>` element. This avoids making non-rendered DOM
+    /// nodes interactive.
+    #[must_use]
+    pub fn link_regions(&self) -> &[LinkRegion] {
+        &self.links
+    }
+
+    /// Hit-tests one document-coordinate point against hyperlink fragments.
+    ///
+    /// Later paint-order fragments win when boxes overlap.
+    #[must_use]
+    pub fn link_at(&self, x: f32, y: f32) -> Option<&LinkRegion> {
+        self.links
+            .iter()
+            .rev()
+            .find(|region| rect_contains(region.rect(), x, y))
+    }
     /// Returns responsive image subresources for a default device-pixel ratio.
     ///
     /// This keeps URL fetching outside the engine while making HTML candidate
@@ -313,6 +387,22 @@ impl Engine {
             .collect()
     }
 
+    /// Returns the first supported site icon explicitly declared by the active
+    /// document.
+    ///
+    /// The first milestone recognizes `rel` token `icon`, a non-empty `href`,
+    /// and PNG/JPEG/GIF/WebP MIME types. A missing `type` is allowed and the
+    /// bounded decoder remains authoritative after fetch.
+    #[must_use]
+    pub fn site_icon_request(&self) -> Option<SiteIconRequest> {
+        self.document.nodes().find_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+
+            site_icon_from_element(element)
+        })
+    }
     /// Parses HTML and replaces all engine snapshots.
     ///
     /// The active pipeline is:
@@ -342,12 +432,14 @@ impl Engine {
         let layout =
             build_layout_snapshot_with_images(&document, &styles, viewport_width, &images)?;
         let paint = build_paint_list(&layout, &styles)?;
+        let links = build_link_regions(&document, &layout);
 
         self.document = document;
         self.styles = styles;
         self.images = images;
         self.layout = layout;
         self.paint = paint;
+        self.links = links;
         self.state = EngineState::Ready;
 
         Ok(())
@@ -390,14 +482,69 @@ impl Engine {
         )?;
 
         let paint = build_paint_list(&layout, &self.styles)?;
+        let links = build_link_regions(&self.document, &layout);
 
         self.layout = layout;
         self.paint = paint;
+        self.links = links;
 
         Ok(())
     }
 }
 
+fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkRegion> {
+    layout
+        .boxes()
+        .iter()
+        .filter_map(|layout_box| {
+            if !matches!(
+                layout_box.kind(),
+                LayoutKind::Text { .. } | LayoutKind::Image { .. }
+            ) {
+                return None;
+            }
+
+            let anchor = link_element_for_node(document, layout_box.source_node())?;
+            let href = anchor.attribute("href")?.to_owned();
+            let rect = layout_box.rect();
+
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                return None;
+            }
+
+            Some(LinkRegion {
+                href,
+                rect,
+                opens_new_context: anchor
+                    .attribute("target")
+                    .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank")),
+            })
+        })
+        .collect()
+}
+
+fn link_element_for_node(document: &Document, node_id: NodeId) -> Option<&ElementData> {
+    let mut current = Some(node_id);
+
+    while let Some(current_id) = current {
+        let node = document.node(current_id)?;
+
+        if let NodeKind::Element(element) = node.kind()
+            && element.tag_name() == "a"
+            && element.attribute("href").is_some()
+        {
+            return Some(element);
+        }
+
+        current = node.parent();
+    }
+
+    None
+}
+
+fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.x() && y >= rect.y() && x <= rect.x() + rect.width() && y <= rect.y() + rect.height()
+}
 #[derive(Clone, Copy, Debug)]
 enum CandidateDescriptor {
     Density(f32),
@@ -537,6 +684,33 @@ fn rel_has_token(value: Option<&str>, token: &str) -> bool {
     })
 }
 
+fn site_icon_from_element(element: &ElementData) -> Option<SiteIconRequest> {
+    if element.tag_name() != "link"
+        || !rel_has_token(element.attribute("rel"), "icon")
+        || !site_icon_type_supported(element.attribute("type"))
+    {
+        return None;
+    }
+
+    let source = element
+        .attribute("href")
+        .map(str::trim)
+        .filter(|source| !source.is_empty())?
+        .to_owned();
+
+    Some(SiteIconRequest { source })
+}
+
+fn site_icon_type_supported(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+    )
+}
 fn element_for(document: &Document, node_id: NodeId) -> Option<&ElementData> {
     let node = document.node(node_id)?;
     let NodeKind::Element(element) = node.kind() else {

@@ -8,26 +8,57 @@ permissions:
   contents: read
 
 jobs:
-  rust:
+  linux-quality:
+    name: Linux quality gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Install Rust 1.95
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
 
-      - name: Rust version
+      - name: Toolchain versions
         run: rustc --version && cargo --version
+
+      - name: Workspace metadata
+        run: cargo metadata --no-deps --format-version 1 > /dev/null
 
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Check all targets
+        run: cargo check --workspace --all-targets
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
+      - name: Tests
         run: cargo test --workspace
 
       - name: Documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  windows-browser:
+    name: Windows native browser gate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+
+      - name: Toolchain versions
+        run: rustc --version; cargo --version
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build native Phantom shell
+        run: cargo build --release -p phantom-browser
