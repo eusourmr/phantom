@@ -29,7 +29,7 @@ use phantom_image::{
     DecodedImage, ImageDecodeLimits, ImageDecoder, ImageMetadata, ImageResourceId,
     RasterImageDecoder, image_is_animated,
 };
-use phantom_net::{HttpUrl, NetworkClient, NetworkError, TextResponse};
+use phantom_net::{HttpUrl, NetworkClient, NetworkError, NetworkIsolationKey, TextResponse};
 
 const APP_NAME: &str = "Phantom";
 const APP_VERSION: &str = "0.0.1";
@@ -58,6 +58,7 @@ struct PendingNavigation {
 struct ImageLoadRequest {
     resources: Vec<ImageResourceId>,
     url: HttpUrl,
+    isolation_key: NetworkIsolationKey,
     loading: ImageLoading,
     top: f32,
 }
@@ -1070,6 +1071,7 @@ fn start_image_batch(
                     &decoder,
                     limits,
                     animation_limits,
+                    &request.isolation_key,
                     &request.url,
                 );
 
@@ -1117,6 +1119,7 @@ fn collect_image_requests(
     device_pixel_ratio: f32,
 ) -> Vec<ImageLoadRequest> {
     let discovered = tab.engine.image_requests_for_device(device_pixel_ratio);
+    let isolation_key = NetworkIsolationKey::from_top_level(base_url);
 
     let mut grouped = BTreeMap::<String, (HttpUrl, Vec<ImageResourceId>, ImageLoading, f32)>::new();
     let mut element_count = 0_usize;
@@ -1160,6 +1163,7 @@ fn collect_image_requests(
         requests.push(ImageLoadRequest {
             resources,
             url,
+            isolation_key: isolation_key.clone(),
             loading,
             top,
         });
@@ -1213,10 +1217,11 @@ fn fetch_and_decode_image(
     decoder: &RasterImageDecoder,
     limits: ImageDecodeLimits,
     animation_limits: AnimationDecodeLimits,
+    isolation_key: &NetworkIsolationKey,
     url: &HttpUrl,
 ) -> Result<LoadedImage, String> {
     let response = network
-        .fetch_bytes(url)
+        .fetch_bytes_partitioned(isolation_key, url)
         .map_err(|error| error.to_string())?;
 
     if !(200..=299).contains(&response.status()) {

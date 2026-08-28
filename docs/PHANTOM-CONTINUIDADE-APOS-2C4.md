@@ -2,11 +2,10 @@
 
 ## Estado em 28/08/2026
 
-Baseline oficial anterior: **2C-3 homologada sem erros**.
+Baseline oficial: **2C-4 homologada sem erros**.
 
-Estado da 2C-4: **implementação corrigida e gates automatizados homologados**.
-Falta somente o smoke test gráfico do executável nativo no Windows para mudar
-o baseline oficial integral para 2C-4.
+O smoke test gráfico do executável nativo no Windows foi validado por Ricardo
+Rocha em 28/08/2026. A 2C-4 passa a ser a única baseline da 2C-5.
 
 ## Correção concluída
 
@@ -31,15 +30,6 @@ cargo test -p phantom-image --test raster_decode      PASS (3/3)
 cargo build --release -p phantom-browser              PASS
 ```
 
-## Aceite final no Windows
+## Próxima etapa aprovada
 
-```powershell
-taskkill /F /IM phantom-browser.exe
-cargo build --release -p phantom-browser
-.\target\release\phantom-browser.exe
-```
-
-Validar GIF e Animated WebP infinitos e finitos. Se todos animarem e os finitos
-pararem no último frame: **2C-4 HOMOLOGADA; novo baseline oficial 2C-4**.
-
-Não iniciar 2C-5 antes desse smoke test.
+**2C-5 — Image Lifecycle + Lazy Loading + Cancellation**.
