@@ -37,10 +37,24 @@ const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 /// The request contains only the opaque engine resource identifier and the raw
 /// HTML source reference. URL resolution, fetching and decoding remain outside
 /// the engine.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ImageRequest {
     resource: ImageResourceId,
     source: String,
+    loading: ImageLoading,
+    top: f32,
+    bottom: f32,
+}
+
+/// Fetch-timing hint parsed from an image element's `loading` attribute.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ImageLoading {
+    /// Fetch without waiting for proximity to the visual viewport.
+    #[default]
+    Eager,
+
+    /// Defer fetching until the image approaches the visual viewport.
+    Lazy,
 }
 
 impl ImageRequest {
@@ -54,6 +68,24 @@ impl ImageRequest {
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Returns the element's normalized loading policy.
+    #[must_use]
+    pub const fn loading(&self) -> ImageLoading {
+        self.loading
+    }
+
+    /// Returns the image border-box top in document coordinates.
+    #[must_use]
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+
+    /// Returns the image border-box bottom in document coordinates.
+    #[must_use]
+    pub const fn bottom(&self) -> f32 {
+        self.bottom
     }
 }
 
@@ -182,8 +214,19 @@ impl Engine {
 
                 let node_id = layout_box.source_node();
                 let source = select_image_source(&self.document, node_id, viewport_width, dpr)?;
+                let loading = element_for(&self.document, node_id)
+                    .and_then(|element| element.attribute("loading"))
+                    .filter(|value| value.eq_ignore_ascii_case("lazy"))
+                    .map_or(ImageLoading::Eager, |_| ImageLoading::Lazy);
+                let rect = layout_box.rect();
 
-                Some(ImageRequest { resource, source })
+                Some(ImageRequest {
+                    resource,
+                    source,
+                    loading,
+                    top: rect.y(),
+                    bottom: rect.bottom(),
+                })
             })
             .collect()
     }
@@ -545,7 +588,7 @@ fn parse_css_px(value: &str) -> Option<f32> {
 mod tests {
     use phantom_dom::NodeKind;
 
-    use super::{Engine, EngineError, EngineState, LayoutKind, PaintCommand, Rgba};
+    use super::{Engine, EngineError, EngineState, ImageLoading, LayoutKind, PaintCommand, Rgba};
 
     #[test]
     fn new_engine_is_idle() {
@@ -677,6 +720,22 @@ mod tests {
             requests.first().map(|request| request.source()),
             Some("/media/hero.png"),
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn exposes_normalized_image_loading_policy() -> Result<(), EngineError> {
+        let mut engine = Engine::new();
+
+        engine.load_html("<img src=\"eager.png\"><img src=\"lazy.png\" loading=\"LaZy\">")?;
+
+        let requests = engine.image_requests();
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].loading(), ImageLoading::Eager);
+        assert_eq!(requests[1].loading(), ImageLoading::Lazy);
+        assert!(requests[1].bottom() >= requests[1].top());
 
         Ok(())
     }

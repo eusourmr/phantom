@@ -11,17 +11,18 @@
     windows_subsystem = "windows"
 )]
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
-    Engine, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle,
-    PaintFontWeight, PaintList, PaintRect, PaintTextRange,
+    Engine, ImageLoading, ObjectFit, ObjectPosition, PaintColor, PaintCommand, PaintFontFamily,
+    PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange,
 };
 use phantom_image::{
     AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
@@ -35,6 +36,7 @@ const APP_VERSION: &str = "0.0.1";
 const LUCIDE_FONT_NAME: &str = "phantom-lucide";
 const MAX_IMAGES_PER_DOCUMENT: usize = 64;
 const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
+const LAZY_LOAD_MARGIN: f32 = 768.0;
 
 const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.png");
 
@@ -50,11 +52,14 @@ enum NavigationAction {
 struct PendingNavigation {
     receiver: Receiver<Result<TextResponse, NetworkError>>,
     action: NavigationAction,
+    generation: u64,
 }
 
 struct ImageLoadRequest {
     resources: Vec<ImageResourceId>,
     url: HttpUrl,
+    loading: ImageLoading,
+    top: f32,
 }
 
 enum LoadedRaster {
@@ -88,6 +93,12 @@ impl ImageTextureBinding {
         }
     }
 
+    fn set_animation_active(&self, active: bool, now: Instant) {
+        if let Self::Animated(animation) = self {
+            animation.set_active(active, now);
+        }
+    }
+
     const fn is_animated(&self) -> bool {
         matches!(self, Self::Animated(_))
     }
@@ -109,18 +120,52 @@ struct AnimationTextureFrame {
 struct AnimatedTexture {
     frames: Vec<AnimationTextureFrame>,
     loop_count: AnimationLoopCount,
-    started_at: Instant,
     cycle_duration: Duration,
+    clock: Mutex<AnimationClock>,
+}
+
+struct AnimationClock {
+    elapsed: Duration,
+    last_updated: Instant,
+    active: bool,
 }
 
 impl AnimatedTexture {
+    fn set_active(&self, active: bool, now: Instant) {
+        let Ok(mut clock) = self.clock.lock() else {
+            return;
+        };
+
+        if clock.active {
+            clock.elapsed = clock
+                .elapsed
+                .saturating_add(now.saturating_duration_since(clock.last_updated));
+        }
+        clock.last_updated = now;
+        clock.active = active;
+    }
+
+    fn elapsed_at(&self, now: Instant) -> Duration {
+        let Ok(clock) = self.clock.lock() else {
+            return Duration::ZERO;
+        };
+
+        if clock.active {
+            clock
+                .elapsed
+                .saturating_add(now.saturating_duration_since(clock.last_updated))
+        } else {
+            clock.elapsed
+        }
+    }
+
     fn texture_at(&self, now: Instant) -> Option<&egui::TextureHandle> {
-        let frame_index = self.frame_index(now)?;
+        let frame_index = self.frame_index(self.elapsed_at(now))?;
         self.frames.get(frame_index).map(|frame| &frame.texture)
     }
 
     fn next_repaint_after(&self, now: Instant) -> Option<Duration> {
-        let elapsed = now.saturating_duration_since(self.started_at);
+        let elapsed = self.elapsed_at(now);
         let cycle_millis = duration_millis(self.cycle_duration).max(1);
         let elapsed_millis = duration_millis(elapsed);
 
@@ -143,12 +188,11 @@ impl AnimatedTexture {
         Some(Duration::from_millis(1))
     }
 
-    fn frame_index(&self, now: Instant) -> Option<usize> {
+    fn frame_index(&self, elapsed: Duration) -> Option<usize> {
         if self.frames.is_empty() {
             return None;
         }
 
-        let elapsed = now.saturating_duration_since(self.started_at);
         let cycle_millis = duration_millis(self.cycle_duration).max(1);
         let elapsed_millis = duration_millis(elapsed);
 
@@ -185,6 +229,7 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 struct ImageLoadEvent {
+    generation: u64,
     resources: Vec<ImageResourceId>,
     cache_key: String,
     result: Result<LoadedImage, String>,
@@ -201,6 +246,14 @@ struct PendingImageBatch {
     receiver: Receiver<ImageLoadEvent>,
     remaining: usize,
     total: usize,
+    generation: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for PendingImageBatch {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 struct BrowserTab {
@@ -210,7 +263,9 @@ struct BrowserTab {
     status: String,
     pending: Option<PendingNavigation>,
     pending_images: Option<PendingImageBatch>,
+    deferred_images: Vec<ImageLoadRequest>,
     image_textures: BTreeMap<ImageResourceId, ImageTextureBinding>,
+    visible_images: BTreeSet<ImageResourceId>,
     image_cache: BTreeMap<String, CachedImage>,
     cache_clock: u64,
     loaded_images: usize,
@@ -219,6 +274,7 @@ struct BrowserTab {
     page_loaded: bool,
     history: Vec<String>,
     history_index: Option<usize>,
+    document_generation: u64,
 }
 
 impl BrowserTab {
@@ -230,7 +286,9 @@ impl BrowserTab {
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
             pending: None,
             pending_images: None,
+            deferred_images: Vec::new(),
             image_textures: BTreeMap::new(),
+            visible_images: BTreeSet::new(),
             image_cache: BTreeMap::new(),
             cache_clock: 0,
             loaded_images: 0,
@@ -239,6 +297,7 @@ impl BrowserTab {
             page_loaded: false,
             history: Vec::new(),
             history_index: None,
+            document_generation: 0,
         }
     }
 
@@ -261,9 +320,17 @@ impl BrowserTab {
 
     fn animation_repaint_after(&self, now: Instant) -> Option<Duration> {
         self.image_textures
-            .values()
-            .filter_map(|binding| binding.next_repaint_after(now))
+            .iter()
+            .filter(|(resource, _)| self.visible_images.contains(resource))
+            .filter_map(|(_, binding)| binding.next_repaint_after(now))
             .min()
+    }
+
+    fn cancel_image_work(&mut self) {
+        if let Some(pending) = self.pending_images.take() {
+            pending.cancelled.store(true, Ordering::Release);
+        }
+        self.deferred_images.clear();
     }
 }
 
@@ -560,15 +627,13 @@ impl PhantomApp {
         }
     }
 
-    fn page_area(&self, ui: &mut egui::Ui) {
-        let tab = self.active_tab();
-
-        if tab.is_loading() {
-            self.loading_page(ui, tab);
-        } else if tab.page_loaded {
-            self.rendered_page(ui, tab);
+    fn page_area(&mut self, ui: &mut egui::Ui) {
+        if self.active_tab().is_loading() {
+            self.loading_page(ui, self.active_tab());
+        } else if self.active_tab().page_loaded {
+            self.rendered_page(ui);
         } else {
-            self.empty_page(ui, tab);
+            self.empty_page(ui, self.active_tab());
         }
     }
 
@@ -601,14 +666,17 @@ impl PhantomApp {
         });
     }
 
-    fn rendered_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
+    fn rendered_page(&mut self, ui: &mut egui::Ui) {
+        let active_index = self.active_tab;
+        let tab = &self.tabs[active_index];
         let paint = tab.engine.paint_list();
         let document_width = paint.viewport_width().max(1.0);
         let document_height = paint.content_height().max(1.0);
+        let mut visible_range = (0.0_f32, ui.available_height().max(1.0));
 
         egui::ScrollArea::both()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show_viewport(ui, |ui, viewport| {
                 let canvas_width = document_width.max(ui.available_width());
                 let canvas_height = document_height + 72.0;
 
@@ -620,9 +688,29 @@ impl PhantomApp {
                 let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
 
                 let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
+                visible_range = (
+                    (viewport.top() - origin.y).max(0.0),
+                    (viewport.bottom() - origin.y).max(0.0),
+                );
 
                 paint_page(ui, origin, paint, &tab.image_textures);
             });
+
+        let visible_images = visible_image_resources(paint, visible_range.0, visible_range.1);
+        let now = Instant::now();
+        let network = self.network.clone();
+        let tab = &mut self.tabs[active_index];
+        tab.visible_images = visible_images;
+        for (resource, binding) in &tab.image_textures {
+            binding.set_animation_active(tab.visible_images.contains(resource), now);
+        }
+        activate_deferred_images(&network, tab, visible_range.1);
+        if tab.pending_images.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
+        if let Some(delay) = tab.animation_repaint_after(now) {
+            ui.ctx().request_repaint_after(delay);
+        }
     }
 
     fn floating_navigation(&mut self, context: &egui::Context) {
@@ -778,6 +866,15 @@ impl eframe::App for PhantomApp {
         self.poll_navigation(ui.ctx());
         self.update_window_title(ui.ctx());
 
+        let now = Instant::now();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if index != self.active_tab {
+                for binding in tab.image_textures.values() {
+                    binding.set_animation_active(false, now);
+                }
+            }
+        }
+
         if self
             .tabs
             .iter()
@@ -812,12 +909,10 @@ fn start_navigation(
     target: String,
     action: NavigationAction,
 ) {
-    if tab.pending.is_some() {
-        tab.status = "Já existe uma navegação em andamento.".to_owned();
-        return;
-    }
-
-    tab.pending_images = None;
+    tab.pending = None;
+    tab.cancel_image_work();
+    tab.document_generation = tab.document_generation.saturating_add(1);
+    let generation = tab.document_generation;
     tab.address = target.clone();
     tab.status = format!("Carregando {target} …");
 
@@ -833,7 +928,11 @@ fn start_navigation(
 
     match thread_result {
         Ok(_handle) => {
-            tab.pending = Some(PendingNavigation { receiver, action });
+            tab.pending = Some(PendingNavigation {
+                receiver,
+                action,
+                generation,
+            });
         }
 
         Err(error) => {
@@ -843,13 +942,19 @@ fn start_navigation(
 }
 
 fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pixel_ratio: f32) {
-    let receive_result = tab
-        .pending
-        .as_ref()
-        .map(|pending| (pending.action, pending.receiver.try_recv()));
+    let receive_result = tab.pending.as_ref().map(|pending| {
+        (
+            pending.action,
+            pending.generation,
+            pending.receiver.try_recv(),
+        )
+    });
 
     match receive_result {
-        Some((action, Ok(Ok(response)))) => {
+        Some((_action, generation, _result)) if generation != tab.document_generation => {
+            tab.pending = None;
+        }
+        Some((action, _generation, Ok(Ok(response)))) => {
             tab.pending = None;
 
             let status_code = response.status();
@@ -862,7 +967,9 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                     tab.address = final_url.clone();
                     tab.title = title_from_url(&final_url);
                     tab.page_loaded = true;
+                    tab.cancel_image_work();
                     tab.image_textures.clear();
+                    tab.visible_images.clear();
                     tab.image_cache.clear();
                     tab.cache_clock = 0;
                     tab.loaded_images = 0;
@@ -885,17 +992,17 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
             }
         }
 
-        Some((_action, Ok(Err(error)))) => {
+        Some((_action, _generation, Ok(Err(error)))) => {
             tab.pending = None;
             tab.status = format!("Falha de navegação: {error}");
         }
 
-        Some((_action, Err(TryRecvError::Disconnected))) => {
+        Some((_action, _generation, Err(TryRecvError::Disconnected))) => {
             tab.pending = None;
             tab.status = "O worker de rede foi encerrado inesperadamente.".to_owned();
         }
 
-        Some((_, Err(TryRecvError::Empty))) | None => {}
+        Some((_, _, Err(TryRecvError::Empty))) | None => {}
     }
 }
 
@@ -905,7 +1012,7 @@ fn start_image_loading(
     document_url: &str,
     device_pixel_ratio: f32,
 ) {
-    tab.pending_images = None;
+    tab.cancel_image_work();
 
     let Ok(base_url) = HttpUrl::parse(document_url) else {
         return;
@@ -917,9 +1024,34 @@ fn start_image_loading(
         return;
     }
 
+    let (immediate, deferred): (Vec<_>, Vec<_>) = requests.into_iter().partition(|request| {
+        request.loading == ImageLoading::Eager || request.top <= LAZY_LOAD_MARGIN * 2.0
+    });
+    tab.deferred_images = deferred;
+
+    if immediate.is_empty() {
+        update_image_status(tab);
+        return;
+    }
+
+    start_image_batch(network, tab, immediate);
+}
+
+fn start_image_batch(
+    network: &NetworkClient,
+    tab: &mut BrowserTab,
+    requests: Vec<ImageLoadRequest>,
+) {
+    if requests.is_empty() || tab.pending_images.is_some() {
+        return;
+    }
+
     let total = requests.len();
+    let generation = tab.document_generation;
     let client = network.clone();
     let (sender, receiver) = mpsc::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
 
     let thread_result = thread::Builder::new()
         .name("phantom-images".to_owned())
@@ -929,6 +1061,9 @@ fn start_image_loading(
             let animation_limits = AnimationDecodeLimits::new(256, 128 * 1024 * 1024);
 
             for request in requests {
+                if worker_cancelled.load(Ordering::Acquire) {
+                    break;
+                }
                 let cache_key = request.url.as_str().to_owned();
                 let result = fetch_and_decode_image(
                     &client,
@@ -938,8 +1073,13 @@ fn start_image_loading(
                     &request.url,
                 );
 
+                if worker_cancelled.load(Ordering::Acquire) {
+                    break;
+                }
+
                 if sender
                     .send(ImageLoadEvent {
+                        generation,
                         resources: request.resources,
                         cache_key,
                         result,
@@ -957,6 +1097,8 @@ fn start_image_loading(
                 receiver,
                 remaining: total,
                 total,
+                generation,
+                cancelled,
             });
 
             tab.status = format!("Página pronta · carregando {total} imagens…");
@@ -976,7 +1118,7 @@ fn collect_image_requests(
 ) -> Vec<ImageLoadRequest> {
     let discovered = tab.engine.image_requests_for_device(device_pixel_ratio);
 
-    let mut grouped = BTreeMap::<String, (HttpUrl, Vec<ImageResourceId>)>::new();
+    let mut grouped = BTreeMap::<String, (HttpUrl, Vec<ImageResourceId>, ImageLoading, f32)>::new();
     let mut element_count = 0_usize;
 
     for image_request in discovered {
@@ -993,21 +1135,41 @@ fn collect_image_requests(
 
         grouped
             .entry(key)
-            .and_modify(|(_, resources)| {
+            .and_modify(|(_, resources, loading, top)| {
                 resources.push(image_request.resource());
+                *loading = (*loading).min(image_request.loading());
+                *top = top.min(image_request.top());
             })
-            .or_insert_with(|| (url, vec![image_request.resource()]));
+            .or_insert_with(|| {
+                (
+                    url,
+                    vec![image_request.resource()],
+                    image_request.loading(),
+                    image_request.top(),
+                )
+            });
     }
 
     let mut requests = Vec::new();
 
-    for (cache_key, (url, resources)) in grouped {
+    for (cache_key, (url, resources, loading, top)) in grouped {
         if bind_cached_image(tab, &cache_key, &resources) {
             continue;
         }
 
-        requests.push(ImageLoadRequest { resources, url });
+        requests.push(ImageLoadRequest {
+            resources,
+            url,
+            loading,
+            top,
+        });
     }
+
+    requests.sort_by(|left, right| {
+        left.loading
+            .cmp(&right.loading)
+            .then_with(|| left.top.total_cmp(&right.top))
+    });
 
     requests
 }
@@ -1085,6 +1247,15 @@ fn fetch_and_decode_image(
 fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
     const MAX_IMAGES_PER_FRAME: usize = 8;
 
+    if tab
+        .pending_images
+        .as_ref()
+        .is_some_and(|pending| pending.generation != tab.document_generation)
+    {
+        tab.cancel_image_work();
+        return;
+    }
+
     for _ in 0..MAX_IMAGES_PER_FRAME {
         let receive_result = tab
             .pending_images
@@ -1093,6 +1264,9 @@ fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
 
         match receive_result {
             Some(Ok(event)) => {
+                if event.generation != tab.document_generation {
+                    continue;
+                }
                 if let Some(pending) = tab.pending_images.as_mut() {
                     pending.remaining = pending.remaining.saturating_sub(1);
                 }
@@ -1101,12 +1275,18 @@ fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
             }
 
             Some(Err(TryRecvError::Disconnected)) => {
+                let was_cancelled = tab
+                    .pending_images
+                    .as_ref()
+                    .is_some_and(|pending| pending.cancelled.load(Ordering::Acquire));
                 let unresolved = tab
                     .pending_images
                     .as_ref()
                     .map_or(0, |pending| pending.remaining);
 
-                tab.failed_images = tab.failed_images.saturating_add(unresolved);
+                if !was_cancelled {
+                    tab.failed_images = tab.failed_images.saturating_add(unresolved);
+                }
                 tab.pending_images = None;
                 update_image_status(tab);
                 break;
@@ -1127,6 +1307,45 @@ fn poll_tab_images(tab: &mut BrowserTab, context: &egui::Context) {
         tab.pending_images = None;
         update_image_status(tab);
     }
+}
+
+fn activate_deferred_images(network: &NetworkClient, tab: &mut BrowserTab, visible_bottom: f32) {
+    if tab.pending_images.is_some() || tab.deferred_images.is_empty() {
+        return;
+    }
+
+    let threshold = visible_bottom + LAZY_LOAD_MARGIN;
+    let mut ready = Vec::new();
+    let mut deferred = Vec::new();
+
+    for request in std::mem::take(&mut tab.deferred_images) {
+        if request.top <= threshold {
+            ready.push(request);
+        } else {
+            deferred.push(request);
+        }
+    }
+
+    tab.deferred_images = deferred;
+    start_image_batch(network, tab, ready);
+}
+
+fn visible_image_resources(
+    paint: &PaintList,
+    visible_top: f32,
+    visible_bottom: f32,
+) -> BTreeSet<ImageResourceId> {
+    paint
+        .commands()
+        .iter()
+        .filter_map(|command| {
+            let PaintCommand::Image { rect, resource, .. } = command else {
+                return None;
+            };
+            let bottom = rect.y() + rect.height();
+            (bottom >= visible_top && rect.y() <= visible_bottom).then_some(*resource)
+        })
+        .collect()
 }
 
 fn install_loaded_image(tab: &mut BrowserTab, context: &egui::Context, event: ImageLoadEvent) {
@@ -1237,8 +1456,12 @@ fn decoded_animation_texture(
     Some(AnimatedTexture {
         frames,
         loop_count: animation.loop_count(),
-        started_at: Instant::now(),
         cycle_duration,
+        clock: Mutex::new(AnimationClock {
+            elapsed: Duration::ZERO,
+            last_updated: Instant::now(),
+            active: false,
+        }),
     })
 }
 
@@ -1305,6 +1528,14 @@ fn update_image_status(tab: &mut BrowserTab) {
             "Página pronta · imagens {completed}/{} · {} exibidas · {} animadas · {} falhas",
             pending.total,
             tab.loaded_images,
+            animated_image_count(tab),
+            tab.failed_images,
+        );
+    } else if !tab.deferred_images.is_empty() {
+        tab.status = format!(
+            "Página pronta · {} imagens exibidas · {} adiadas · {} animadas · {} falhas",
+            tab.loaded_images,
+            tab.deferred_images.len(),
             animated_image_count(tab),
             tab.failed_images,
         );
@@ -1702,4 +1933,67 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|context| Ok(Box::new(PhantomApp::new(context)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_batch_drop_signals_cancellation() {
+        let (_sender, receiver) = mpsc::channel::<ImageLoadEvent>();
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        {
+            let _pending = PendingImageBatch {
+                receiver,
+                remaining: 1,
+                total: 1,
+                generation: 7,
+                cancelled: Arc::clone(&cancelled),
+            };
+        }
+
+        assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn animation_clock_freezes_while_inactive() {
+        let started = Instant::now();
+        let animation = AnimatedTexture {
+            frames: Vec::new(),
+            loop_count: AnimationLoopCount::Infinite,
+            cycle_duration: Duration::from_millis(100),
+            clock: Mutex::new(AnimationClock {
+                elapsed: Duration::ZERO,
+                last_updated: started,
+                active: false,
+            }),
+        };
+
+        animation.set_active(true, started);
+        let paused_at = started + Duration::from_millis(40);
+        animation.set_active(false, paused_at);
+
+        assert_eq!(
+            animation.elapsed_at(paused_at + Duration::from_secs(5)),
+            Duration::from_millis(40),
+        );
+    }
+
+    #[test]
+    fn eager_images_are_prioritized_before_lazy_images() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html("<img src=\"lazy.png\" loading=\"lazy\"><img src=\"eager.png\">")?;
+        let base_url = HttpUrl::parse("https://example.com/page")?;
+
+        let requests = collect_image_requests(&mut tab, &base_url, 1.0);
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].loading, ImageLoading::Eager);
+        assert_eq!(requests[1].loading, ImageLoading::Lazy);
+
+        Ok(())
+    }
 }
