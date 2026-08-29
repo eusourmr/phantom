@@ -7,7 +7,7 @@
 //!
 //! - opaque image resource identifiers;
 //! - metadata storage;
-//! - PNG, GIF, JPEG and WebP dimension probing;
+//! - PNG, GIF, JPEG, WebP and ICO dimension probing;
 //! - decoded RGBA8 validation;
 //! - configurable decoded-memory limits;
 //! - a narrow [`ImageDecoder`] contract;
@@ -47,6 +47,7 @@ impl ImageResourceId {
     }
 }
 
+// PHANTOM_2C15_ICO_DECODE
 /// Image container format recognized by the metadata probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageFormat {
@@ -59,8 +60,11 @@ pub enum ImageFormat {
     /// Joint Photographic Experts Group image.
     Jpeg,
 
-    /// WebP image container. Animated WebP is not enabled in this milestone.
+    /// WebP image container.
     WebP,
+
+    /// Microsoft Windows Icon image container.
+    Ico,
 }
 
 /// Intrinsic raster dimensions in CSS-pixel-independent source pixels.
@@ -490,7 +494,7 @@ pub trait AnimatedImageDecoder: Send + Sync {
     ) -> Result<DecodedAnimation, ImageError>;
 }
 
-/// Bounded PNG/JPEG/GIF/WebP decoder used by the image pipeline.
+/// Bounded PNG/JPEG/GIF/WebP/ICO decoder used by the image pipeline.
 ///
 /// The decoder is intentionally implemented behind [`ImageDecoder`]. Layout,
 /// paint and DOM never depend on the codec library or its image types.
@@ -514,6 +518,7 @@ impl ImageDecoder for RasterImageDecoder {
                 }
                 image::ImageFormat::WebP
             }
+            ImageFormat::Ico => image::ImageFormat::Ico,
             ImageFormat::Gif => return Err(ImageError::UnsupportedDecodeFormat),
         };
 
@@ -544,7 +549,7 @@ impl AnimatedImageDecoder for RasterImageDecoder {
             ImageFormat::WebP if webp_is_animated(bytes) => {
                 decode_webp_animation(bytes, metadata.size(), image_limits, animation_limits)
             }
-            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => {
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Ico => {
                 Err(ImageError::NotAnimated)
             }
         }
@@ -557,7 +562,7 @@ pub fn image_is_animated(bytes: &[u8], metadata: ImageMetadata) -> bool {
     match metadata.format() {
         ImageFormat::Gif => true,
         ImageFormat::WebP => webp_is_animated(bytes),
-        ImageFormat::Png | ImageFormat::Jpeg => false,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Ico => false,
     }
 }
 
@@ -868,6 +873,8 @@ pub fn probe_image(bytes: &[u8], limits: ImageDecodeLimits) -> Result<ImageMetad
         probe_jpeg(bytes)?
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         probe_webp(bytes)?
+    } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        probe_ico(bytes)?
     } else {
         return Err(ImageError::UnsupportedFormat);
     };
@@ -917,6 +924,53 @@ fn webp_is_animated(bytes: &[u8]) -> bool {
         && (bytes[20] & 0x02) != 0
 }
 
+fn probe_ico(bytes: &[u8]) -> Result<ImageMetadata, ImageError> {
+    if bytes.len() < 6 {
+        return Err(ImageError::TruncatedData);
+    }
+
+    let count = usize::from(u16::from_le_bytes([bytes[4], bytes[5]]));
+
+    if count == 0 {
+        return Err(ImageError::DecodeFailed);
+    }
+
+    let directory_bytes = count
+        .checked_mul(16)
+        .and_then(|entries| 6_usize.checked_add(entries))
+        .ok_or(ImageError::TruncatedData)?;
+
+    if bytes.len() < directory_bytes {
+        return Err(ImageError::TruncatedData);
+    }
+
+    let mut selected_size: Option<IntrinsicSize> = None;
+
+    for index in 0..count {
+        let offset = 6 + index * 16;
+
+        let width = match bytes[offset] {
+            0 => 256,
+            value => u32::from(value),
+        };
+
+        let height = match bytes[offset + 1] {
+            0 => 256,
+            value => u32::from(value),
+        };
+
+        let size = IntrinsicSize::new(width, height)?;
+
+        selected_size = match selected_size {
+            Some(current) if current.pixels() >= size.pixels() => Some(current),
+            _ => Some(size),
+        };
+    }
+
+    let size = selected_size.ok_or(ImageError::InvalidDimensions)?;
+
+    Ok(ImageMetadata::new(ImageFormat::Ico, size))
+}
 fn probe_webp(bytes: &[u8]) -> Result<ImageMetadata, ImageError> {
     if bytes.len() < 30 {
         return Err(ImageError::TruncatedData);

@@ -30,8 +30,9 @@ use phantom_image::{
     DecodedImage, ImageDecodeLimits, ImageDecoder, ImageMetadata, ImageResourceId,
     RasterImageDecoder, image_is_animated,
 };
-use phantom_net::{HttpUrl, NetworkClient, NetworkError, NetworkIsolationKey, TextResponse};
-
+use phantom_net::{
+    DocumentLoadError, DocumentResponse, HttpUrl, NetworkClient, NetworkIsolationKey,
+};
 const APP_NAME: &str = "Phantom";
 const APP_VERSION: &str = "0.0.1";
 const LUCIDE_FONT_NAME: &str = "phantom-lucide";
@@ -44,7 +45,7 @@ const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.p
 
 const APP_ICON_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-app-icon-1024.png");
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavigationAction {
     New,
     History(usize),
@@ -52,9 +53,62 @@ enum NavigationAction {
 }
 
 struct PendingNavigation {
-    receiver: Receiver<Result<TextResponse, NetworkError>>,
+    receiver: Receiver<Result<DocumentResponse, DocumentLoadError>>,
     action: NavigationAction,
     generation: u64,
+}
+
+// PHANTOM_2D3_NAVIGATION_STATE_MACHINE
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NavigationPhase {
+    Empty,
+    Fetching,
+    Parsing,
+    Ready,
+    Failed,
+}
+
+enum NavigationState {
+    Empty,
+    Fetching(PendingNavigation),
+    Parsing(NavigationAction),
+    Ready,
+    Failed(DocumentPageError),
+}
+
+impl NavigationState {
+    fn phase(&self) -> NavigationPhase {
+        match self {
+            Self::Empty => NavigationPhase::Empty,
+            Self::Fetching(_) => NavigationPhase::Fetching,
+            Self::Parsing(_) => NavigationPhase::Parsing,
+            Self::Ready => NavigationPhase::Ready,
+            Self::Failed(_) => NavigationPhase::Failed,
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        matches!(self, Self::Fetching(_) | Self::Parsing(_))
+    }
+
+    fn has_committed_document(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    fn loading_action(&self) -> Option<NavigationAction> {
+        match self {
+            Self::Fetching(pending) => Some(pending.action),
+            Self::Parsing(action) => Some(*action),
+            Self::Empty | Self::Ready | Self::Failed(_) => None,
+        }
+    }
+
+    fn error(&self) -> Option<&DocumentPageError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Empty | Self::Fetching(_) | Self::Parsing(_) | Self::Ready => None,
+        }
+    }
 }
 
 struct ImageLoadRequest {
@@ -274,10 +328,30 @@ impl Drop for PendingImageBatch {
 }
 
 // PHANTOM_2C11_SITE_ICON_LIFECYCLE
-struct PendingSiteIcon {
-    receiver: Receiver<Result<DecodedImage, String>>,
-    generation: u64,
+// PHANTOM_2C15_SITE_ICON_FALLBACK
+struct LoadedSiteIcon {
     source: String,
+    decoded: DecodedImage,
+}
+
+struct PendingSiteIcon {
+    receiver: Receiver<Result<LoadedSiteIcon, String>>,
+    generation: u64,
+}
+// PHANTOM_2D1_DOCUMENT_ERROR_SURFACE
+#[derive(Debug)]
+struct DocumentPageError {
+    title: String,
+    message: String,
+}
+
+impl DocumentPageError {
+    fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+        }
+    }
 }
 struct BrowserTab {
     engine: Engine,
@@ -287,7 +361,7 @@ struct BrowserTab {
     title: String,
     pinned: bool,
     status: String,
-    pending: Option<PendingNavigation>,
+    navigation: NavigationState,
     pending_images: Option<PendingImageBatch>,
     pending_site_icon: Option<PendingSiteIcon>,
     deferred_images: Vec<ImageLoadRequest>,
@@ -301,9 +375,11 @@ struct BrowserTab {
     preloaded_resources: usize,
     failed_preloads: usize,
     raster_bytes: u64,
-    page_loaded: bool,
     history: Vec<String>,
+    history_scroll_offsets: Vec<f32>,
     history_index: Option<usize>,
+    current_scroll_y: f32,
+    pending_scroll_y: Option<f32>,
     document_generation: u64,
 }
 
@@ -317,7 +393,7 @@ impl BrowserTab {
             title: "Nova aba".to_owned(),
             pinned: false,
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
-            pending: None,
+            navigation: NavigationState::Empty,
             pending_images: None,
             pending_site_icon: None,
             deferred_images: Vec::new(),
@@ -331,9 +407,11 @@ impl BrowserTab {
             preloaded_resources: 0,
             failed_preloads: 0,
             raster_bytes: 0,
-            page_loaded: false,
             history: Vec::new(),
+            history_scroll_offsets: Vec::new(),
             history_index: None,
+            current_scroll_y: 0.0,
+            pending_scroll_y: None,
             document_generation: 0,
         }
     }
@@ -347,8 +425,44 @@ impl BrowserTab {
             .is_some_and(|index| index.saturating_add(1) < self.history.len())
     }
 
+    fn navigation_phase(&self) -> NavigationPhase {
+        self.navigation.phase()
+    }
+
     fn is_loading(&self) -> bool {
-        self.pending.is_some()
+        self.navigation.is_loading()
+    }
+
+    fn has_committed_document(&self) -> bool {
+        self.navigation.has_committed_document()
+    }
+
+    fn navigation_error(&self) -> Option<&DocumentPageError> {
+        self.navigation.error()
+    }
+
+    fn loading_action(&self) -> Option<NavigationAction> {
+        self.navigation.loading_action()
+    }
+
+    fn begin_fetching(&mut self, pending: PendingNavigation) {
+        self.navigation = NavigationState::Fetching(pending);
+    }
+
+    fn begin_parsing(&mut self, action: NavigationAction) {
+        self.navigation = NavigationState::Parsing(action);
+    }
+
+    fn mark_navigation_ready(&mut self) {
+        self.navigation = NavigationState::Ready;
+    }
+
+    fn fail_navigation(&mut self, error: DocumentPageError) {
+        self.navigation = NavigationState::Failed(error);
+    }
+
+    fn clear_navigation_state(&mut self) {
+        self.navigation = NavigationState::Empty;
     }
 
     fn is_loading_images(&self) -> bool {
@@ -380,7 +494,7 @@ enum NavigationUiCommand {
     Reload,
 }
 
-// 2C-10 â€” recently closed tabs
+// 2C-10 — recently closed tabs
 #[derive(Clone, Debug)]
 struct ClosedTabSnapshot {
     address: String,
@@ -507,7 +621,7 @@ impl PhantomApp {
         }
 
         let replace_blank = self.tabs.len() == 1
-            && !self.tabs[0].page_loaded
+            && !self.tabs[0].has_committed_document()
             && self.tabs[0].address.trim().is_empty()
             && self.tabs[0].history.is_empty();
 
@@ -778,7 +892,7 @@ impl PhantomApp {
                                     };
                                     let close_clicked = !tab.pinned
                                         && icon_button(ui, Icon::X, true, [25.0, 24.0], 13.0)
-                                            .on_hover_text("Fechar aba Â· Ctrl+W")
+                                            .on_hover_text("Fechar aba · Ctrl+W")
                                             .clicked();
 
                                     (tab_response, close_clicked)
@@ -788,7 +902,7 @@ impl PhantomApp {
 
                         let (tab_response, close_clicked) = tab_frame.inner;
                         let tab_response = tab_response.on_hover_text(if tab.pinned {
-                            format!("{} Â· aba fixada", tab.title)
+                            format!("{} · aba fixada", tab.title)
                         } else {
                             tab.title.clone()
                         });
@@ -809,14 +923,14 @@ impl PhantomApp {
                                 ui.close();
                             }
 
-                            if ui.button("Recarregar Â· Ctrl+R").clicked() {
+                            if ui.button("Recarregar · Ctrl+R").clicked() {
                                 reload_tab = Some(index);
                                 ui.close();
                             }
 
                             ui.separator();
 
-                            if ui.button("Fechar aba Â· Ctrl+W").clicked() {
+                            if ui.button("Fechar aba · Ctrl+W").clicked() {
                                 close_tab = Some(index);
                                 ui.close();
                             }
@@ -828,7 +942,7 @@ impl PhantomApp {
                     }
 
                     if icon_button(ui, Icon::Plus, true, [31.0, 30.0], 16.0)
-                        .on_hover_text("Nova aba Â· Ctrl+T")
+                        .on_hover_text("Nova aba · Ctrl+T")
                         .clicked()
                     {
                         create_tab = true;
@@ -845,7 +959,7 @@ impl PhantomApp {
                         + WINDOW_CONTROLS_RIGHT_PADDING;
                     if !self.recently_closed_tabs.is_empty()
                         && icon_button(ui, Icon::History, true, [31.0, 30.0], 15.0)
-                            .on_hover_text("Reabrir Ãºltima aba fechada Â· Ctrl+Shift+T")
+                            .on_hover_text("Reabrir última aba fechada · Ctrl+Shift+T")
                             .clicked()
                     {
                         reopen_closed_tab = true;
@@ -897,7 +1011,7 @@ impl PhantomApp {
                         close_window = true;
                     }
 
-                    // 2C-9 FIX 5 â€” native-window inset
+                    // 2C-9 FIX 5 — native-window inset
                     ui.add_space(WINDOW_CONTROLS_RIGHT_PADDING);
                 });
             });
@@ -952,15 +1066,15 @@ impl PhantomApp {
     }
 
     fn page_area(&mut self, ui: &mut egui::Ui) {
-        if self.active_tab().is_loading() {
-            self.loading_page(ui, self.active_tab());
-        } else if self.active_tab().page_loaded {
-            self.rendered_page(ui);
-        } else {
-            self.empty_page(ui, self.active_tab());
+        match self.active_tab().navigation_phase() {
+            NavigationPhase::Empty => self.empty_page(ui, self.active_tab()),
+            NavigationPhase::Fetching | NavigationPhase::Parsing => {
+                self.loading_page(ui, self.active_tab());
+            }
+            NavigationPhase::Ready => self.rendered_page(ui),
+            NavigationPhase::Failed => self.document_error_page(ui, self.active_tab()),
         }
     }
-
     fn empty_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
         ui.add_space(70.0);
 
@@ -978,15 +1092,63 @@ impl PhantomApp {
         });
     }
 
-    fn loading_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
-        ui.add_space(90.0);
+    fn document_error_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
+        let Some(error) = tab.navigation_error() else {
+            return;
+        };
+
+        ui.add_space(64.0);
 
         ui.vertical_centered(|ui| {
+            if let Some(logo) = &self.page_logo {
+                ui.image((logo.id(), egui::vec2(148.0, 148.0)));
+                ui.add_space(18.0);
+            }
+
+            ui.heading(&error.title);
+            ui.add_space(10.0);
+
+            ui.add_sized(
+                [560.0, 56.0],
+                egui::Label::new(
+                    egui::RichText::new(&error.message)
+                        .size(15.0)
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .wrap(),
+            );
+
+            if !tab.address.trim().is_empty() {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(truncate_text(tab.address.trim(), 90))
+                        .small()
+                        .weak(),
+                );
+            }
+        });
+    }
+    fn loading_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
+        let heading = match tab.loading_action() {
+            Some(NavigationAction::New) => "Abrindo página",
+            Some(NavigationAction::History(_)) => "Restaurando histórico",
+            Some(NavigationAction::Reload) => "Recarregando página",
+            None => "Carregando",
+        };
+
+        ui.add_space(64.0);
+
+        ui.vertical_centered(|ui| {
+            if let Some(logo) = &self.page_logo {
+                ui.image((logo.id(), egui::vec2(132.0, 132.0)));
+                ui.add_space(12.0);
+            }
+
             ui.spinner();
-            ui.add_space(12.0);
-            ui.heading("Carregando");
+            ui.add_space(10.0);
+            ui.heading(heading);
             ui.add_space(6.0);
-            ui.label(tab.address.as_str());
+            ui.label(egui::RichText::new(tab.address.as_str()).small().weak());
         });
     }
 
@@ -1012,6 +1174,7 @@ impl PhantomApp {
 
         let command_modifier = ui.ctx().input(|input| input.modifiers.command);
         let controls = self.tabs[active_index].engine.form_control_regions();
+        let requested_scroll_y = self.tabs[active_index].pending_scroll_y.take();
 
         {
             let tab = &mut self.tabs[active_index];
@@ -1056,6 +1219,14 @@ impl PhantomApp {
 
                     let horizontal_offset = ((canvas_width - document_width) * 0.5).max(0.0);
                     let origin = canvas_rect.min + egui::vec2(horizontal_offset, 18.0);
+
+                    if let Some(scroll_y) = requested_scroll_y {
+                        let scroll_target = egui::Rect::from_min_size(
+                            origin + egui::vec2(0.0, scroll_y.max(0.0)),
+                            egui::vec2(1.0, 1.0),
+                        );
+                        ui.scroll_to_rect(scroll_target, Some(egui::Align::TOP));
+                    }
 
                     visible_range = (
                         (viewport.top() - origin.y).max(0.0),
@@ -1170,6 +1341,7 @@ impl PhantomApp {
                 });
         }
 
+        self.tabs[active_index].current_scroll_y = visible_range.0;
         let visible_images = visible_image_resources(
             self.tabs[active_index].engine.paint_list(),
             visible_range.0,
@@ -1229,21 +1401,21 @@ impl PhantomApp {
 
                         Err(error) => {
                             self.tabs[active_index].status =
-                                format!("Form action bloqueada Â· {error}");
+                                format!("Form action bloqueada · {error}");
                         }
                     }
                 }
 
                 Err(FormSubmissionError::UnsupportedMethod(method)) => {
                     self.tabs[active_index].status = format!(
-                        "Form method ainda nÃ£o suportado Â· {}",
+                        "Form method ainda não suportado · {}",
                         method.to_ascii_uppercase()
                     );
                 }
 
                 Err(FormSubmissionError::FormNotFound) => {
                     self.tabs[active_index].status =
-                        "FormulÃ¡rio nÃ£o encontrado no documento ativo".to_owned();
+                        "Formulário não encontrado no documento ativo".to_owned();
                 }
             }
         } else if let Some((target, open_new_context)) = link_activation {
@@ -1273,9 +1445,10 @@ impl PhantomApp {
         let active_index = self.active_tab;
         let can_back = self.tabs[active_index].can_go_back();
         let can_forward = self.tabs[active_index].can_go_forward();
-        let can_reload = self.tabs[active_index].page_loaded
+        let can_reload = self.tabs[active_index].has_committed_document()
             || !self.tabs[active_index].address.trim().is_empty();
         let loading = self.tabs[active_index].is_loading();
+        let origin_identity = navigation_origin_identity(&self.tabs[active_index]);
 
         egui::Area::new(egui::Id::new("phantom-floating-navigation"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -18.0])
@@ -1332,6 +1505,17 @@ impl PhantomApp {
                                 keep_forced = false;
                             }
 
+                            // PHANTOM_2D2_ORIGIN_IDENTITY_UX
+                            if let Some((secure_transport, tooltip)) = origin_identity.as_ref() {
+                                let icon = if *secure_transport {
+                                    Icon::Lock
+                                } else {
+                                    Icon::ShieldAlert
+                                };
+
+                                ui.label(lucide_text(icon, 14.0)).on_hover_text(tooltip);
+                            }
+
                             let address_width = (ui.available_width() - 58.0).max(180.0);
 
                             let address_response = ui.add_sized(
@@ -1371,14 +1555,6 @@ impl PhantomApp {
                                 keep_forced = false;
                             }
                         });
-
-                        ui.add_space(3.0);
-
-                        ui.label(
-                            egui::RichText::new(&self.tabs[active_index].status)
-                                .small()
-                                .weak(),
-                        );
                     });
             });
 
@@ -1447,13 +1623,271 @@ impl eframe::App for PhantomApp {
     }
 }
 
+fn navigation_origin_identity(tab: &BrowserTab) -> Option<(bool, String)> {
+    let source = match tab.navigation_phase() {
+        NavigationPhase::Ready => current_history_url(tab)?,
+        NavigationPhase::Failed => tab.address.trim(),
+        NavigationPhase::Empty | NavigationPhase::Fetching | NavigationPhase::Parsing => {
+            return None;
+        }
+    };
+
+    let url = HttpUrl::parse(source).ok()?;
+    let origin = url.origin();
+    let secure_transport = origin.is_secure_transport();
+    let tooltip = if secure_transport {
+        format!("HTTPS · transporte criptografado · {origin}")
+    } else {
+        format!("HTTP · transporte sem criptografia · {origin}")
+    };
+
+    Some((secure_transport, tooltip))
+}
+
+fn document_page_error_from_load(error: &DocumentLoadError) -> DocumentPageError {
+    match error {
+        DocumentLoadError::UnsupportedMediaType(media_type) => DocumentPageError::new(
+            "Formato de documento ainda não suportado",
+            format!(
+                "O servidor respondeu com {media_type}. Nesta fase o Phantom abre documentos HTML e XHTML."
+            ),
+        ),
+
+        DocumentLoadError::UnidentifiedMediaType => DocumentPageError::new(
+            "Não foi possível identificar esta página",
+            "A resposta não informou um tipo HTML válido e não pôde ser reconhecida com segurança.",
+        ),
+
+        DocumentLoadError::NoContent { status } => DocumentPageError::new(
+            "Esta resposta não contém uma página",
+            format!("O servidor respondeu com HTTP {status}, sem conteúdo de documento."),
+        ),
+
+        DocumentLoadError::PartialContent => DocumentPageError::new(
+            "Resposta parcial não suportada",
+            "O Phantom não usa HTTP 206 como representação principal de uma página.",
+        ),
+
+        DocumentLoadError::Network(network_error) => DocumentPageError::new(
+            "Não foi possível abrir esta página",
+            network_error.to_string(),
+        ),
+    }
+}
+fn navigation_commit_url(response_final_url: &str, requested_url: &str) -> String {
+    let Ok(response_url) = HttpUrl::parse(response_final_url) else {
+        return response_final_url.to_owned();
+    };
+
+    if response_url.fragment().is_some() {
+        return response_url.as_str().to_owned();
+    }
+
+    let requested_fragment = HttpUrl::parse(requested_url)
+        .ok()
+        .and_then(|url| url.fragment().map(str::to_owned));
+
+    requested_fragment.map_or_else(
+        || response_url.as_str().to_owned(),
+        |fragment| {
+            response_url
+                .with_fragment(Some(&fragment))
+                .as_str()
+                .to_owned()
+        },
+    )
+}
+
+fn current_history_url(tab: &BrowserTab) -> Option<&str> {
+    tab.history_index
+        .and_then(|index| tab.history.get(index))
+        .map(String::as_str)
+}
+
+fn resolve_navigation_url(tab: &BrowserTab, target: &str) -> Option<HttpUrl> {
+    let trimmed = target.trim();
+
+    if trimmed.starts_with('#') {
+        let current = HttpUrl::parse(current_history_url(tab)?).ok()?;
+        current.resolve(trimmed).ok()
+    } else {
+        HttpUrl::parse(trimmed).ok()
+    }
+}
+
+fn fragment_scroll_position(tab: &BrowserTab, target: &HttpUrl) -> f32 {
+    match target.fragment() {
+        None | Some("") => 0.0,
+        Some(fragment) => tab
+            .engine
+            .fragment_target(fragment)
+            .map_or(tab.current_scroll_y, |target| target.top()),
+    }
+}
+
+fn ensure_history_scroll_offsets(tab: &mut BrowserTab) {
+    if tab.history_scroll_offsets.len() < tab.history.len() {
+        tab.history_scroll_offsets.resize(tab.history.len(), 0.0);
+    } else if tab.history_scroll_offsets.len() > tab.history.len() {
+        tab.history_scroll_offsets.truncate(tab.history.len());
+    }
+}
+
+fn save_current_history_scroll(tab: &mut BrowserTab) {
+    ensure_history_scroll_offsets(tab);
+
+    let Some(index) = tab.history_index else {
+        return;
+    };
+
+    if let Some(offset) = tab.history_scroll_offsets.get_mut(index) {
+        *offset = tab.current_scroll_y.max(0.0);
+    }
+}
+
+fn try_same_document_fragment_navigation(
+    tab: &mut BrowserTab,
+    target: &str,
+    action: NavigationAction,
+) -> bool {
+    if !tab.has_committed_document() || matches!(action, NavigationAction::Reload) {
+        return false;
+    }
+
+    let Some(current_source) = current_history_url(tab) else {
+        return false;
+    };
+    let Ok(current_url) = HttpUrl::parse(current_source) else {
+        return false;
+    };
+    let Some(target_url) = resolve_navigation_url(tab, target) else {
+        return false;
+    };
+
+    if !current_url.same_document_except_fragment(&target_url) {
+        return false;
+    }
+
+    let fragment_state_changed = current_url.fragment() != target_url.fragment();
+
+    if !fragment_state_changed && target_url.fragment().is_none() {
+        return false;
+    }
+
+    save_current_history_scroll(tab);
+
+    let scroll_y = match action {
+        NavigationAction::History(index) => {
+            ensure_history_scroll_offsets(tab);
+            tab.history_scroll_offsets
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| fragment_scroll_position(tab, &target_url))
+        }
+
+        NavigationAction::New => fragment_scroll_position(tab, &target_url),
+
+        NavigationAction::Reload => return false,
+    };
+
+    let serialized = target_url.as_str().to_owned();
+
+    match action {
+        NavigationAction::New => {
+            if current_url.as_str() != serialized {
+                if let Some(index) = tab.history_index {
+                    let keep = index.saturating_add(1);
+                    tab.history.truncate(keep);
+                    tab.history_scroll_offsets.truncate(keep);
+                } else {
+                    tab.history.clear();
+                    tab.history_scroll_offsets.clear();
+                }
+
+                tab.history.push(serialized.clone());
+                tab.history_scroll_offsets.push(scroll_y);
+                tab.history_index = tab.history.len().checked_sub(1);
+            }
+        }
+
+        NavigationAction::History(index) => {
+            if index >= tab.history.len() {
+                return false;
+            }
+            tab.history_index = Some(index);
+        }
+
+        NavigationAction::Reload => return false,
+    }
+
+    tab.address = serialized;
+    tab.current_scroll_y = scroll_y.max(0.0);
+    tab.pending_scroll_y = Some(tab.current_scroll_y);
+
+    tab.status = match target_url.fragment() {
+        Some(fragment) if !fragment.is_empty() => {
+            if tab.engine.fragment_target(fragment).is_some() {
+                format!("Seção #{fragment} · navegação interna")
+            } else {
+                format!("Fragmento #{fragment} · alvo não encontrado")
+            }
+        }
+        _ => "Topo do documento · navegação interna".to_owned(),
+    };
+
+    true
+}
+
+fn prepare_committed_fragment_scroll(
+    tab: &mut BrowserTab,
+    action: NavigationAction,
+    final_url: &str,
+) {
+    if !matches!(action, NavigationAction::New) {
+        return;
+    }
+
+    let Ok(url) = HttpUrl::parse(final_url) else {
+        return;
+    };
+
+    if url.fragment().is_some() {
+        let scroll_y = fragment_scroll_position(tab, &url);
+        tab.current_scroll_y = scroll_y.max(0.0);
+        tab.pending_scroll_y = Some(tab.current_scroll_y);
+
+        ensure_history_scroll_offsets(tab);
+        if let Some(index) = tab.history_index
+            && let Some(offset) = tab.history_scroll_offsets.get_mut(index)
+        {
+            *offset = tab.current_scroll_y;
+        }
+    }
+}
 fn start_navigation(
     network: &NetworkClient,
     tab: &mut BrowserTab,
     target: String,
     action: NavigationAction,
 ) {
-    tab.pending = None;
+    // PHANTOM_2C14_NAVIGATION_LIFECYCLE_II
+    if try_same_document_fragment_navigation(tab, &target, action) {
+        return;
+    }
+
+    save_current_history_scroll(tab);
+
+    tab.pending_scroll_y = Some(match action {
+        NavigationAction::History(index) => tab
+            .history_scroll_offsets
+            .get(index)
+            .copied()
+            .unwrap_or_default(),
+        NavigationAction::Reload => tab.current_scroll_y,
+        NavigationAction::New => 0.0,
+    });
+
+    tab.clear_navigation_state();
     tab.cancel_image_work();
     tab.document_generation = tab.document_generation.saturating_add(1);
     let generation = tab.document_generation;
@@ -1467,16 +1901,16 @@ fn start_navigation(
         .name("phantom-network".to_owned())
         .spawn(move || {
             let result = if matches!(action, NavigationAction::Reload) {
-                client.reload_text(&target)
+                client.reload_document(&target)
             } else {
-                client.fetch_text(&target)
+                client.fetch_document(&target)
             };
             let _ = sender.send(result);
         });
 
     match thread_result {
         Ok(_handle) => {
-            tab.pending = Some(PendingNavigation {
+            tab.begin_fetching(PendingNavigation {
                 receiver,
                 action,
                 generation,
@@ -1484,37 +1918,50 @@ fn start_navigation(
         }
 
         Err(error) => {
+            tab.fail_navigation(DocumentPageError::new(
+                "Não foi possível iniciar a navegação",
+                error.to_string(),
+            ));
             tab.status = format!("Não foi possível iniciar a navegação: {error}");
         }
     }
 }
 
 fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pixel_ratio: f32) {
-    let receive_result = tab.pending.as_ref().map(|pending| {
-        (
+    let receive_result = match &tab.navigation {
+        NavigationState::Fetching(pending) => Some((
             pending.action,
             pending.generation,
             pending.receiver.try_recv(),
-        )
-    });
+        )),
+        NavigationState::Empty
+        | NavigationState::Parsing(_)
+        | NavigationState::Ready
+        | NavigationState::Failed(_) => None,
+    };
 
     match receive_result {
         Some((_action, generation, _result)) if generation != tab.document_generation => {
-            tab.pending = None;
+            tab.clear_navigation_state();
         }
-        Some((action, _generation, Ok(Ok(response)))) => {
-            tab.pending = None;
 
+        Some((action, _generation, Ok(Ok(response)))) => {
             let status_code = response.status();
             let body_bytes = response.body_bytes();
-            let final_url = response.final_url().to_owned();
+            let final_url = navigation_commit_url(response.final_http_url().as_str(), &tab.address);
+
+            tab.begin_parsing(action);
 
             match tab.engine.load_html(response.body()) {
                 Ok(()) => {
                     commit_history(tab, action, &final_url);
+                    prepare_committed_fragment_scroll(tab, action, &final_url);
                     tab.address = final_url.clone();
-                    tab.title = title_from_url(&final_url);
-                    tab.page_loaded = true;
+                    tab.title = tab
+                        .engine
+                        .document_title()
+                        .unwrap_or_else(|| title_from_url(&final_url));
+                    tab.mark_navigation_ready();
                     tab.cancel_image_work();
                     tab.image_textures.clear();
                     tab.site_icon = None;
@@ -1539,18 +1986,25 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                 }
 
                 Err(error) => {
+                    tab.fail_navigation(DocumentPageError::new(
+                        "Não foi possível renderizar esta página",
+                        error.to_string(),
+                    ));
                     tab.status = format!("Falha de renderização: {error}");
                 }
             }
         }
 
         Some((_action, _generation, Ok(Err(error)))) => {
-            tab.pending = None;
+            tab.fail_navigation(document_page_error_from_load(&error));
             tab.status = format!("Falha de navegação: {error}");
         }
 
         Some((_action, _generation, Err(TryRecvError::Disconnected))) => {
-            tab.pending = None;
+            tab.fail_navigation(DocumentPageError::new(
+                "Não foi possível abrir esta página",
+                "O processo de carregamento foi encerrado inesperadamente.",
+            ));
             tab.status = "O worker de rede foi encerrado inesperadamente.".to_owned();
         }
 
@@ -1561,26 +2015,25 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
 fn start_site_icon_loading(network: &NetworkClient, tab: &mut BrowserTab, document_url: &str) {
     tab.pending_site_icon = None;
 
-    let Some(request) = tab.engine.site_icon_request() else {
-        return;
-    };
     let Ok(base_url) = HttpUrl::parse(document_url) else {
         return;
     };
-    let Ok(url) = base_url.resolve(request.source()) else {
+
+    let candidates = collect_site_icon_candidates(tab, &base_url);
+
+    if candidates.is_empty() {
         return;
-    };
+    }
 
     let isolation_key = NetworkIsolationKey::from_top_level(&base_url);
     let generation = tab.document_generation;
-    let source = url.as_str().to_owned();
     let client = network.clone();
     let (sender, receiver) = mpsc::channel();
 
     let thread_result = thread::Builder::new()
         .name("phantom-site-icon".to_owned())
         .spawn(move || {
-            let result = fetch_and_decode_site_icon(&client, &isolation_key, &url);
+            let result = fetch_site_icon_candidates(&client, &isolation_key, candidates);
             let _ = sender.send(result);
         });
 
@@ -1588,9 +2041,56 @@ fn start_site_icon_loading(network: &NetworkClient, tab: &mut BrowserTab, docume
         tab.pending_site_icon = Some(PendingSiteIcon {
             receiver,
             generation,
-            source,
         });
     }
+}
+
+fn collect_site_icon_candidates(tab: &BrowserTab, base_url: &HttpUrl) -> Vec<HttpUrl> {
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for request in tab.engine.site_icon_requests() {
+        let Ok(url) = base_url.resolve(request.source()) else {
+            continue;
+        };
+
+        if seen.insert(url.as_str().to_owned()) {
+            candidates.push(url);
+        }
+    }
+
+    if let Ok(fallback) = base_url.resolve("/favicon.ico")
+        && seen.insert(fallback.as_str().to_owned())
+    {
+        candidates.push(fallback);
+    }
+
+    candidates
+}
+
+fn fetch_site_icon_candidates(
+    network: &NetworkClient,
+    isolation_key: &NetworkIsolationKey,
+    candidates: Vec<HttpUrl>,
+) -> Result<LoadedSiteIcon, String> {
+    let mut last_error = "no site icon candidate could be decoded".to_owned();
+
+    for url in candidates {
+        match fetch_and_decode_site_icon(network, isolation_key, &url) {
+            Ok(decoded) => {
+                return Ok(LoadedSiteIcon {
+                    source: url.as_str().to_owned(),
+                    decoded,
+                });
+            }
+
+            Err(error) => {
+                last_error = format!("{}: {error}", url.as_str());
+            }
+        }
+    }
+
+    Err(last_error)
 }
 
 fn fetch_and_decode_site_icon(
@@ -1627,6 +2127,7 @@ fn fetch_and_decode_site_icon(
         let Some(frame) = animation.frames().first() else {
             return Err("animated site icon has no decodable frame".to_owned());
         };
+
         return Ok(frame.image().clone());
     }
 
@@ -1636,33 +2137,37 @@ fn fetch_and_decode_site_icon(
 }
 
 fn poll_tab_site_icon(tab: &mut BrowserTab, context: &egui::Context) {
-    let receive_result = tab.pending_site_icon.as_ref().map(|pending| {
-        (
-            pending.generation,
-            pending.source.clone(),
-            pending.receiver.try_recv(),
-        )
-    });
+    let receive_result = tab
+        .pending_site_icon
+        .as_ref()
+        .map(|pending| (pending.generation, pending.receiver.try_recv()));
 
     match receive_result {
-        Some((generation, _, _)) if generation != tab.document_generation => {
+        Some((generation, _)) if generation != tab.document_generation => {
             tab.pending_site_icon = None;
         }
-        Some((generation, source, Ok(Ok(decoded)))) => {
+
+        Some((generation, Ok(Ok(loaded)))) => {
             tab.pending_site_icon = None;
+
             if let Some(texture) = decoded_image_texture_named(
                 context,
-                format!("phantom-site-icon-{generation}-{source}"),
-                &decoded,
+                format!("phantom-site-icon-{generation}-{}", loaded.source),
+                &loaded.decoded,
             ) {
                 tab.site_icon = Some(texture);
             }
         }
-        Some((_generation, _source, Ok(Err(_))))
-        | Some((_generation, _source, Err(TryRecvError::Disconnected))) => {
+
+        Some((_, Ok(Err(_)))) => {
             tab.pending_site_icon = None;
         }
-        Some((_, _, Err(TryRecvError::Empty))) | None => {}
+
+        Some((_, Err(TryRecvError::Disconnected))) => {
+            tab.pending_site_icon = None;
+        }
+
+        Some((_, Err(TryRecvError::Empty))) | None => {}
     }
 }
 fn start_image_loading(
@@ -1951,10 +2456,7 @@ fn preload_image(
         .map_err(|error| error.to_string())?;
 
     if !(200..=299).contains(&response.status()) {
-        return Err(format!(
-            "HTTP {} ao prÃ©-carregar imagem",
-            response.status()
-        ));
+        return Err(format!("HTTP {} ao pré-carregar imagem", response.status()));
     }
 
     Ok(())
@@ -2291,7 +2793,7 @@ fn update_image_status(tab: &mut BrowserTab) {
         let completed = pending.total.saturating_sub(pending.remaining);
 
         tab.status = format!(
-            "PÃ¡gina pronta Â· recursos {completed}/{} Â· {} imagens Â· {} preloads Â· {} animadas Â· {} falhas img Â· {} falhas preload",
+            "Página pronta · recursos {completed}/{} · {} imagens · {} preloads · {} animadas · {} falhas img · {} falhas preload",
             pending.total,
             tab.loaded_images,
             tab.preloaded_resources,
@@ -2301,7 +2803,7 @@ fn update_image_status(tab: &mut BrowserTab) {
         );
     } else if !tab.deferred_images.is_empty() {
         tab.status = format!(
-            "PÃ¡gina pronta Â· {} imagens Â· {} adiadas Â· {} preloads Â· {} animadas Â· {} falhas img",
+            "Página pronta · {} imagens · {} adiadas · {} preloads · {} animadas · {} falhas img",
             tab.loaded_images,
             tab.deferred_images.len(),
             tab.preloaded_resources,
@@ -2314,7 +2816,7 @@ fn update_image_status(tab: &mut BrowserTab) {
         || tab.failed_preloads > 0
     {
         tab.status = format!(
-            "PÃ¡gina pronta Â· {} imagens Â· {} preloads Â· {} animadas Â· {} falhas img Â· {} falhas preload",
+            "Página pronta · {} imagens · {} preloads · {} animadas · {} falhas img · {} falhas preload",
             tab.loaded_images,
             tab.preloaded_resources,
             animated_image_count(tab),
@@ -2324,15 +2826,21 @@ fn update_image_status(tab: &mut BrowserTab) {
     }
 }
 fn commit_history(tab: &mut BrowserTab, action: NavigationAction, final_url: &str) {
+    ensure_history_scroll_offsets(tab);
+
     match action {
         NavigationAction::New => {
             if let Some(index) = tab.history_index {
-                tab.history.truncate(index.saturating_add(1));
+                let keep = index.saturating_add(1);
+                tab.history.truncate(keep);
+                tab.history_scroll_offsets.truncate(keep);
             } else {
                 tab.history.clear();
+                tab.history_scroll_offsets.clear();
             }
 
             tab.history.push(final_url.to_owned());
+            tab.history_scroll_offsets.push(0.0);
             tab.history_index = tab.history.len().checked_sub(1);
         }
 
@@ -2341,6 +2849,8 @@ fn commit_history(tab: &mut BrowserTab, action: NavigationAction, final_url: &st
                 *entry = final_url.to_owned();
                 tab.history_index = Some(index);
             }
+
+            ensure_history_scroll_offsets(tab);
         }
 
         NavigationAction::Reload => {
@@ -2349,10 +2859,11 @@ fn commit_history(tab: &mut BrowserTab, action: NavigationAction, final_url: &st
             {
                 *entry = final_url.to_owned();
             }
+
+            ensure_history_scroll_offsets(tab);
         }
     }
 }
-
 fn pointer_in_navigation_zone(context: &egui::Context) -> bool {
     let rect = context.content_rect();
     let zone_width = (rect.width() * 0.72).clamp(480.0, 980.0);
@@ -2712,6 +3223,9 @@ fn main() -> eframe::Result {
 }
 
 #[cfg(test)]
+mod navigation_compatibility;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2754,6 +3268,88 @@ mod tests {
         assert_eq!(
             animation.elapsed_at(paused_at + Duration::from_secs(5)),
             Duration::from_millis(40),
+        );
+    }
+
+    #[test]
+    fn https_navigation_identity_uses_canonical_typed_origin() {
+        let mut tab = BrowserTab::new();
+        tab.mark_navigation_ready();
+        tab.history = vec!["https://EXAMPLE.com:443/path".to_owned()];
+        tab.history_index = Some(0);
+
+        let identity = navigation_origin_identity(&tab);
+
+        assert!(identity.as_ref().is_some_and(|(secure, tooltip)| {
+            *secure && tooltip.contains("https://example.com")
+        }));
+    }
+
+    #[test]
+    fn http_navigation_identity_is_marked_unencrypted() {
+        let mut tab = BrowserTab::new();
+        tab.mark_navigation_ready();
+        tab.history = vec!["http://example.com/path".to_owned()];
+        tab.history_index = Some(0);
+
+        let identity = navigation_origin_identity(&tab);
+
+        assert!(
+            identity.as_ref().is_some_and(|(secure, tooltip)| {
+                !*secure && tooltip.contains("sem criptografia")
+            })
+        );
+    }
+
+    #[test]
+    fn navigation_state_starts_empty_and_has_single_phase_source() {
+        let tab = BrowserTab::new();
+
+        assert_eq!(tab.navigation_phase(), NavigationPhase::Empty);
+        assert!(!tab.is_loading());
+        assert!(!tab.has_committed_document());
+        assert!(tab.navigation_error().is_none());
+    }
+
+    #[test]
+    fn navigation_state_transitions_fetch_parse_ready() {
+        let (_sender, receiver) = mpsc::channel::<Result<DocumentResponse, DocumentLoadError>>();
+        let mut tab = BrowserTab::new();
+
+        tab.begin_fetching(PendingNavigation {
+            receiver,
+            action: NavigationAction::Reload,
+            generation: 3,
+        });
+
+        assert_eq!(tab.navigation_phase(), NavigationPhase::Fetching);
+        assert!(tab.is_loading());
+        assert_eq!(tab.loading_action(), Some(NavigationAction::Reload));
+
+        tab.begin_parsing(NavigationAction::Reload);
+
+        assert_eq!(tab.navigation_phase(), NavigationPhase::Parsing);
+        assert!(tab.is_loading());
+
+        tab.mark_navigation_ready();
+
+        assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
+        assert!(!tab.is_loading());
+        assert!(tab.has_committed_document());
+        assert!(tab.navigation_error().is_none());
+    }
+
+    #[test]
+    fn navigation_failure_owns_the_document_error() {
+        let mut tab = BrowserTab::new();
+
+        tab.fail_navigation(DocumentPageError::new("Falha de teste", "erro controlado"));
+
+        assert_eq!(tab.navigation_phase(), NavigationPhase::Failed);
+        assert!(!tab.has_committed_document());
+        assert!(
+            tab.navigation_error()
+                .is_some_and(|error| error.title == "Falha de teste")
         );
     }
 

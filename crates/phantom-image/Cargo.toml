@@ -12,5 +12,5 @@ publish = false
 workspace = true
 
 [dependencies]
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 thiserror.workspace = true

@@ -34,6 +34,27 @@ use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 
+// PHANTOM_2C14_FRAGMENT_TARGET
+/// One visible same-document fragment target resolved from the active snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FragmentTarget {
+    id: String,
+    top: f32,
+}
+
+impl FragmentTarget {
+    /// Returns the matched HTML `id`.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the target's top edge in document coordinates.
+    #[must_use]
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+}
 // PHANTOM_2C13_FORM_NAVIGATION_I
 /// Stable document-generation-local identifier for one form control.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -424,6 +445,39 @@ impl Engine {
         &self.paint
     }
 
+    /// Resolves a visible HTML `id` to its first laid-out document position.
+    ///
+    /// Fragment decoding beyond the serialized first-slice identifier is
+    /// deliberately deferred to the standards-conformance phase.
+    #[must_use]
+    pub fn fragment_target(&self, fragment: &str) -> Option<FragmentTarget> {
+        if fragment.is_empty() {
+            return None;
+        }
+
+        let target_node = self.document.nodes().find_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+
+            (element.attribute("id") == Some(fragment)).then_some(node.id())
+        })?;
+
+        let top = self
+            .layout
+            .boxes()
+            .iter()
+            .filter(|layout_box| {
+                node_is_descendant_or_self(&self.document, layout_box.source_node(), target_node)
+            })
+            .map(|layout_box| layout_box.rect().y())
+            .min_by(f32::total_cmp)?;
+
+        Some(FragmentTarget {
+            id: fragment.to_owned(),
+            top,
+        })
+    }
     /// Returns visible controls supported by Browser Inputs I.
     ///
     /// Hidden inputs participate in submission but deliberately have no visual
@@ -677,21 +731,49 @@ impl Engine {
             .collect()
     }
 
-    /// Returns the first supported site icon explicitly declared by the active
-    /// document.
+    // PHANTOM_2C15_SITE_IDENTITY_II
+    /// Returns supported document-declared site icons in DOM declaration order.
     ///
-    /// The first milestone recognizes `rel` token `icon`, a non-empty `href`,
-    /// and PNG/JPEG/GIF/WebP MIME types. A missing `type` is allowed and the
-    /// bounded decoder remains authoritative after fetch.
+    /// Missing MIME type remains eligible because the bounded decoder is
+    /// authoritative after fetch. Explicitly unsupported MIME types are skipped.
+    #[must_use]
+    pub fn site_icon_requests(&self) -> Vec<SiteIconRequest> {
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+
+                site_icon_from_element(element)
+            })
+            .collect()
+    }
+
+    /// Returns the first supported declared site icon.
+    ///
+    /// Kept as a compatibility convenience for callers that only need one
+    /// candidate. Browser Site Identity II uses [`Self::site_icon_requests`].
     #[must_use]
     pub fn site_icon_request(&self) -> Option<SiteIconRequest> {
-        self.document.nodes().find_map(|node| {
+        self.site_icon_requests().into_iter().next()
+    }
+
+    /// Returns the normalized text of the first HTML `<title>` element.
+    #[must_use]
+    pub fn document_title(&self) -> Option<String> {
+        let title_node = self.document.nodes().find_map(|node| {
             let NodeKind::Element(element) = node.kind() else {
                 return None;
             };
 
-            site_icon_from_element(element)
-        })
+            (element.tag_name() == "title").then_some(node.id())
+        })?;
+
+        let raw = descendant_text_content(&self.document, title_node);
+        let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        (!normalized.is_empty()).then_some(normalized)
     }
     /// Parses HTML and replaces all engine snapshots.
     ///
@@ -782,6 +864,19 @@ impl Engine {
     }
 }
 
+fn node_is_descendant_or_self(document: &Document, node_id: NodeId, ancestor: NodeId) -> bool {
+    let mut current = Some(node_id);
+
+    while let Some(current_id) = current {
+        if current_id == ancestor {
+            return true;
+        }
+
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+
+    false
+}
 fn form_for_node(document: &Document, node_id: NodeId) -> Option<NodeId> {
     let mut current = document.node(node_id)?.parent();
 
@@ -1085,7 +1180,14 @@ fn site_icon_type_supported(value: Option<&str>) -> bool {
 
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+        "image/png"
+            | "image/jpeg"
+            | "image/jpg"
+            | "image/gif"
+            | "image/webp"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
+            | "image/ico"
     )
 }
 fn element_for(document: &Document, node_id: NodeId) -> Option<&ElementData> {

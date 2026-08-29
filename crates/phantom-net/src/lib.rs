@@ -85,6 +85,33 @@ impl HttpUrl {
     }
 
     // PHANTOM_2C13_FORM_QUERY_URL
+    // PHANTOM_2C14_FRAGMENT_URL
+    /// Returns the serialized URL fragment without the leading `#`.
+    #[must_use]
+    pub fn fragment(&self) -> Option<&str> {
+        self.0.fragment()
+    }
+
+    /// Returns this URL with the supplied fragment.
+    #[must_use]
+    pub fn with_fragment(&self, fragment: Option<&str>) -> Self {
+        let mut url = self.0.clone();
+        url.set_fragment(fragment);
+        Self(url)
+    }
+
+    /// Returns this URL without a fragment.
+    #[must_use]
+    pub fn without_fragment(&self) -> Self {
+        self.with_fragment(None)
+    }
+
+    /// Returns whether two HTTP(S) URLs identify the same network document
+    /// when only their fragments are ignored.
+    #[must_use]
+    pub fn same_document_except_fragment(&self, other: &Self) -> bool {
+        self.without_fragment() == other.without_fragment()
+    }
     /// Returns this HTTP(S) URL with its query replaced by form-style pairs.
     ///
     /// Encoding is delegated to `url::Url` rather than implemented manually.
@@ -122,6 +149,19 @@ impl HttpUrl {
         self.0.host_str()
     }
 
+    // PHANTOM_2D2_TYPED_ORIGIN
+    /// Returns the canonical tuple origin represented by this HTTP(S) URL.
+    #[must_use]
+    pub fn origin(&self) -> Origin {
+        Origin::from_http_url(self)
+    }
+
+    /// Returns whether this URL and another HTTP(S) URL share one origin.
+    #[must_use]
+    pub fn same_origin(&self, other: &Self) -> bool {
+        self.origin().same_origin(&other.origin())
+    }
+
     fn from_url(url: Url) -> Result<Self, UrlError> {
         match url.scheme() {
             "http" | "https" => {}
@@ -156,6 +196,122 @@ impl FromStr for HttpUrl {
     }
 }
 
+// PHANTOM_2D2_ORIGIN_DOMAIN
+/// Scheme component of one HTTP(S) tuple origin.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OriginScheme {
+    /// Unencrypted HTTP transport.
+    Http,
+
+    /// TLS-protected HTTPS transport.
+    Https,
+}
+
+impl OriginScheme {
+    /// Returns the serialized scheme without `://`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    /// Returns the default/effective port for the scheme.
+    #[must_use]
+    pub const fn default_port(self) -> u16 {
+        match self {
+            Self::Http => 80,
+            Self::Https => 443,
+        }
+    }
+
+    /// Returns whether this scheme provides encrypted transport.
+    #[must_use]
+    pub const fn is_secure_transport(self) -> bool {
+        matches!(self, Self::Https)
+    }
+}
+
+/// Canonical HTTP(S) tuple origin used by Phantom security/network policy.
+///
+/// Equality is based on normalized scheme, host and effective port. The
+/// serialized representation delegates canonicalization to `url::Url`, so
+/// default ports are omitted and host normalization is not reimplemented by
+/// Phantom.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Origin {
+    scheme: OriginScheme,
+    host: String,
+    effective_port: u16,
+    serialized: String,
+}
+
+impl Origin {
+    fn from_http_url(url: &HttpUrl) -> Self {
+        let scheme = if url.scheme() == "https" {
+            OriginScheme::Https
+        } else {
+            OriginScheme::Http
+        };
+        let host = url.host_str().unwrap_or_default().to_owned();
+        let effective_port = url
+            .0
+            .port_or_known_default()
+            .unwrap_or_else(|| scheme.default_port());
+        let serialized = url.0.origin().ascii_serialization();
+
+        Self {
+            scheme,
+            host,
+            effective_port,
+            serialized,
+        }
+    }
+
+    /// Returns the normalized HTTP(S) scheme.
+    #[must_use]
+    pub const fn scheme(&self) -> OriginScheme {
+        self.scheme
+    }
+
+    /// Returns the canonical ASCII host.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// Returns the effective port, including the scheme default when omitted.
+    #[must_use]
+    pub const fn effective_port(&self) -> u16 {
+        self.effective_port
+    }
+
+    /// Returns the canonical serialized origin.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.serialized
+    }
+
+    /// Returns whether two typed origins are identical under same-origin rules.
+    #[must_use]
+    pub fn same_origin(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    /// Returns whether the origin uses encrypted HTTPS transport.
+    #[must_use]
+    pub const fn is_secure_transport(&self) -> bool {
+        self.scheme.is_secure_transport()
+    }
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Privacy boundary used to partition reusable network state.
 ///
 /// Phantom currently keys the boundary by schemeful origins rather than by
@@ -169,8 +325,8 @@ impl FromStr for HttpUrl {
 /// For the current top-level image pipeline both values are identical.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NetworkIsolationKey {
-    top_level_origin: String,
-    frame_origin: String,
+    top_level_origin: Origin,
+    frame_origin: Origin,
 }
 
 impl NetworkIsolationKey {
@@ -179,8 +335,8 @@ impl NetworkIsolationKey {
     #[must_use]
     pub fn new(top_level_url: &HttpUrl, frame_url: &HttpUrl) -> Self {
         Self {
-            top_level_origin: top_level_url.0.origin().ascii_serialization(),
-            frame_origin: frame_url.0.origin().ascii_serialization(),
+            top_level_origin: top_level_url.origin(),
+            frame_origin: frame_url.origin(),
         }
     }
 
@@ -191,15 +347,33 @@ impl NetworkIsolationKey {
         Self::new(top_level_url, top_level_url)
     }
 
-    /// Canonical schemeful origin of the top-level document.
+    /// Canonical serialized origin of the top-level document.
+    ///
+    /// This string accessor remains for compatibility. New security policy
+    /// should prefer [`Self::top_level_origin_value`].
     #[must_use]
     pub fn top_level_origin(&self) -> &str {
+        self.top_level_origin.as_str()
+    }
+
+    /// Typed origin of the top-level document.
+    #[must_use]
+    pub const fn top_level_origin_value(&self) -> &Origin {
         &self.top_level_origin
     }
 
-    /// Canonical schemeful origin of the requesting frame/document.
+    /// Canonical serialized origin of the requesting frame/document.
+    ///
+    /// This string accessor remains for compatibility. New security policy
+    /// should prefer [`Self::frame_origin_value`].
     #[must_use]
     pub fn frame_origin(&self) -> &str {
+        self.frame_origin.as_str()
+    }
+
+    /// Typed origin of the requesting frame/document.
+    #[must_use]
+    pub const fn frame_origin_value(&self) -> &Origin {
         &self.frame_origin
     }
 }
@@ -240,6 +414,126 @@ pub enum DocumentRequestMode {
     Reload,
 }
 
+// PHANTOM_2D1_DOCUMENT_LOADER_HARDENING
+/// Top-level document media type admitted by Phantom's first hardened loader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocumentMediaType {
+    /// HTML served as `text/html`.
+    Html,
+
+    /// XHTML served as `application/xhtml+xml`.
+    Xhtml,
+}
+
+/// A top-level response that passed Phantom's bounded document-admission policy.
+#[derive(Clone, Debug)]
+pub struct DocumentResponse {
+    response: TextResponse,
+    requested_url: HttpUrl,
+    final_url: HttpUrl,
+    media_type: DocumentMediaType,
+}
+
+impl DocumentResponse {
+    /// URL supplied to the document loader.
+    #[must_use]
+    pub fn requested_url(&self) -> &str {
+        self.requested_url.as_str()
+    }
+
+    /// Typed URL supplied to the document loader.
+    #[must_use]
+    pub const fn requested_http_url(&self) -> &HttpUrl {
+        &self.requested_url
+    }
+
+    /// Final URL after HTTP redirects.
+    #[must_use]
+    pub fn final_url(&self) -> &str {
+        self.final_url.as_str()
+    }
+
+    /// Typed final document URL after HTTP redirects.
+    #[must_use]
+    pub const fn final_http_url(&self) -> &HttpUrl {
+        &self.final_url
+    }
+
+    /// Canonical final document origin.
+    #[must_use]
+    pub fn origin(&self) -> Origin {
+        self.final_url.origin()
+    }
+
+    /// Final HTTP status code.
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        self.response.status()
+    }
+
+    /// Original response `Content-Type`, when supplied.
+    #[must_use]
+    pub fn content_type(&self) -> Option<&str> {
+        self.response.content_type()
+    }
+
+    /// Admitted document media type.
+    #[must_use]
+    pub const fn media_type(&self) -> DocumentMediaType {
+        self.media_type
+    }
+
+    /// Number of redirect hops followed before the final response.
+    #[must_use]
+    pub const fn redirect_count(&self) -> usize {
+        self.response.redirect_count()
+    }
+
+    /// Strictly decoded UTF-8 document text.
+    #[must_use]
+    pub fn body(&self) -> &str {
+        self.response.body()
+    }
+
+    /// UTF-8 bytes retained by the decoded document.
+    #[must_use]
+    pub fn body_bytes(&self) -> usize {
+        self.response.body_bytes()
+    }
+
+    /// Reports network/cache origin of the admitted document.
+    #[must_use]
+    pub const fn cache_status(&self) -> CacheStatus {
+        self.response.cache_status()
+    }
+}
+
+/// Failures raised after or during top-level document loading.
+#[derive(Debug, Error)]
+pub enum DocumentLoadError {
+    /// HTTP/network/URL/text-decoding failure.
+    #[error(transparent)]
+    Network(#[from] NetworkError),
+
+    /// A successful response declared a media type Phantom does not render as a document.
+    #[error("unsupported top-level document media type: {0}")]
+    UnsupportedMediaType(String),
+
+    /// No usable media type was declared and the bounded HTML sniff did not identify HTML.
+    #[error("top-level document type could not be identified safely")]
+    UnidentifiedMediaType,
+
+    /// HTTP explicitly returned a no-content status.
+    #[error("HTTP {status} contains no document body")]
+    NoContent {
+        /// HTTP status that explicitly carries no top-level document body.
+        status: u16,
+    },
+
+    /// Partial content is not accepted as a top-level document representation.
+    #[error("HTTP 206 partial content is not supported for top-level documents")]
+    PartialContent,
+}
 /// HTTP response decoded as text for the document pipeline.
 #[derive(Clone, Debug)]
 pub struct TextResponse {
@@ -764,6 +1058,34 @@ impl NetworkClient {
         self.fetch_text_with_mode(input, DocumentRequestMode::Reload)
     }
 
+    /// Fetches and admits a top-level HTML/XHTML document.
+    ///
+    /// This preserves the 2C document-cache semantics, but adds explicit
+    /// top-level media/status admission after the bounded text response has
+    /// been decoded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentLoadError`] for network failures, unsupported media
+    /// types, no-content/partial responses, or text-decoding policy failures.
+    pub fn fetch_document(&self, input: &str) -> Result<DocumentResponse, DocumentLoadError> {
+        let response = self.fetch_text(input)?;
+        admit_document(response)
+    }
+
+    /// Reloads and admits a top-level HTML/XHTML document.
+    ///
+    /// Reload preserves the 2C cache-revalidation contract (`max-age=0`,
+    /// validators and HTTP 304 body reuse).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentLoadError`] under the same document-admission policy
+    /// as [`Self::fetch_document`].
+    pub fn reload_document(&self, input: &str) -> Result<DocumentResponse, DocumentLoadError> {
+        let response = self.reload_text(input)?;
+        admit_document(response)
+    }
     /// Fetches a top-level document using an explicit navigation cache mode.
     ///
     /// Redirect responses themselves are not cached in this milestone. When a
@@ -929,14 +1251,14 @@ impl NetworkClient {
                 ));
             }
 
-            let body: Arc<str> = response
+            let body_bytes = response
                 .body_mut()
                 .with_config()
                 .limit(self.max_text_body_bytes)
-                .lossy_utf8(true)
-                .read_to_string()
-                .map_err(|error| NetworkError::Body(error.to_string()))?
-                .into();
+                .read_to_vec()
+                .map_err(|error| NetworkError::Body(error.to_string()))?;
+
+            let body = decode_text_body(&body_bytes, content_type.as_deref())?;
 
             let text_response = TextResponse {
                 requested_url: requested_url.clone(),
@@ -1337,6 +1659,138 @@ fn vary_allows_fixed_accept_request(vary: Option<&str>) -> bool {
     })
 }
 
+fn admit_document(response: TextResponse) -> Result<DocumentResponse, DocumentLoadError> {
+    let requested_url = HttpUrl::parse(response.requested_url()).map_err(NetworkError::from)?;
+    let final_url = HttpUrl::parse(response.final_url()).map_err(NetworkError::from)?;
+
+    match response.status() {
+        204 | 205 => {
+            return Err(DocumentLoadError::NoContent {
+                status: response.status(),
+            });
+        }
+
+        206 => return Err(DocumentLoadError::PartialContent),
+
+        _ => {}
+    }
+
+    let media_type = match response.content_type() {
+        Some(value) => {
+            let normalized = normalized_media_type(value);
+
+            match normalized.as_str() {
+                "text/html" => DocumentMediaType::Html,
+                "application/xhtml+xml" => DocumentMediaType::Xhtml,
+                "" => {
+                    if looks_like_html_document(response.body()) {
+                        DocumentMediaType::Html
+                    } else {
+                        return Err(DocumentLoadError::UnidentifiedMediaType);
+                    }
+                }
+                other => {
+                    return Err(DocumentLoadError::UnsupportedMediaType(other.to_owned()));
+                }
+            }
+        }
+
+        None => {
+            if looks_like_html_document(response.body()) {
+                DocumentMediaType::Html
+            } else {
+                return Err(DocumentLoadError::UnidentifiedMediaType);
+            }
+        }
+    };
+
+    Ok(DocumentResponse {
+        response,
+        requested_url,
+        final_url,
+        media_type,
+    })
+}
+
+fn normalized_media_type(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn declared_charset(content_type: Option<&str>) -> Option<String> {
+    let value = content_type?;
+
+    value
+        .split(';')
+        .skip(1)
+        .filter_map(|parameter| parameter.split_once('='))
+        .find_map(|(name, raw_value)| {
+            name.trim().eq_ignore_ascii_case("charset").then(|| {
+                raw_value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_ascii_lowercase()
+            })
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn decode_text_body(bytes: &[u8], content_type: Option<&str>) -> Result<Arc<str>, NetworkError> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return Err(NetworkError::UnsupportedCharset("utf-16le".to_owned()));
+    }
+
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return Err(NetworkError::UnsupportedCharset("utf-16be".to_owned()));
+    }
+
+    let has_utf8_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let payload = if has_utf8_bom { &bytes[3..] } else { bytes };
+
+    let charset = if has_utf8_bom {
+        None
+    } else {
+        declared_charset(content_type)
+    };
+
+    match charset.as_deref() {
+        None | Some("utf-8") | Some("utf8") => {}
+
+        Some("us-ascii") | Some("ascii") => {
+            if payload.iter().any(|byte| !byte.is_ascii()) {
+                return Err(NetworkError::InvalidTextEncoding);
+            }
+        }
+
+        Some(other) => {
+            return Err(NetworkError::UnsupportedCharset(other.to_owned()));
+        }
+    }
+
+    let decoded = std::str::from_utf8(payload).map_err(|_| NetworkError::InvalidTextEncoding)?;
+
+    Ok(Arc::<str>::from(decoded))
+}
+
+fn looks_like_html_document(body: &str) -> bool {
+    let sample = body
+        .trim_start_matches(char::is_whitespace)
+        .chars()
+        .take(1024)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    sample.starts_with("<!doctype html")
+        || sample.starts_with("<html")
+        || sample.starts_with("<head")
+        || sample.starts_with("<body")
+        || sample.contains("<html")
+}
 fn redirect_visit_key(url: &HttpUrl) -> String {
     let mut normalized = url.0.clone();
     normalized.set_fragment(None);
@@ -1380,6 +1834,15 @@ pub enum NetworkError {
     #[error("received HTTP 304 without a cached representation")]
     UnexpectedNotModified,
 
+    /// The response declares a text charset not supported by the current
+    /// bounded document decoder.
+    #[error("unsupported document text charset: {0}")]
+    UnsupportedCharset(String),
+
+    /// The response bytes are not valid under the admitted UTF-8/ASCII policy.
+    #[error("document text is not valid UTF-8/ASCII")]
+    InvalidTextEncoding,
+
     /// The supplied or redirected URL violates Phantom HTTP(S) policy.
     #[error(transparent)]
     Url(#[from] UrlError),
@@ -1388,9 +1851,11 @@ pub enum NetworkError {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachePolicy, HttpUrl, NetworkClient, NetworkIsolationKey, UrlError, cache_policy,
-        trim_http_quotes, vary_allows_fixed_accept_request,
+        CachePolicy, CacheStatus, HttpUrl, NetworkClient, NetworkIsolationKey, OriginScheme,
+        TextResponse, UrlError, admit_document, cache_policy, trim_http_quotes,
+        vary_allows_fixed_accept_request,
     };
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1439,6 +1904,62 @@ mod tests {
 
         assert_eq!(key.top_level_origin(), "https://example.com");
         assert_eq!(key.frame_origin(), "https://example.com");
+
+        Ok(())
+    }
+
+    #[test]
+    fn typed_origin_normalizes_default_port_and_host_case() -> Result<(), UrlError> {
+        let explicit = HttpUrl::parse("https://EXAMPLE.com:443/path")?;
+        let implicit = HttpUrl::parse("https://example.com/other")?;
+        let origin = explicit.origin();
+
+        assert!(explicit.same_origin(&implicit));
+        assert_eq!(origin.scheme(), OriginScheme::Https);
+        assert_eq!(origin.host(), "example.com");
+        assert_eq!(origin.effective_port(), 443);
+        assert_eq!(origin.as_str(), "https://example.com");
+
+        Ok(())
+    }
+
+    #[test]
+    fn typed_origin_distinguishes_scheme_and_non_default_port() -> Result<(), UrlError> {
+        let secure = HttpUrl::parse("https://example.com/")?;
+        let insecure = HttpUrl::parse("http://example.com/")?;
+        let alternate_port = HttpUrl::parse("https://example.com:444/")?;
+
+        assert!(!secure.same_origin(&insecure));
+        assert!(!secure.same_origin(&alternate_port));
+        assert_eq!(alternate_port.origin().effective_port(), 444);
+
+        Ok(())
+    }
+
+    #[test]
+    fn document_response_keeps_typed_requested_and_final_urls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let response = TextResponse {
+            requested_url: "https://example.com/request".to_owned(),
+            final_url: "https://www.example.com/final".to_owned(),
+            status: 200,
+            content_type: Some("text/html; charset=utf-8".to_owned()),
+            redirect_count: 1,
+            body: Arc::<str>::from("<!doctype html><title>typed</title>"),
+            cache_status: CacheStatus::Miss,
+        };
+
+        let document = admit_document(response)?;
+
+        assert_eq!(
+            document.requested_http_url().as_str(),
+            "https://example.com/request"
+        );
+        assert_eq!(
+            document.final_http_url().as_str(),
+            "https://www.example.com/final"
+        );
+        assert_eq!(document.origin().as_str(), "https://www.example.com");
 
         Ok(())
     }
