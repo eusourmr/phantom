@@ -14,7 +14,7 @@
       <a href="#manifesto">Manifesto</a>
       <a href="#architecture">Architecture</a>
       <a href="#roadmap">Roadmap</a>
-      <a href="https://github.com/eusourmr/phantom-">GitHub</a>
+      <a href="https://github.com/eusourmr/phantom">GitHub</a>
     </nav>
   </header>
 
@@ -24,10 +24,10 @@
       <h1>The web,<br><span>rethought.</span></h1>
       <p class="lede">Phantom is an independent browser and engine built from the ground up for safety, auditability, semantic understanding and human-controlled intelligence.</p>
       <div class="actions">
-        <a class="primary" href="https://github.com/eusourmr/phantom-">Explore the code</a>
+        <a class="primary" href="https://github.com/eusourmr/phantom">Explore the code</a>
         <a class="secondary" href="#manifesto">Read the manifesto</a>
       </div>
-      <div class="signal"><span></span> Foundation stage · v0.0.1</div>
+      <div class="signal"><span></span> Independent engine · pre-beta · v0.0.1</div>
     </section>
 
     <section class="statement">
@@ -58,7 +58,7 @@
           <div><span>Product</span><strong>Phantom Browser</strong></div>
           <div><span>Orchestration</span><strong>Phantom Engine</strong></div>
           <div class="split"><strong>Web Runtime</strong><strong>Intelligence Runtime</strong></div>
-          <div class="modules"><span>DOM</span><span>HTML</span><span>CSS</span><span>Layout</span><span>Render</span><span>JS</span><span>Network</span><span>Security</span><span>Semantic</span><span>Memory</span><span>Agent</span></div>
+          <div class="modules"><span>DOM</span><span>HTML</span><span>CSS</span><span>Layout</span><span>Paint</span><span>Image</span><span>Network</span><span>Text</span><span>Security</span><span>Semantic</span><span>Memory</span><span>Agent</span></div>
         </div>
         <p class="note">Rust is the primary implementation language. Unsafe code is forbidden by default and future privileged operations are isolated behind explicit capabilities.</p>
       </div>
@@ -69,11 +69,12 @@
       <div class="section-copy">
         <h2>Correctness first. Breadth later.</h2>
         <ol class="timeline">
-          <li class="active"><span>00</span><div><b>Foundation</b><p>Workspace, invariants, capabilities, DOM, CI.</p></div></li>
-          <li><span>01</span><div><b>Document pipeline</b><p>URL/origin, HTML tokenizer and tree builder.</p></div></li>
-          <li><span>02</span><div><b>CSS & layout</b><p>Cascade, computed style and deterministic layout.</p></div></li>
-          <li><span>03</span><div><b>Rendering</b><p>Scene graph, GPU abstraction and compositor.</p></div></li>
-          <li><span>04+</span><div><b>Network, JS, semantic runtime, memory & agents</b><p>Added only after the lower layers have stable contracts and tests.</p></div></li>
+          <li><span>00</span><div><b>Foundation</b><p>Workspace, invariants, capabilities, DOM and native shell established.</p></div></li>
+          <li><span>01</span><div><b>Document pipeline</b><p>HTML parsing, URL/origin and document loading foundations are in the engine.</p></div></li>
+          <li><span>02</span><div><b>Style & layout</b><p>CSS cascade, computed style, block/inline layout and Flexbox foundations are implemented.</p></div></li>
+          <li><span>03</span><div><b>Resources & network</b><p>Image decoding, responsive image work, HTTP cache and network isolation foundations are present.</p></div></li>
+          <li class="active"><span>04</span><div><b>Hardening</b><p>Compatibility, parser budgets, security boundaries and supply-chain controls are being tightened before the next engine line.</p></div></li>
+          <li><span>05+</span><div><b>Rendering, isolation, events & JavaScript</b><p>Added incrementally only after lower-layer contracts remain stable under adversarial testing.</p></div></li>
         </ol>
       </div>
     </section>
@@ -81,7 +82,7 @@
     <section class="closing">
       <p>Phantom</p>
       <h2>You should not have to navigate the internet.<br><span>The internet should become understandable.</span></h2>
-      <a href="https://github.com/eusourmr/phantom-">github.com/eusourmr/phantom- →</a>
+      <a href="https://github.com/eusourmr/phantom">github.com/eusourmr/phantom →</a>
     </section>
   </main>
 
