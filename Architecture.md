@@ -9,6 +9,8 @@ Phantom is designed as two cooperating systems:
 
 The intelligence runtime is not allowed to bypass browser security boundaries.
 
+**Phantom Guardian** is a local-first protection layer that observes security-relevant events from both systems, correlates risk signals and explains suspicious behavior without becoming a privileged security authority. Deterministic browser controls, isolation, origin policy, capability enforcement and explicit human approval remain authoritative.
+
 ## Dependency direction
 
 ```text
@@ -34,6 +36,7 @@ Browser Process
   |-- Network Service       [sandboxed]
   |-- GPU Service           [sandboxed]
   |-- Storage Service
+  |-- Guardian Service      [sandboxed]
   |-- Intelligence Service  [sandboxed]
   |-- Extension/WASM Service[sandboxed]
   `-- Site Instances        [sandboxed]
@@ -90,6 +93,7 @@ intelligence/
   phantom-memory
   phantom-agent
   phantom-policy
+  phantom-guardian
 
 product/
   phantom-engine
@@ -119,6 +123,14 @@ Policy evaluation
 ```
 
 High-impact actions must never be silently escalated by an agent.
+
+## Phantom Guardian
+
+Guardian is planned as a constrained local security-intelligence service, not as a replacement for the browser's security kernel. It may combine deterministic signals, heuristics and later a compact local model to detect patterns such as suspicious redirects, origin changes, credential-harvesting behavior, unusual permission requests, tracking fanout or other anomalies; however, it must not directly grant capabilities, bypass sandbox or origin rules, read arbitrary local data, silently transmit page content to external services or execute high-impact actions. Guardian recommendations remain advisory unless an independent deterministic policy authorizes the action or the user explicitly approves it.
+
+### Guardian Security Event Contract
+
+The Guardian Security Event Contract defines a small typed stream of security-relevant observations emitted by browser subsystems—such as navigation and origin transitions, blocked mixed content, private-network attempts, permission requests, cross-origin form submissions, certificate state, downloads and other policy decisions—with provenance, document/site generation, correlation identifiers and severity metadata; producers must not depend on Guardian, events must contain only the minimum data required for assessment, secrets and full page content must not be included by default, and consumers such as audit logging, security UI or Guardian intelligence may observe these events but cannot use the event channel itself to acquire new privileges or bypass deterministic policy gates.
 
 ## Auditability
 
