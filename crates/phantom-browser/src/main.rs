@@ -31,12 +31,20 @@ use phantom_image::{
     RasterImageDecoder, image_is_animated,
 };
 use phantom_net::{
-    DocumentLoadError, DocumentResponse, HttpUrl, NetworkClient, NetworkIsolationKey,
+    BinaryResponse, DocumentLoadError, DocumentResponse, HttpUrl, NetworkClient,
+    NetworkIsolationKey,
 };
 const APP_NAME: &str = "Phantom";
 const APP_VERSION: &str = "0.0.1";
 const LUCIDE_FONT_NAME: &str = "phantom-lucide";
 const MAX_IMAGES_PER_DOCUMENT: usize = 64;
+const MAX_IMAGE_PRELOADS_PER_DOCUMENT: usize = 16;
+const MAX_IMAGE_RESOURCE_REQUESTS_PER_DOCUMENT: usize = 64;
+const MAX_SITE_ICON_CANDIDATES: usize = 8;
+const MAX_SITE_ICON_BODY_BYTES: u64 = 1024 * 1024;
+const MAX_IMAGE_BODY_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_AUTO_SUBRESOURCE_FETCHES_PER_DOCUMENT: usize = 72;
+const MAX_AUTO_SUBRESOURCE_BODY_BYTES_PER_DOCUMENT: u64 = 96 * 1024 * 1024;
 const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const LAZY_LOAD_MARGIN: f32 = 768.0;
 const MAX_RECENTLY_CLOSED_TABS: usize = 10;
@@ -109,6 +117,82 @@ impl NavigationState {
             Self::Empty | Self::Fetching(_) | Self::Parsing(_) | Self::Ready => None,
         }
     }
+}
+
+// PHANTOM_2D5_SUBRESOURCE_BUDGET
+#[derive(Debug)]
+struct SubresourceBudget {
+    remaining_fetches: usize,
+    remaining_body_bytes: u64,
+}
+
+impl SubresourceBudget {
+    fn new() -> Self {
+        Self {
+            remaining_fetches: MAX_AUTO_SUBRESOURCE_FETCHES_PER_DOCUMENT,
+            remaining_body_bytes: MAX_AUTO_SUBRESOURCE_BODY_BYTES_PER_DOCUMENT,
+        }
+    }
+
+    fn reserve(&mut self, max_body_bytes: u64) -> Option<u64> {
+        if self.remaining_fetches == 0 || self.remaining_body_bytes == 0 {
+            return None;
+        }
+
+        self.remaining_fetches = self.remaining_fetches.saturating_sub(1);
+        let reserved = self.remaining_body_bytes.min(max_body_bytes.max(1));
+        self.remaining_body_bytes = self.remaining_body_bytes.saturating_sub(reserved);
+        Some(reserved)
+    }
+
+    fn refund_unused(&mut self, reserved: u64, used: u64) {
+        let refund = reserved.saturating_sub(used.min(reserved));
+        self.remaining_body_bytes = self
+            .remaining_body_bytes
+            .saturating_add(refund)
+            .min(MAX_AUTO_SUBRESOURCE_BODY_BYTES_PER_DOCUMENT);
+    }
+}
+
+fn reserve_subresource_body(
+    budget: &Arc<Mutex<SubresourceBudget>>,
+    max_body_bytes: u64,
+) -> Option<u64> {
+    budget
+        .lock()
+        .ok()
+        .and_then(|mut state| state.reserve(max_body_bytes))
+}
+
+fn refund_unused_subresource_body(
+    budget: &Arc<Mutex<SubresourceBudget>>,
+    reserved: u64,
+    used: u64,
+) {
+    if let Ok(mut state) = budget.lock() {
+        state.refund_unused(reserved, used);
+    }
+}
+
+fn fetch_budgeted_binary(
+    network: &NetworkClient,
+    budget: &Arc<Mutex<SubresourceBudget>>,
+    isolation_key: &NetworkIsolationKey,
+    url: &HttpUrl,
+    max_body_bytes: u64,
+) -> Result<BinaryResponse, String> {
+    let Some(reserved) = reserve_subresource_body(budget, max_body_bytes) else {
+        return Err("document automatic-resource budget exhausted".to_owned());
+    };
+
+    let response = network
+        .fetch_bytes_partitioned_with_limit(isolation_key, url, reserved)
+        .map_err(|error| error.to_string())?;
+
+    let used = u64::try_from(response.body().len()).unwrap_or(u64::MAX);
+    refund_unused_subresource_body(budget, reserved, used);
+
+    Ok(response)
 }
 
 struct ImageLoadRequest {
@@ -337,6 +421,7 @@ struct LoadedSiteIcon {
 struct PendingSiteIcon {
     receiver: Receiver<Result<LoadedSiteIcon, String>>,
     generation: u64,
+    cancelled: Arc<AtomicBool>,
 }
 // PHANTOM_2D1_DOCUMENT_ERROR_SURFACE
 #[derive(Debug)]
@@ -364,6 +449,7 @@ struct BrowserTab {
     navigation: NavigationState,
     pending_images: Option<PendingImageBatch>,
     pending_site_icon: Option<PendingSiteIcon>,
+    subresource_budget: Arc<Mutex<SubresourceBudget>>,
     deferred_images: Vec<ImageLoadRequest>,
     image_textures: BTreeMap<ImageResourceId, ImageTextureBinding>,
     site_icon: Option<egui::TextureHandle>,
@@ -396,6 +482,7 @@ impl BrowserTab {
             navigation: NavigationState::Empty,
             pending_images: None,
             pending_site_icon: None,
+            subresource_budget: Arc::new(Mutex::new(SubresourceBudget::new())),
             deferred_images: Vec::new(),
             image_textures: BTreeMap::new(),
             site_icon: None,
@@ -477,11 +564,19 @@ impl BrowserTab {
             .min()
     }
 
+    fn reset_subresource_budget(&mut self) {
+        self.subresource_budget = Arc::new(Mutex::new(SubresourceBudget::new()));
+    }
+
     fn cancel_image_work(&mut self) {
         if let Some(pending) = self.pending_images.take() {
             pending.cancelled.store(true, Ordering::Release);
         }
-        self.pending_site_icon = None;
+
+        if let Some(pending) = self.pending_site_icon.take() {
+            pending.cancelled.store(true, Ordering::Release);
+        }
+
         self.deferred_images.clear();
     }
 }
@@ -1973,6 +2068,7 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
                     tab.preloaded_resources = 0;
                     tab.failed_preloads = 0;
                     tab.raster_bytes = 0;
+                    tab.reset_subresource_budget();
 
                     tab.status = format!(
                         "HTTP {status_code} · {body_bytes} bytes · {} nós · {} caixas · {} comandos",
@@ -2013,7 +2109,9 @@ fn poll_tab_navigation(tab: &mut BrowserTab, network: &NetworkClient, device_pix
 }
 
 fn start_site_icon_loading(network: &NetworkClient, tab: &mut BrowserTab, document_url: &str) {
-    tab.pending_site_icon = None;
+    if let Some(pending) = tab.pending_site_icon.take() {
+        pending.cancelled.store(true, Ordering::Release);
+    }
 
     let Ok(base_url) = HttpUrl::parse(document_url) else {
         return;
@@ -2028,19 +2126,32 @@ fn start_site_icon_loading(network: &NetworkClient, tab: &mut BrowserTab, docume
     let isolation_key = NetworkIsolationKey::from_top_level(&base_url);
     let generation = tab.document_generation;
     let client = network.clone();
+    let budget = Arc::clone(&tab.subresource_budget);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
 
     let thread_result = thread::Builder::new()
         .name("phantom-site-icon".to_owned())
         .spawn(move || {
-            let result = fetch_site_icon_candidates(&client, &isolation_key, candidates);
-            let _ = sender.send(result);
+            let result = fetch_site_icon_candidates(
+                &client,
+                &budget,
+                &isolation_key,
+                candidates,
+                &worker_cancelled,
+            );
+
+            if !worker_cancelled.load(Ordering::Acquire) {
+                let _ = sender.send(result);
+            }
         });
 
     if thread_result.is_ok() {
         tab.pending_site_icon = Some(PendingSiteIcon {
             receiver,
             generation,
+            cancelled,
         });
     }
 }
@@ -2049,7 +2160,13 @@ fn collect_site_icon_candidates(tab: &BrowserTab, base_url: &HttpUrl) -> Vec<Htt
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
 
+    let declared_limit = MAX_SITE_ICON_CANDIDATES.saturating_sub(1);
+
     for request in tab.engine.site_icon_requests() {
+        if candidates.len() >= declared_limit {
+            break;
+        }
+
         let Ok(url) = base_url.resolve(request.source()) else {
             continue;
         };
@@ -2059,7 +2176,8 @@ fn collect_site_icon_candidates(tab: &BrowserTab, base_url: &HttpUrl) -> Vec<Htt
         }
     }
 
-    if let Ok(fallback) = base_url.resolve("/favicon.ico")
+    if candidates.len() < MAX_SITE_ICON_CANDIDATES
+        && let Ok(fallback) = base_url.resolve("/favicon.ico")
         && seen.insert(fallback.as_str().to_owned())
     {
         candidates.push(fallback);
@@ -2070,13 +2188,19 @@ fn collect_site_icon_candidates(tab: &BrowserTab, base_url: &HttpUrl) -> Vec<Htt
 
 fn fetch_site_icon_candidates(
     network: &NetworkClient,
+    budget: &Arc<Mutex<SubresourceBudget>>,
     isolation_key: &NetworkIsolationKey,
     candidates: Vec<HttpUrl>,
+    cancelled: &AtomicBool,
 ) -> Result<LoadedSiteIcon, String> {
     let mut last_error = "no site icon candidate could be decoded".to_owned();
 
     for url in candidates {
-        match fetch_and_decode_site_icon(network, isolation_key, &url) {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("site icon loading cancelled".to_owned());
+        }
+
+        match fetch_and_decode_site_icon(network, budget, isolation_key, &url) {
             Ok(decoded) => {
                 return Ok(LoadedSiteIcon {
                     source: url.as_str().to_owned(),
@@ -2095,12 +2219,17 @@ fn fetch_site_icon_candidates(
 
 fn fetch_and_decode_site_icon(
     network: &NetworkClient,
+    budget: &Arc<Mutex<SubresourceBudget>>,
     isolation_key: &NetworkIsolationKey,
     url: &HttpUrl,
 ) -> Result<DecodedImage, String> {
-    let response = network
-        .fetch_bytes_partitioned(isolation_key, url)
-        .map_err(|error| error.to_string())?;
+    let response = fetch_budgeted_binary(
+        network,
+        budget,
+        isolation_key,
+        url,
+        MAX_SITE_ICON_BODY_BYTES,
+    )?;
 
     if !(200..=299).contains(&response.status()) {
         return Err(format!(
@@ -2144,7 +2273,9 @@ fn poll_tab_site_icon(tab: &mut BrowserTab, context: &egui::Context) {
 
     match receive_result {
         Some((generation, _)) if generation != tab.document_generation => {
-            tab.pending_site_icon = None;
+            if let Some(pending) = tab.pending_site_icon.take() {
+                pending.cancelled.store(true, Ordering::Release);
+            }
         }
 
         Some((generation, Ok(Ok(loaded)))) => {
@@ -2182,9 +2313,7 @@ fn start_image_loading(
         return;
     };
 
-    let mut requests = collect_preload_requests(tab, &base_url, device_pixel_ratio);
-    requests.extend(collect_image_requests(tab, &base_url, device_pixel_ratio));
-    requests.sort_by(resource_request_order);
+    let requests = collect_document_image_requests(tab, &base_url, device_pixel_ratio);
 
     if requests.is_empty() {
         return;
@@ -2217,6 +2346,7 @@ fn start_image_batch(
     let total = requests.len();
     let generation = tab.document_generation;
     let client = network.clone();
+    let budget = Arc::clone(&tab.subresource_budget);
     let (sender, receiver) = mpsc::channel();
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
@@ -2236,7 +2366,7 @@ fn start_image_batch(
                 let (kind, result) = if request.preload_only {
                     (
                         ResourceLoadKind::Preload,
-                        preload_image(&client, &request.isolation_key, &request.url)
+                        preload_image(&client, &budget, &request.isolation_key, &request.url)
                             .map(|()| LoadedResource::Preloaded),
                     )
                 } else {
@@ -2244,6 +2374,7 @@ fn start_image_batch(
                         ResourceLoadKind::Image,
                         fetch_and_decode_image(
                             &client,
+                            &budget,
                             &decoder,
                             limits,
                             animation_limits,
@@ -2293,6 +2424,41 @@ fn start_image_batch(
     }
 }
 
+fn collect_document_image_requests(
+    tab: &mut BrowserTab,
+    base_url: &HttpUrl,
+    device_pixel_ratio: f32,
+) -> Vec<ImageLoadRequest> {
+    let mut discovered = collect_preload_requests(tab, base_url, device_pixel_ratio);
+    discovered.extend(collect_image_requests(tab, base_url, device_pixel_ratio));
+
+    let mut grouped = BTreeMap::<String, ImageLoadRequest>::new();
+
+    for request in discovered {
+        let key = request.url.as_str().to_owned();
+
+        if let Some(existing) = grouped.get_mut(&key) {
+            existing.priority = existing.priority.min(request.priority);
+            existing.loading = existing.loading.min(request.loading);
+            existing.top = existing.top.min(request.top);
+            existing.preload_only &= request.preload_only;
+
+            for resource in request.resources {
+                if !existing.resources.contains(&resource) {
+                    existing.resources.push(resource);
+                }
+            }
+        } else {
+            grouped.insert(key, request);
+        }
+    }
+
+    let mut requests: Vec<_> = grouped.into_values().collect();
+    requests.sort_by(resource_request_order);
+    requests.truncate(MAX_IMAGE_RESOURCE_REQUESTS_PER_DOCUMENT);
+    requests
+}
+
 fn collect_preload_requests(
     tab: &BrowserTab,
     base_url: &HttpUrl,
@@ -2304,6 +2470,8 @@ fn collect_preload_requests(
     for preload in tab
         .engine
         .image_preload_requests_for_device(device_pixel_ratio)
+        .into_iter()
+        .take(MAX_IMAGE_PRELOADS_PER_DOCUMENT)
     {
         let Ok(url) = base_url.resolve(preload.source()) else {
             continue;
@@ -2448,12 +2616,12 @@ fn bind_cached_image(tab: &mut BrowserTab, cache_key: &str, resources: &[ImageRe
 
 fn preload_image(
     network: &NetworkClient,
+    budget: &Arc<Mutex<SubresourceBudget>>,
     isolation_key: &NetworkIsolationKey,
     url: &HttpUrl,
 ) -> Result<(), String> {
-    let response = network
-        .fetch_bytes_partitioned(isolation_key, url)
-        .map_err(|error| error.to_string())?;
+    let response =
+        fetch_budgeted_binary(network, budget, isolation_key, url, MAX_IMAGE_BODY_BYTES)?;
 
     if !(200..=299).contains(&response.status()) {
         return Err(format!("HTTP {} ao pré-carregar imagem", response.status()));
@@ -2464,15 +2632,15 @@ fn preload_image(
 
 fn fetch_and_decode_image(
     network: &NetworkClient,
+    budget: &Arc<Mutex<SubresourceBudget>>,
     decoder: &RasterImageDecoder,
     limits: ImageDecodeLimits,
     animation_limits: AnimationDecodeLimits,
     isolation_key: &NetworkIsolationKey,
     url: &HttpUrl,
 ) -> Result<LoadedImage, String> {
-    let response = network
-        .fetch_bytes_partitioned(isolation_key, url)
-        .map_err(|error| error.to_string())?;
+    let response =
+        fetch_budgeted_binary(network, budget, isolation_key, url, MAX_IMAGE_BODY_BYTES)?;
 
     if !(200..=299).contains(&response.status()) {
         return Err(format!("HTTP {} ao carregar imagem", response.status(),));
@@ -3221,6 +3389,9 @@ fn main() -> eframe::Result {
         Box::new(|context| Ok(Box::new(PhantomApp::new(context)))),
     )
 }
+
+#[cfg(test)]
+mod resource_security;
 
 #[cfg(test)]
 mod navigation_compatibility;

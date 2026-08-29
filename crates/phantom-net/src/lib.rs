@@ -13,12 +13,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use ureq::ResponseExt;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 use url::Url;
 
 const DEFAULT_MAX_TEXT_BODY_BYTES: u64 = 4 * 1024 * 1024;
@@ -917,6 +921,217 @@ impl BinaryHttpCache {
     }
 }
 
+// PHANTOM_2D5_PUBLIC_NETWORK_RESOLVER
+/// Resolver used for public-network navigations and automatic subresources.
+///
+/// It delegates DNS to ureq's pinned default resolver and removes known private,
+/// loopback, link-local, multicast, documentation and special-use addresses
+/// before a connector sees them. This binds the private-network
+/// policy to the address actually selected for the connection rather than only
+/// to the URL hostname.
+#[derive(Debug, Default)]
+struct PublicNetworkResolver {
+    inner: DefaultResolver,
+}
+
+impl Resolver for PublicNetworkResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let resolved = self.inner.resolve(uri, config, timeout)?;
+        let mut allowed = self.empty();
+
+        for address in resolved.iter().copied() {
+            if is_public_network_ip(address.ip()) {
+                allowed.push(address);
+            }
+        }
+
+        if allowed.is_empty() {
+            Err(ureq::Error::HostNotFound)
+        } else {
+            Ok(allowed)
+        }
+    }
+}
+
+fn is_public_network_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => is_public_ipv4(ipv4),
+        IpAddr::V6(ipv6) => is_public_ipv6(ipv6),
+    }
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+
+    if a == 0
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 198 && (b == 18 || b == 19))
+        || a >= 224
+    {
+        return false;
+    }
+
+    if (a, b, c) == (192, 0, 2)
+        || (a, b, c) == (198, 51, 100)
+        || (a, b, c) == (203, 0, 113)
+        || (a, b, c) == (192, 0, 0)
+    {
+        return false;
+    }
+
+    true
+}
+
+fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+    let octets = ip.octets();
+
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+        return false;
+    }
+
+    // fc00::/7 unique-local.
+    if octets[0] & 0xfe == 0xfc {
+        return false;
+    }
+
+    // fe80::/10 link-local.
+    if octets[0] == 0xfe && octets[1] & 0xc0 == 0x80 {
+        return false;
+    }
+
+    // fec0::/10 deprecated site-local.
+    if octets[0] == 0xfe && octets[1] & 0xc0 == 0xc0 {
+        return false;
+    }
+
+    // 2001:db8::/32 documentation.
+    if octets[0..4] == [0x20, 0x01, 0x0d, 0xb8] {
+        return false;
+    }
+
+    // ::/96 includes unspecified/loopback-compatible legacy forms. The
+    // IPv4-mapped form is handled separately below.
+    let low_96 = octets[0..12].iter().all(|byte| *byte == 0);
+    if low_96 {
+        return false;
+    }
+
+    // IPv4-mapped IPv6: ::ffff:a.b.c.d.
+    if octets[0..10] == [0_u8; 10] && octets[10] == 0xff && octets[11] == 0xff {
+        return is_public_ipv4(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+
+    true
+}
+
+fn host_is_private_namespace(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+
+    if normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized.ends_with(".local")
+        || normalized == "home.arpa"
+        || normalized.ends_with(".home.arpa")
+        || !normalized.contains('.')
+    {
+        return true;
+    }
+
+    normalized
+        .parse::<IpAddr>()
+        .is_ok_and(|address| !is_public_network_ip(address))
+}
+
+fn top_level_allows_private_subresources(key: &NetworkIsolationKey) -> bool {
+    host_is_private_namespace(key.top_level_origin_value().host())
+}
+
+fn navigation_allows_private_network(requested_url: &HttpUrl) -> bool {
+    requested_url
+        .host_str()
+        .is_some_and(host_is_private_namespace)
+}
+
+fn enforce_navigation_redirect_policy(
+    private_network_allowed: bool,
+    next_url: &HttpUrl,
+) -> Result<(), NetworkError> {
+    if !private_network_allowed && next_url.host_str().is_some_and(host_is_private_namespace) {
+        return Err(NetworkError::PrivateNetworkBlocked {
+            resource_url: next_url.as_str().to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn enforce_subresource_policy(
+    isolation_key: &NetworkIsolationKey,
+    resource_url: &HttpUrl,
+) -> Result<(), NetworkError> {
+    if isolation_key
+        .top_level_origin_value()
+        .scheme()
+        .is_secure_transport()
+        && resource_url.scheme() == "http"
+    {
+        return Err(NetworkError::MixedContentBlocked {
+            resource_url: resource_url.as_str().to_owned(),
+        });
+    }
+
+    if !top_level_allows_private_subresources(isolation_key)
+        && resource_url
+            .host_str()
+            .is_some_and(host_is_private_namespace)
+    {
+        return Err(NetworkError::PrivateNetworkBlocked {
+            resource_url: resource_url.as_str().to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn read_decoded_body_bounded<R: Read>(
+    reader: R,
+    max_decoded_bytes: u64,
+) -> Result<Vec<u8>, NetworkError> {
+    let probe_limit = max_decoded_bytes.saturating_add(1);
+    let mut reader = reader.take(probe_limit);
+    let mut bytes = Vec::new();
+
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| NetworkError::Body(error.to_string()))?;
+
+    let Ok(decoded_length) = u64::try_from(bytes.len()) else {
+        return Err(NetworkError::DecodedBodyLimitExceeded {
+            limit: max_decoded_bytes,
+        });
+    };
+
+    if decoded_length > max_decoded_bytes {
+        return Err(NetworkError::DecodedBodyLimitExceeded {
+            limit: max_decoded_bytes,
+        });
+    }
+
+    Ok(bytes)
+}
+
 /// Reusable network client used by browser resource coordinators.
 ///
 /// Clones share bounded process-memory document and binary caches. Every
@@ -925,6 +1140,7 @@ impl BinaryHttpCache {
 #[derive(Clone)]
 pub struct NetworkClient {
     agent: ureq::Agent,
+    public_network_agent: ureq::Agent,
     max_text_body_bytes: u64,
     max_binary_body_bytes: u64,
     text_cache: Arc<Mutex<TextHttpCache>>,
@@ -938,11 +1154,19 @@ impl Default for NetworkClient {
             .max_redirects(0)
             .max_response_header_size(64 * 1024)
             .timeout_global(Some(Duration::from_secs(30)))
+            .proxy(None)
             .user_agent("Phantom/0.0.1 (+https://github.com/eusourmr/phantom)")
             .build();
 
+        let public_network_agent = ureq::Agent::with_parts(
+            config.clone(),
+            DefaultConnector::default(),
+            PublicNetworkResolver::default(),
+        );
+
         Self {
             agent: ureq::Agent::new_with_config(config),
+            public_network_agent,
             max_text_body_bytes: DEFAULT_MAX_TEXT_BODY_BYTES,
             max_binary_body_bytes: DEFAULT_MAX_BINARY_BODY_BYTES,
             text_cache: Arc::new(Mutex::new(TextHttpCache::new(
@@ -1102,6 +1326,7 @@ impl NetworkClient {
         mode: DocumentRequestMode,
     ) -> Result<TextResponse, NetworkError> {
         let mut current_url = HttpUrl::parse(input)?;
+        let private_network_allowed = navigation_allows_private_network(&current_url);
         let requested_url = current_url.as_str().to_owned();
         let mut visited = BTreeSet::new();
         visited.insert(redirect_visit_key(&current_url));
@@ -1120,7 +1345,13 @@ impl NetworkClient {
                 return Ok(entry.to_response(&requested_url, redirect_count, CacheStatus::Fresh));
             }
 
-            let mut request = self.agent.get(current_url.as_str()).header(
+            let agent = if private_network_allowed {
+                &self.agent
+            } else {
+                &self.public_network_agent
+            };
+
+            let mut request = agent.get(current_url.as_str()).header(
                 "Accept",
                 "text/html,application/xhtml+xml,text/css,text/plain;q=0.9,*/*;q=0.5",
             );
@@ -1162,6 +1393,7 @@ impl NetworkClient {
                     .ok_or(NetworkError::RedirectMissingLocation { status })?;
 
                 let next_url = current_url.resolve(location)?;
+                enforce_navigation_redirect_policy(private_network_allowed, &next_url)?;
                 let next_key = redirect_visit_key(&next_url);
 
                 if !visited.insert(next_key.clone()) {
@@ -1251,12 +1483,12 @@ impl NetworkClient {
                 ));
             }
 
-            let body_bytes = response
+            let reader = response
                 .body_mut()
                 .with_config()
                 .limit(self.max_text_body_bytes)
-                .read_to_vec()
-                .map_err(|error| NetworkError::Body(error.to_string()))?;
+                .reader();
+            let body_bytes = read_decoded_body_bounded(reader, self.max_text_body_bytes)?;
 
             let body = decode_text_body(&body_bytes, content_type.as_deref())?;
 
@@ -1335,6 +1567,29 @@ impl NetworkClient {
         isolation_key: &NetworkIsolationKey,
         url: &HttpUrl,
     ) -> Result<BinaryResponse, NetworkError> {
+        self.fetch_bytes_partitioned_with_limit(isolation_key, url, self.max_binary_body_bytes)
+    }
+
+    /// Fetches one partitioned binary subresource with an additional
+    /// caller-supplied body ceiling.
+    ///
+    /// The effective ceiling is the smaller of this value and the client-wide
+    /// binary limit. This lets a document coordinator enforce an aggregate
+    /// budget without weakening the process-wide transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkError`] for policy, transport, cache or body-limit
+    /// failures.
+    pub fn fetch_bytes_partitioned_with_limit(
+        &self,
+        isolation_key: &NetworkIsolationKey,
+        url: &HttpUrl,
+        max_body_bytes: u64,
+    ) -> Result<BinaryResponse, NetworkError> {
+        enforce_subresource_policy(isolation_key, url)?;
+
+        let effective_body_limit = self.max_binary_body_bytes.min(max_body_bytes.max(1));
         let requested_url = url.as_str().to_owned();
         let cache_key = PartitionedCacheKey::new(isolation_key, &requested_url);
         let cached = self.cached_binary(&cache_key);
@@ -1343,11 +1598,19 @@ impl NetworkClient {
         if let Some(entry) = cached.as_ref()
             && entry.policy.fresh(entry.stored_at, now)
         {
-            return Ok(entry.to_response(&requested_url, CacheStatus::Fresh));
+            let response = entry.to_response(&requested_url, CacheStatus::Fresh);
+            ensure_binary_response_limit(&response, effective_body_limit)?;
+            return Ok(response);
         }
 
+        let agent = if top_level_allows_private_subresources(isolation_key) {
+            &self.agent
+        } else {
+            &self.public_network_agent
+        };
+
         for attempt in 0..MAX_BINARY_FETCH_ATTEMPTS {
-            let mut request = self.agent.get(url.as_str()).header("Accept", IMAGE_ACCEPT);
+            let mut request = agent.get(url.as_str()).header("Accept", IMAGE_ACCEPT);
 
             if let Some(entry) = cached.as_ref() {
                 if let Some(etag) = entry.validators.etag.as_deref() {
@@ -1369,6 +1632,7 @@ impl NetworkClient {
                     }
 
                     if let Some(recovered) = stale_recovery(cached.as_ref(), &requested_url) {
+                        ensure_binary_response_limit(&recovered, effective_body_limit)?;
                         return Ok(recovered);
                     }
 
@@ -1385,6 +1649,7 @@ impl NetworkClient {
             if is_recoverable_status(status)
                 && let Some(recovered) = stale_recovery(cached.as_ref(), &requested_url)
             {
+                ensure_binary_response_limit(&recovered, effective_body_limit)?;
                 return Ok(recovered);
             }
 
@@ -1459,16 +1724,17 @@ impl NetworkClient {
                     self.remove_cached_binary(&cache_key);
                 }
 
-                return Ok(refreshed.to_response(&requested_url, CacheStatus::Revalidated));
+                let refreshed = refreshed.to_response(&requested_url, CacheStatus::Revalidated);
+                ensure_binary_response_limit(&refreshed, effective_body_limit)?;
+                return Ok(refreshed);
             }
 
-            let body: Arc<[u8]> = response
+            let reader = response
                 .body_mut()
                 .with_config()
-                .limit(self.max_binary_body_bytes)
-                .read_to_vec()
-                .map_err(|error| NetworkError::Body(error.to_string()))?
-                .into();
+                .limit(effective_body_limit)
+                .reader();
+            let body: Arc<[u8]> = read_decoded_body_bounded(reader, effective_body_limit)?.into();
 
             let binary_response = BinaryResponse {
                 requested_url: requested_url.clone(),
@@ -1565,6 +1831,25 @@ impl NetworkClient {
 
         cache.remove(key);
     }
+}
+
+fn ensure_binary_response_limit(
+    response: &BinaryResponse,
+    max_body_bytes: u64,
+) -> Result<(), NetworkError> {
+    let Ok(body_length) = u64::try_from(response.body().len()) else {
+        return Err(NetworkError::DecodedBodyLimitExceeded {
+            limit: max_body_bytes,
+        });
+    };
+
+    if body_length > max_body_bytes {
+        return Err(NetworkError::DecodedBodyLimitExceeded {
+            limit: max_body_bytes,
+        });
+    }
+
+    Ok(())
 }
 
 fn stale_recovery(
@@ -1812,6 +2097,27 @@ pub enum NetworkError {
     #[error("response body failed: {0}")]
     Body(String),
 
+    /// The decoded/decompressed body exceeded Phantom's explicit output budget.
+    #[error("decoded response body exceeds configured limit ({limit} bytes)")]
+    DecodedBodyLimitExceeded {
+        /// Maximum decoded bytes accepted for this response.
+        limit: u64,
+    },
+
+    /// A secure top-level document attempted to load an insecure HTTP resource.
+    #[error("mixed content blocked: {resource_url}")]
+    MixedContentBlocked {
+        /// Insecure resource URL that was rejected.
+        resource_url: String,
+    },
+
+    /// A public navigation context attempted a request to a local/private target.
+    #[error("private-network request blocked: {resource_url}")]
+    PrivateNetworkBlocked {
+        /// Local/private resource URL that was rejected before transport.
+        resource_url: String,
+    },
+
     /// A redirect response omitted a usable `Location` header.
     #[error("HTTP {status} redirect is missing a usable Location header")]
     RedirectMissingLocation {
@@ -1852,11 +2158,63 @@ pub enum NetworkError {
 mod tests {
     use super::{
         CachePolicy, CacheStatus, HttpUrl, NetworkClient, NetworkIsolationKey, OriginScheme,
-        TextResponse, UrlError, admit_document, cache_policy, trim_http_quotes,
-        vary_allows_fixed_accept_request,
+        TextResponse, UrlError, admit_document, cache_policy, enforce_navigation_redirect_policy,
+        host_is_private_namespace, is_public_network_ip, navigation_allows_private_network,
+        trim_http_quotes, vary_allows_fixed_accept_request,
     };
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn public_network_classifier_rejects_local_ranges() {
+        for address in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "fec0::1",
+            "2001:db8::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+        ] {
+            let parsed = address.parse().ok();
+            assert!(parsed.is_some_and(|ip| !is_public_network_ip(ip)));
+        }
+
+        for address in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            let parsed = address.parse().ok();
+            assert!(parsed.is_some_and(is_public_network_ip));
+        }
+    }
+
+    #[test]
+    fn private_host_namespaces_are_explicit() {
+        assert!(host_is_private_namespace("localhost"));
+        assert!(host_is_private_namespace("dev.localhost"));
+        assert!(host_is_private_namespace("router.local"));
+        assert!(host_is_private_namespace("home.arpa"));
+        assert!(host_is_private_namespace("printer.home.arpa"));
+        assert!(host_is_private_namespace("router"));
+        assert!(host_is_private_namespace("192.168.1.1"));
+        assert!(!host_is_private_namespace("example.com"));
+    }
+
+    #[test]
+    fn public_navigation_cannot_redirect_to_explicit_private_target() -> Result<(), UrlError> {
+        let public = HttpUrl::parse("https://example.com/start")?;
+        let private = HttpUrl::parse("http://127.0.0.1/admin")?;
+
+        assert!(!navigation_allows_private_network(&public));
+        assert!(enforce_navigation_redirect_policy(false, &private).is_err());
+        assert!(enforce_navigation_redirect_policy(true, &private).is_ok());
+
+        Ok(())
+    }
 
     #[test]
     fn assumes_https_when_scheme_is_missing() -> Result<(), UrlError> {
