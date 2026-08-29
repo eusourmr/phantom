@@ -15,6 +15,10 @@ The roadmap prioritizes a correct, testable engine before product breadth.
 - [ ] private security advisory channel
 - [ ] dependency/SBOM policy automation
 
+## Cross-cutting security track — Phantom Guardian
+
+Phantom Guardian is a planned local-first security-intelligence layer that complements, but never replaces, deterministic browser security. The Guardian Security Event Contract is defined early so navigation, origin, network, permission, download, certificate and policy subsystems can emit typed, minimal and auditable signals without depending on Guardian itself; actual risk scoring or compact local-model inference is deferred until process isolation, capability enforcement, observability and security-event provenance are mature enough to support it safely.
+
 ## Phase 1 — Document pipeline
 
 - [ ] byte/text input abstraction
@@ -54,6 +58,7 @@ The roadmap prioritizes a correct, testable engine before product breadth.
 - [ ] typed IPC protocol
 - [ ] renderer sandbox
 - [ ] network sandbox
+- [ ] Guardian security-event emission boundary
 
 ## Phase 5 — JavaScript runtime
 
@@ -73,6 +78,7 @@ JIT optimization is deliberately deferred until correctness and observability ar
 - [ ] page-to-semantic graph pipeline
 - [ ] local semantic index
 - [ ] temporal change model
+- [ ] Guardian behavioral-signal adapters
 
 ## Phase 7 — Memory and agents
 
@@ -82,6 +88,7 @@ JIT optimization is deliberately deferred until correctness and observability ar
 - [ ] agent proposal model
 - [ ] human approval gates
 - [ ] auditable action records
+- [ ] Guardian local risk assessment v1
 
 ## Phase 8 — Browser product
 
@@ -89,6 +96,7 @@ JIT optimization is deliberately deferred until correctness and observability ar
 - [ ] spaces/contexts
 - [ ] memory UI
 - [ ] agent UI
+- [ ] Guardian security UI
 - [ ] downloads
 - [ ] permissions
 - [ ] accessibility
