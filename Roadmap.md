@@ -1,95 +1,143 @@
 # Phantom Roadmap
 
-The roadmap prioritizes a correct, testable engine before product breadth.
+Phantom prioritizes a correct, testable and security-bounded engine before product breadth. The roadmap is intentionally incremental: a phase may begin only when the lower layers have contracts strong enough to support it.
 
-## Phase 0 — Foundation
+> **Current status:** pre-beta independent browser engine. HTML, CSS, layout, paint, images, networking and native browser foundations exist today. The current emphasis is compatibility and security hardening before the next parser/runtime line.
 
-- [x] Rust workspace and crate boundaries
-- [x] engineering constitution
-- [x] `unsafe` forbidden by default
-- [x] capability primitive
-- [x] minimal invariant-preserving DOM model
-- [x] CI baseline
-- [x] public manifesto and project page source
-- [ ] branch protection and required reviews
-- [ ] private security advisory channel
-- [ ] dependency/SBOM policy automation
+## Established foundations
 
-## Phase 1 — Document pipeline
+The repository already contains working foundations for:
 
-- [ ] byte/text input abstraction
-- [ ] URL/origin model
-- [ ] HTML tokenizer
-- [ ] HTML tree builder
-- [ ] DOM conformance tests
-- [ ] basic document loader
+- [x] Rust workspace with explicit crate boundaries
+- [x] native browser shell
+- [x] capability-based security primitives
+- [x] owned DOM with stable identifiers
+- [x] independent HTML parsing foundation
+- [x] CSS parsing, selector matching, cascade and computed style
+- [x] block and inline layout foundations
+- [x] Flexbox foundations and executable compatibility slices
+- [x] renderer-neutral paint pipeline
+- [x] text shaping boundary
+- [x] PNG, JPEG, GIF, WebP and ICO image foundations
+- [x] responsive/replaced image work
+- [x] HTTP(S), URL/origin and cache foundations
+- [x] network isolation and cache partitioning foundations
+- [x] browser navigation/history lifecycle foundations
+- [x] strict Rust/Clippy engineering invariants
 
-**Exit criterion:** load a local HTML document into Phantom's own DOM with no third-party browser engine.
+These items describe implemented foundations, not full web-platform conformance.
 
-## Phase 2 — CSS and layout
+## Current line — compatibility and security hardening
 
-- [ ] CSS tokenizer/parser
-- [ ] selector matching
-- [ ] cascade
-- [ ] computed style
-- [ ] block/inline layout foundations
-- [ ] deterministic layout tests
+Before expanding the engine, Phantom is tightening the contracts already present:
 
-**Exit criterion:** render a defined subset of HTML/CSS test pages deterministically.
+- [x] navigation compatibility coverage
+- [x] network/resource security hardening foundations
+- [ ] parser/DOM/CSS/layout adversarial budgets fully gated in the canonical branch
+- [ ] supply-chain security gate fully gated in the canonical branch
+- [ ] hardened CI/release policy fully gated
+- [ ] protected `main` and protected release tags
+- [ ] private vulnerability reporting enabled before Beta
 
-## Phase 3 — Rendering
+**Exit criterion:** the current security gate must pass before the next engine line is treated as active.
 
-- [ ] scene graph
-- [ ] GPU abstraction
-- [ ] WebGPU/wgpu renderer evaluation
-- [ ] text and font pipeline
-- [ ] image decode sandbox boundary
-- [ ] compositor
+## Next — HTML tokenizer and tree-builder maturation
 
-## Phase 4 — Networking and isolation
+Planned sequence:
 
-- [ ] HTTP stack boundary
-- [ ] TLS policy
-- [ ] site-instance model
-- [ ] typed IPC protocol
-- [ ] renderer sandbox
-- [ ] network sandbox
+1. deterministic tokenizer foundation with source positions and bounded attributes,
+2. tree-builder foundation,
+3. error recovery and character references,
+4. focused HTML compatibility/WPT subset.
 
-## Phase 5 — JavaScript runtime
+Security budgets introduced during hardening remain part of the parser contract rather than optional diagnostics.
 
-- [ ] ECMAScript parser strategy
-- [ ] bytecode interpreter
-- [ ] garbage collection design
-- [ ] event loop
-- [ ] DOM bindings
-- [ ] WebAssembly boundary
+## CSS maturation
 
-JIT optimization is deliberately deferred until correctness and observability are mature.
+- broader tokenizer/parser correctness,
+- selector and cascade compatibility,
+- stronger computed-value handling,
+- bounded complexity and numeric robustness,
+- standards-derived executable tests.
 
-## Phase 6 — Semantic runtime
+## Layout maturation
 
-- [ ] semantic entity model
-- [ ] source attribution
-- [ ] page-to-semantic graph pipeline
-- [ ] local semantic index
-- [ ] temporal change model
+- stronger block/inline compatibility,
+- Flexbox expansion and correctness,
+- intrinsic sizing maturation,
+- additional formatting contexts only when testable,
+- performance budgets and adversarial layout coverage.
 
-## Phase 7 — Memory and agents
+## Scene graph, GPU and compositor
 
-- [ ] user-authorized memory
-- [ ] capability broker integration
-- [ ] policy engine
-- [ ] agent proposal model
-- [ ] human approval gates
-- [ ] auditable action records
+- renderer-independent scene representation,
+- `wgpu`/GPU backend evaluation behind a narrow boundary,
+- compositor architecture,
+- image/text integration without giving rendering components ambient authority.
 
-## Phase 8 — Browser product
+## Security, storage and process isolation
 
-- [ ] native shell
-- [ ] spaces/contexts
-- [ ] memory UI
-- [ ] agent UI
-- [ ] downloads
-- [ ] permissions
-- [ ] accessibility
-- [ ] extension/WASM model
+- site-instance model,
+- typed IPC boundaries,
+- renderer/network/GPU isolation,
+- storage and permission boundaries,
+- capability broker maturation,
+- deterministic policy kernel before intelligent assistance.
+
+## Events, forms and event loop
+
+- event dispatch model,
+- form semantics maturation,
+- task/event loop foundations,
+- DOM/event bindings prepared for a future JavaScript runtime.
+
+## JavaScript runtime
+
+Phantom intends to add JavaScript only after lower-layer contracts and isolation are mature.
+
+Planned principles:
+
+- interpreter-first architecture,
+- no JIT requirement for the first generation,
+- explicit host bindings,
+- observable execution budgets,
+- event-loop integration,
+- garbage-collection design with security and debuggability as first-class constraints.
+
+## Guardian / local intelligence
+
+Phantom's future intelligence layer does **not** replace browser security policy.
+
+The intended hierarchy is:
+
+```text
+Security Kernel
+      ↓
+Isolation
+      ↓
+Privacy
+      ↓
+Guardian Intelligence
+      ↓
+Automation
+```
+
+Guardian is expected to begin local-first, using explicit typed security events and bounded local inference. It does not receive implicit filesystem, network, permission or action authority.
+
+## Beta gate
+
+Phantom reaches Beta when the supported subset is stable, documented and usable — not when the entire web platform is implemented.
+
+The Beta gate includes, at minimum:
+
+- deterministic supported HTML/CSS behavior,
+- stable navigation and resource lifecycle,
+- security/isolation gates passing,
+- fuzzing and adversarial corpora continuously exercised,
+- accessibility foundations,
+- performance budgets,
+- reproducible/auditable release path,
+- protected repository governance,
+- explicit documentation of unsupported web-platform behavior.
+
+JavaScript breadth, full WPT parity and complete browser compatibility are **not** prerequisites for the first Beta if the supported subset is honest, stable and secure.

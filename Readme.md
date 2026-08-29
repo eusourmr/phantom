@@ -1,91 +1,151 @@
-# Phantom
+<p align="center">
+  <img src="crates/phantom-browser/assets/branding/phantom-logo.png" alt="Phantom" width="180">
+</p>
 
-**Phantom** is an independent, open-source browser and web engine project designed from the ground up around safety, auditability, modularity, semantic understanding and human-controlled agentic execution.
+<h1 align="center">Phantom</h1>
 
-Phantom is **not a Chromium, WebKit or Gecko fork**. The project intends to build its own engine incrementally while remaining standards-oriented and interoperable with the open web.
+<p align="center">
+  <strong>An independent web browser and engine built from first principles in Rust.</strong><br>
+  Security-first. Auditable. Local-first. Human-controlled.
+</p>
 
-> Correctness before convenience. Security before compatibility. Composition before inheritance. Explicit before implicit. Auditable before clever.
-> 
+<p align="center">
+  <a href="https://github.com/eusourmr/phantom/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/eusourmr/phantom/ci.yml?branch=main&style=flat-square&label=CI"></a>
+  <img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-000000?style=flat-square&logo=rust&logoColor=white">
+  <a href="LICENSE"><img alt="MPL-2.0" src="https://img.shields.io/badge/license-MPL--2.0-7B68EE?style=flat-square"></a>
+  <img alt="Status pre-beta" src="https://img.shields.io/badge/status-pre--beta-1f6feb?style=flat-square">
+</p>
 
-> <img width="1672" height="941" alt="phantom" src="https://github.com/user-attachments/assets/a88a874e-272e-4856-84cc-14068bd05016" />
-## Why Phantom
+<p align="center">
+  <a href="Manifesto.md">Manifesto</a> ·
+  <a href="Architecture.md">Architecture</a> ·
+  <a href="Roadmap.md">Roadmap</a> ·
+  <a href="Security.md">Security</a> ·
+  <a href="docs/README.md">Engineering docs</a>
+</p>
 
-Today's browsers are optimized around pages, tabs and URLs. Phantom is exploring a different model: the browser as an execution environment that can understand context, represent semantic entities, remember user-authorized knowledge and let agents act only through explicit security capabilities.
+---
 
-Read the [Manifesto](MANIFESTO.md).
+## The idea
 
-## Status
+The web became one of humanity's main interfaces with knowledge, work, commerce and communication. Yet the dominant browser model still treats people primarily as operators of pages, tabs and forms.
 
-Phantom is at **foundation stage (`0.0.1`)**. It is not yet a usable browser. The first milestone is deliberately narrow: establish a clean Rust workspace, strong invariants, a capability security model and a minimal DOM/engine boundary before implementing HTML, CSS, layout and rendering.
+Phantom starts from a different premise:
 
-## Initial architecture
+> **The browser should understand the user's objective, preserve context, explain what it knows, and act only within explicit human-controlled boundaries.**
+
+Phantom is **not a Chromium, WebKit or Gecko fork**. The engine is being built incrementally from its own components and contracts, with standards compatibility pursued without surrendering architectural independence.
+
+## What exists today
+
+Phantom is still **pre-beta**, but the repository is well beyond an empty browser shell. The current workspace contains independent subsystems for the document pipeline, style, layout, paint, images, networking, text and security.
+
+| Layer | Crate | Responsibility |
+| --- | --- | --- |
+| Product | [`phantom-browser`](crates/phantom-browser) | Native browser shell and chrome |
+| Orchestration | [`phantom-engine`](crates/phantom-engine) | DOM → style → layout → paint pipeline |
+| Core | [`phantom-core`](crates/phantom-core) | Shared primitives and invariants |
+| DOM | [`phantom-dom`](crates/phantom-dom) | Owned DOM with stable node identifiers |
+| HTML | [`phantom-html`](crates/phantom-html) | Independent HTML parsing foundation |
+| CSS | [`phantom-css`](crates/phantom-css) | Parsing, selectors, cascade and computed style |
+| Layout | [`phantom-layout`](crates/phantom-layout) | Cold block/inline/Flexbox layout snapshots |
+| Paint | [`phantom-paint`](crates/phantom-paint) | Renderer-neutral paint commands |
+| Text | [`phantom-text`](crates/phantom-text) | Text shaping boundary and metrics |
+| Images | [`phantom-image`](crates/phantom-image) | Raster probing/decoding and image metadata |
+| Network | [`phantom-net`](crates/phantom-net) | HTTP(S), URL/origin and cache foundations |
+| Security | [`phantom-security`](crates/phantom-security) | Explicit capability primitives |
+
+JavaScript execution is **not** implemented yet. Phantom is intentionally building lower layers and security contracts before adding a JavaScript runtime.
+
+## Architecture at a glance
 
 ```text
-Phantom Browser
-      |
-      v
-Phantom Engine
-      |
-      +-- DOM
-      +-- HTML            (planned)
-      +-- CSS / Style     (planned)
-      +-- Layout          (planned)
-      +-- Render / GPU    (planned)
-      +-- JavaScript      (planned)
-      +-- Network         (planned)
-      +-- Storage         (planned)
-      +-- Security
-      |
-      +-- Semantic Runtime (planned)
-      +-- Memory           (planned)
-      `-- Agent Runtime    (planned)
+                         ┌──────────────────────┐
+                         │   Phantom Browser    │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │    Phantom Engine    │
+                         └──────────┬───────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              │                     │                     │
+      ┌───────▼───────┐     ┌───────▼───────┐     ┌───────▼───────┐
+      │  Web Runtime  │     │   Security    │     │ Intelligence  │
+      │ HTML / DOM    │     │ Capabilities │     │ future/local  │
+      │ CSS / Layout  │     │ Policy gates │     │ human-bound   │
+      │ Paint / Image │     └───────────────┘     └───────────────┘
+      │ Network / Text│
+      └───────────────┘
 ```
 
-Initial crates:
+The intended dependency direction is explicit and one-way. Layout does not own DOM pointers; paint consumes cold layout/style snapshots; privileged operations must cross defined security boundaries.
 
-- `phantom-core` — shared low-level types and invariants.
-- `phantom-security` — capability-based authorization primitives.
-- `phantom-dom` — invariant-preserving DOM foundation.
-- `phantom-engine` — top-level engine orchestration boundary.
-- `phantom-browser` — native browser bootstrap executable.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md), [CODING.md](CODING.md) and [ROADMAP.md](ROADMAP.md).
+Read the full [architecture document](Architecture.md).
 
 ## Engineering constitution
 
+```text
+correctness > convenience
+security    > compatibility shortcuts
+explicit    > implicit
+composition > inheritance
+reviewable  > clever
+```
+
 - Rust is the primary implementation language.
-- `unsafe` is forbidden by default.
-- Composition and traits are preferred over inheritance-style hierarchies.
+- `unsafe` is forbidden by default in Phantom code.
 - Domain types are preferred over primitive strings and boolean switches.
 - Expected failures use typed errors and `Result`.
-- Production code avoids `unwrap()`, `expect()`, `panic!()`, `todo!()` and `unimplemented!()`.
-- Privileged side effects require explicit capabilities.
-- Cross-process and cross-component input is untrusted by default.
-- Critical behavior must be testable, observable and auditable.
+- Production paths avoid `unwrap()`, `expect()`, `panic!()`, `todo!()` and `unimplemented!()`.
+- Inputs crossing trust boundaries are untrusted by default.
+- Dependencies are part of the attack surface.
+- Security-sensitive behavior must be testable and auditable.
 
-## Build
+See [Coding.md](Coding.md) and [Diretivas.md](Diretivas.md).
 
-A current stable Rust toolchain is required.
+## Build and verify
+
+Install the Rust toolchain described by [`rust-toolchain.toml`](rust-toolchain.toml), then run from the repository root:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo doc --workspace --no-deps
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 ```
 
-## Project page
+Windows release build:
 
-The repository contains a static project page under `site/`, prepared for GitHub Pages. It presents the manifesto, architecture and roadmap without requiring a frontend framework.
+```powershell
+cargo build --release -p phantom-browser --locked
+.\target\release\phantom-browser.exe
+```
 
-## Security
+## Security model
 
-Do not report vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
+Phantom treats web content, network responses and future cross-process messages as hostile input. Security is part of the architecture rather than a post-release feature.
+
+Do **not** report suspected vulnerabilities in public issues. Read the [Security Policy](Security.md).
+
+## Documentation
+
+The engineering record is intentionally public. Milestone notes, standards maps, ADRs and continuity records live under [`docs/`](docs/README.md).
+
+Core documents:
+
+- [Manifesto](Manifesto.md) — product and human-control thesis.
+- [Architecture](Architecture.md) — system boundaries and target process model.
+- [Roadmap](Roadmap.md) — high-level sequencing.
+- [Coding Standard](Coding.md) — implementation rules.
+- [Project Directives](Diretivas.md) — deeper engineering doctrine.
+- [Contributing](Contributing.md) — contribution and review expectations.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Structural changes require an ADR under `docs/adr/`.
+Phantom favors small, reviewable changes that preserve security and architectural invariants. Start with [Contributing.md](Contributing.md).
 
 ## License
 
-Phantom core is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**.
+Phantom core is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**. See [`LICENSE`](LICENSE).
