@@ -21,6 +21,10 @@ Until a dedicated private vulnerability-reporting channel is configured, contact
 - reproducible releases as a project goal,
 - supply-chain review and SBOM generation as release requirements.
 
+## Phantom Guardian
+
+Phantom Guardian is a planned local-first defense-in-depth layer that may observe and correlate typed security events, explain risk and recommend protective actions. Guardian is not a root of trust: deterministic security controls, origin and network policy, sandboxing, capability enforcement and explicit human approval remain authoritative. Guardian must fail safely, operate with least privilege, minimize the data it receives, avoid hidden telemetry, and never gain the ability to grant itself permissions or bypass a browser security boundary.
+
 ## Current status
 
 The foundation-stage code is not a production browser and has not undergone an independent security audit. No security guarantee should be inferred merely from the use of Rust.
