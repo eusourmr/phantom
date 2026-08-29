@@ -24,6 +24,10 @@ History should not be only a list of URLs. With user authorization, Phantom shou
 
 AI is not a privileged superuser. Agents must operate through the same explicit capability and policy boundaries as every other component. High-impact actions require explicit policy evaluation and, where appropriate, human approval.
 
+## Guardian, not gatekeeper
+
+Phantom Guardian is intended to add local intelligence to protection without turning AI into the authority that defines safety. It may correlate suspicious signals, explain risks and help the user make better decisions, but deterministic security rules, isolation, explicit permissions and human control remain final; Guardian should protect the user without becoming another opaque system that watches, profiles or acts beyond the user's authority.
+
 ## Security is architecture
 
 Security is not a feature added after rendering works. Phantom is designed around memory safety, least privilege, sandboxing, typed boundaries, capability-based access, explicit side effects and continuous adversarial testing.
