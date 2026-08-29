@@ -49,7 +49,7 @@ Initial crates:
 - `phantom-engine` — top-level engine orchestration boundary.
 - `phantom-browser` — native browser bootstrap executable.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md), [CODING_STANDARD.md](CODING_STANDARD.md) and [ROADMAP.md](ROADMAP.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md), [CODING.md](CODING.md) and [ROADMAP.md](ROADMAP.md).
 
 ## Engineering constitution
 
