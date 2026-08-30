@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+/// Maximum number of nodes retained by one Phantom document, including root.
+pub const MAX_DOM_NODES: usize = 65_536;
+
 /// Stable identifier for a node stored inside a [`Document`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(u64);
@@ -128,6 +131,10 @@ pub enum DomError {
     #[error("parent node {0:?} was not found")]
     ParentNotFound(NodeId),
 
+    /// The document reached the deterministic per-document node budget.
+    #[error("DOM node limit exceeded ({MAX_DOM_NODES})")]
+    NodeLimitExceeded,
+
     /// The numeric node identifier space has been exhausted.
     #[error("DOM node identifier space exhausted")]
     NodeIdExhausted,
@@ -193,12 +200,17 @@ impl Document {
     ///
     /// # Errors
     ///
-    /// Returns [`DomError::ParentNotFound`] when `parent` does not exist.
-    /// Returns [`DomError::NodeIdExhausted`] if another node identifier cannot
-    /// be allocated.
+    /// Returns [`DomError::ParentNotFound`] when `parent` does not exist,
+    /// [`DomError::NodeLimitExceeded`] when the deterministic document budget
+    /// has been reached, or [`DomError::NodeIdExhausted`] if another numeric
+    /// identifier cannot be allocated.
     pub fn append_child(&mut self, parent: NodeId, kind: NodeKind) -> Result<NodeId, DomError> {
         if !self.nodes.contains_key(&parent) {
             return Err(DomError::ParentNotFound(parent));
+        }
+
+        if self.nodes.len() >= MAX_DOM_NODES {
+            return Err(DomError::NodeLimitExceeded);
         }
 
         let id = NodeId(self.next_id);
@@ -242,7 +254,7 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, DomError, ElementData, Node, NodeKind};
+    use super::{Document, DomError, ElementData, MAX_DOM_NODES, Node, NodeKind};
 
     #[test]
     fn new_document_contains_root() {
@@ -250,7 +262,6 @@ mod tests {
 
         assert_eq!(document.len(), 1);
         assert!(!document.is_empty());
-
         assert_eq!(document.node(document.root()).map(Node::parent), Some(None));
     }
 
@@ -258,11 +269,9 @@ mod tests {
     fn append_child_preserves_relationship() -> Result<(), DomError> {
         let mut document = Document::new();
         let root = document.root();
-
         let child = document.append_child(root, NodeKind::Element(ElementData::new("html")))?;
 
         assert_eq!(document.node(child).map(Node::parent), Some(Some(root)));
-
         assert_eq!(document.node(root).map(Node::children), Some(&[child][..]));
 
         Ok(())
@@ -276,5 +285,22 @@ mod tests {
         let element = ElementData::with_attributes("a", attributes);
 
         assert_eq!(element.attribute("href"), Some("https://example.com"));
+    }
+
+    #[test]
+    fn document_rejects_nodes_beyond_security_budget() -> Result<(), DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        for _ in 1..MAX_DOM_NODES {
+            document.append_child(root, NodeKind::Text(String::new()))?;
+        }
+
+        assert_eq!(
+            document.append_child(root, NodeKind::Text(String::new())),
+            Err(DomError::NodeLimitExceeded)
+        );
+
+        Ok(())
     }
 }

@@ -2,15 +2,13 @@ name: Build and Release Phantom
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: phantom-${{ github.ref }}
@@ -18,130 +16,116 @@ concurrency:
 
 jobs:
   quality:
-    name: Quality Gate
+    name: Release quality gate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install stable \
+          rustup toolchain install 1.95.0 \
             --profile minimal \
             --component rustfmt,clippy
-          rustup default stable
-
+          rustup default 1.95.0
           rustc --version
           cargo --version
-          rustfmt --version
-          cargo clippy --version
 
-      - name: Check formatting
-        shell: bash
-        run: |
-          cargo fmt --all --check
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
 
       - name: Clippy
-        shell: bash
-        run: |
-          cargo clippy \
-            --workspace \
-            --all-targets \
-            -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests
-        shell: bash
-        run: |
-          cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Documentation
-        shell: bash
         env:
           RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --locked
+
+      - name: Install supply-chain gates
+        shell: bash
         run: |
-          cargo doc \
-            --workspace \
-            --no-deps
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Cargo audit
+        run: cargo audit
+
+      - name: Cargo deny
+        run: cargo deny --locked --all-features check advisories bans sources
 
   windows:
-    name: Windows x64
+    name: Windows x64 auditable build
     needs: quality
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         shell: pwsh
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
           rustc --version
           cargo --version
 
-      - name: Build Phantom
+      - name: Install cargo-auditable
         shell: pwsh
-        run: |
-          cargo build --release -p phantom-browser
+        run: cargo install cargo-auditable --version 0.7.5 --locked
+
+      - name: Build Phantom with dependency metadata
+        shell: pwsh
+        run: cargo auditable build --release --locked -p phantom-browser
 
       - name: Verify executable
         shell: pwsh
         run: |
           $exe = "target/release/phantom-browser.exe"
-
           if (-not (Test-Path $exe)) {
             Write-Error "Phantom executable was not generated: $exe"
             exit 1
           }
-
-          Write-Host "Executable generated successfully:"
           Get-Item $exe | Format-List Name, Length, LastWriteTime
 
       - name: Prepare distribution
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
-
           if ("${{ github.ref_type }}" -ne "tag") {
             $version = "development"
           }
 
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path "dist" | Out-Null
-
-          Copy-Item `
-            "target/release/phantom-browser.exe" `
-            "dist/Phantom.exe"
-
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          Copy-Item "target/release/phantom-browser.exe" "dist/Phantom.exe"
           $archive = "dist/Phantom-$version-windows-x86_64.zip"
-
-          Compress-Archive `
-            -Path "dist/Phantom.exe" `
-            -DestinationPath $archive `
-            -Force
-
-          $hash = Get-FileHash `
-            $archive `
-            -Algorithm SHA256
-
+          Compress-Archive -Path "dist/Phantom.exe" -DestinationPath $archive -Force
+          $hash = Get-FileHash $archive -Algorithm SHA256
           "$($hash.Hash)  $(Split-Path $archive -Leaf)" |
-            Out-File `
-              "dist/SHA256SUMS.txt" `
-              -Encoding ascii
-
-          Write-Host "Distribution created:"
+            Out-File "dist/SHA256SUMS.txt" -Encoding ascii
           Get-ChildItem dist
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Phantom-Windows-x86_64
           path: |
@@ -151,45 +135,49 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  publish:
+    name: Attest and publish tagged release
+    if: github.ref_type == 'tag'
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: Phantom-Windows-x86_64
+          path: dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            dist/Phantom-*.zip
+            dist/SHA256SUMS.txt
+
       - name: Publish GitHub Release
-        if: github.ref_type == 'tag'
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $archive = "dist/Phantom-$tag-windows-x86_64.zip"
-          $checksum = "dist/SHA256SUMS.txt"
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          archive="dist/Phantom-${tag}-windows-x86_64.zip"
+          checksum="dist/SHA256SUMS.txt"
 
-          gh release view $tag *> $null
-
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release already exists. Updating assets..."
-
-            gh release upload $tag `
-              $archive `
-              $checksum `
-              --clobber
-          }
-          else {
-            Write-Host "Creating Phantom release..."
-
-            gh release create $tag `
-              $archive `
-              $checksum `
-              --title "Phantom $tag" `
-              --notes "First public technical preview of the Phantom independent web browser.
-
-Security-first technical preview.
-
-Current characteristics:
-- Independent Phantom engine foundation
-- Rust-based architecture
-- No Chromium, WebKit or Gecko engine
-- Telemetry disabled by default
-- Explicit security and capability boundaries
-- HTML/CSS support is experimental
-- JavaScript execution is not yet supported
-
-This is an early technical preview intended for testing and development." `
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$archive" "$checksum" --clobber
+          else
+            gh release create "$tag" \
+              "$archive" \
+              "$checksum" \
+              --title "Phantom $tag" \
+              --notes "Security-first technical preview of the independent Phantom browser engine. HTML/CSS support remains experimental and JavaScript execution is not yet supported." \
               --prerelease
+          fi

@@ -4,61 +4,92 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   linux-quality:
-    name: Linux quality gate
+    name: Linux quality and security gate
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
-      - name: Install Rust 1.95
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
-
-      - name: Toolchain versions
-        run: rustc --version && cargo --version
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 \
+            --profile minimal \
+            --component rustfmt,clippy
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
 
       - name: Workspace metadata
-        run: cargo metadata --no-deps --format-version 1 > /dev/null
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Check all targets
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Documentation
         env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Cargo audit
+        run: cargo audit
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Cargo deny
+        run: cargo deny --locked --all-features check advisories bans sources
 
   windows-browser:
     name: Windows native browser gate
     runs-on: windows-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
-      - name: Install Rust 1.95
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
-
-      - name: Toolchain versions
-        run: rustc --version; cargo --version
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
 
       - name: Check workspace
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Build native Phantom shell
-        run: cargo build --release -p phantom-browser
+        run: cargo build --release --locked -p phantom-browser

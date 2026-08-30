@@ -19,6 +19,16 @@ use phantom_dom::{Document, ElementData, Node, NodeId, NodeKind};
 
 const ROOT_FONT_SIZE_PX: f32 = 16.0;
 const NO_STYLE: usize = usize::MAX;
+const MAX_CSS_SOURCE_BYTES: usize = 1024 * 1024;
+const MAX_SCANNED_RULE_BLOCKS: usize = 2_048;
+const MAX_ACCEPTED_RULES: usize = 1_024;
+const MAX_DECLARATIONS_PER_RULE: usize = 64;
+const MAX_SELECTOR_BYTES: usize = 4 * 1024;
+const MAX_SELECTOR_PARTS: usize = 32;
+const MAX_CLASSES_PER_COMPOUND: usize = 32;
+const MAX_INLINE_STYLE_BYTES: usize = 64 * 1024;
+const MAX_CASCADE_RULE_EVALUATIONS: usize = 2_000_000;
+const MAX_NUMERIC_MAGNITUDE: f32 = 1_000_000.0;
 
 /// RGBA color represented with eight-bit channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -162,8 +172,8 @@ impl ObjectPosition {
     #[must_use]
     pub fn new(x: f32, y: f32) -> Self {
         Self {
-            x: x.clamp(0.0, 1.0),
-            y: y.clamp(0.0, 1.0),
+            x: sanitize_unit_interval(x),
+            y: sanitize_unit_interval(y),
         }
     }
     /// Returns the horizontal percentage.
@@ -790,12 +800,16 @@ impl Stylesheet {
     /// Syntax errors in one rule do not invalidate the entire stylesheet.
     #[must_use]
     pub fn parse(source: &str) -> Self {
+        if source.len() > MAX_CSS_SOURCE_BYTES {
+            return Self::default();
+        }
+
         let cleaned = remove_comments(source);
         let blocks = scan_rule_blocks(&cleaned);
         let mut rules = Vec::new();
         let mut source_order = 0_u32;
 
-        for block in blocks {
+        'blocks: for block in blocks {
             if block.selector.trim_start().starts_with('@') {
                 source_order = source_order.saturating_add(1);
                 continue;
@@ -809,6 +823,10 @@ impl Stylesheet {
             }
 
             for selector_source in block.selector.split(',') {
+                if rules.len() >= MAX_ACCEPTED_RULES {
+                    break 'blocks;
+                }
+
                 let Some(selector) = Selector::parse(selector_source) else {
                     continue;
                 };
@@ -849,6 +867,7 @@ pub fn compute_styles(document: &Document) -> StyleMap {
     let mut style_map = StyleMap::default();
     let mut interner = BTreeMap::new();
     let mut stack = vec![document.root()];
+    let mut cascade_budget = MAX_CASCADE_RULE_EVALUATIONS;
 
     while let Some(node_id) = stack.pop() {
         let Some(node) = document.node(node_id) else {
@@ -869,6 +888,7 @@ pub fn compute_styles(document: &Document) -> StyleMap {
                 &stylesheet,
                 parent_style.as_ref(),
                 &mut style,
+                &mut cascade_budget,
             );
         }
 
@@ -1104,6 +1124,10 @@ impl Selector {
     fn parse(source: &str) -> Option<Self> {
         let source = source.trim();
 
+        if source.len() > MAX_SELECTOR_BYTES {
+            return None;
+        }
+
         if source.is_empty()
             || source.starts_with('@')
             || source.contains('+')
@@ -1246,6 +1270,10 @@ impl CompoundSelector {
 
                 selector.id = Some(value);
             } else {
+                if selector.classes.len() >= MAX_CLASSES_PER_COMPOUND {
+                    return None;
+                }
+
                 selector.classes.push(value);
             }
         }
@@ -1345,6 +1373,10 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
             }
 
             _ => {
+                if buffer.len() >= MAX_SELECTOR_BYTES {
+                    return None;
+                }
+
                 buffer.push(character);
             }
         }
@@ -1355,6 +1387,10 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
     }
 
     if pending.is_some() {
+        return None;
+    }
+
+    if parts.len() > MAX_SELECTOR_PARTS {
         return None;
     }
 
@@ -1434,10 +1470,16 @@ fn apply_cascade(
     stylesheet: &Stylesheet,
     parent_style: Option<&ComputedStyle>,
     style: &mut ComputedStyle,
+    cascade_budget: &mut usize,
 ) {
     let mut winners: [Option<CascadeWinner>; Property::COUNT] = array::from_fn(|_| None);
 
     for rule in &stylesheet.rules {
+        if *cascade_budget == 0 {
+            break;
+        }
+        *cascade_budget = cascade_budget.saturating_sub(1);
+
         if !rule.selector.matches(document, node_id) {
             continue;
         }
@@ -1468,6 +1510,10 @@ fn apply_cascade(
         }
     }) && let Some(inline_style) = element.attribute("style")
     {
+        if inline_style.len() > MAX_INLINE_STYLE_BYTES {
+            apply_winners(style, parent_style, &winners);
+            return;
+        }
         let declarations = parse_declarations(inline_style);
 
         for declaration in declarations {
@@ -1796,6 +1842,11 @@ fn collect_author_css(document: &Document) -> String {
             };
 
             if let NodeKind::Text(text) = child.kind() {
+                let required = text.len().saturating_add(1);
+                if source.len().saturating_add(required) > MAX_CSS_SOURCE_BYTES {
+                    return source;
+                }
+
                 source.push_str(text);
                 source.push('\n');
             }
@@ -1898,6 +1949,10 @@ fn scan_rule_blocks(source: &str) -> Vec<RuleBlock<'_>> {
     let mut cursor = 0;
 
     while cursor < bytes.len() {
+        if blocks.len() >= MAX_SCANNED_RULE_BLOCKS {
+            break;
+        }
+
         while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
             cursor += 1;
         }
@@ -2000,6 +2055,9 @@ fn parse_declarations(source: &str) -> Vec<Declaration> {
     let mut declaration_order = 0_u16;
 
     for segment in segments {
+        if declarations.len() >= MAX_DECLARATIONS_PER_RULE {
+            break;
+        }
         let Some((property_source, value_source)) = split_declaration(segment) else {
             continue;
         };
@@ -2010,6 +2068,9 @@ fn parse_declarations(source: &str) -> Vec<Declaration> {
         let expanded = parse_property(&property_name, value_source);
 
         for (property, value) in expanded {
+            if declarations.len() >= MAX_DECLARATIONS_PER_RULE {
+                break;
+            }
             declarations.push(Declaration {
                 property,
                 value,
@@ -2050,6 +2111,9 @@ fn split_top_level(source: &str, delimiter: u8) -> Vec<&str> {
                 b'(' => parentheses = parentheses.saturating_add(1),
                 b')' => parentheses = parentheses.saturating_sub(1),
                 _ if byte == delimiter && parentheses == 0 => {
+                    if parts.len() >= MAX_DECLARATIONS_PER_RULE {
+                        break;
+                    }
                     parts.push(&source[start..cursor]);
                     start = cursor.saturating_add(1);
                 }
@@ -2060,7 +2124,9 @@ fn split_top_level(source: &str, delimiter: u8) -> Vec<&str> {
         cursor += 1;
     }
 
-    parts.push(&source[start..]);
+    if parts.len() < MAX_DECLARATIONS_PER_RULE {
+        parts.push(&source[start..]);
+    }
 
     parts
 }
@@ -2529,7 +2595,7 @@ fn parse_non_negative_float(value: &str) -> Option<f32> {
     value
         .parse::<f32>()
         .ok()
-        .filter(|number| number.is_finite() && *number >= 0.0)
+        .filter(|number| number.is_finite() && *number >= 0.0 && *number <= MAX_NUMERIC_MAGNITUDE)
 }
 
 fn parse_margin_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
@@ -2763,7 +2829,7 @@ fn parse_object_position(value: &str) -> Option<ObjectPosition> {
             "center" => Some(0.5),
             _ => lower
                 .strip_suffix('%')
-                .and_then(|number| number.parse::<f32>().ok())
+                .and_then(parse_number)
                 .map(|percent| (percent / 100.0).clamp(0.0, 1.0)),
         }
     }
@@ -2849,9 +2915,9 @@ fn parse_specified_length(value: &str, allow_auto_percent: bool) -> Option<Speci
 fn resolve_font_size(length: SpecifiedLength, inherited_size: f32) -> Option<f32> {
     match length {
         SpecifiedLength::Px(value) => Some(value),
-        SpecifiedLength::Em(value) => Some(value * inherited_size),
-        SpecifiedLength::Rem(value) => Some(value * ROOT_FONT_SIZE_PX),
-        SpecifiedLength::Percent(value) => Some(inherited_size * value / 100.0),
+        SpecifiedLength::Em(value) => bounded_computed(value * inherited_size),
+        SpecifiedLength::Rem(value) => bounded_computed(value * ROOT_FONT_SIZE_PX),
+        SpecifiedLength::Percent(value) => bounded_computed(inherited_size * value / 100.0),
         SpecifiedLength::Auto => None,
     }
 }
@@ -2870,8 +2936,8 @@ fn resolve_margin_length(length: SpecifiedLength, font_size: f32) -> (f32, bool)
 fn resolve_edge_length(length: SpecifiedLength, font_size: f32) -> Option<f32> {
     match length {
         SpecifiedLength::Px(value) => Some(value),
-        SpecifiedLength::Em(value) => Some(value * font_size),
-        SpecifiedLength::Rem(value) => Some(value * ROOT_FONT_SIZE_PX),
+        SpecifiedLength::Em(value) => bounded_computed(value * font_size),
+        SpecifiedLength::Rem(value) => bounded_computed(value * ROOT_FONT_SIZE_PX),
         SpecifiedLength::Auto | SpecifiedLength::Percent(_) => None,
     }
 }
@@ -2880,8 +2946,16 @@ fn resolve_size_length(length: SpecifiedLength, font_size: f32) -> Length {
     match length {
         SpecifiedLength::Auto => Length::Auto,
         SpecifiedLength::Px(value) => Length::Px(value.max(0.0)),
-        SpecifiedLength::Em(value) => Length::Px((value * font_size).max(0.0)),
-        SpecifiedLength::Rem(value) => Length::Px((value * ROOT_FONT_SIZE_PX).max(0.0)),
+        SpecifiedLength::Em(value) => Length::Px(
+            bounded_computed(value * font_size)
+                .unwrap_or_default()
+                .max(0.0),
+        ),
+        SpecifiedLength::Rem(value) => Length::Px(
+            bounded_computed(value * ROOT_FONT_SIZE_PX)
+                .unwrap_or_default()
+                .max(0.0),
+        ),
         SpecifiedLength::Percent(value) => Length::Percent(value),
     }
 }
@@ -2891,7 +2965,23 @@ fn parse_number(value: &str) -> Option<f32> {
         .trim()
         .parse::<f32>()
         .ok()
-        .filter(|number| number.is_finite())
+        .filter(|number| number.is_finite() && number.abs() <= MAX_NUMERIC_MAGNITUDE)
+}
+
+fn bounded_computed(value: f32) -> Option<f32> {
+    if value.is_finite() {
+        Some(value.clamp(-MAX_NUMERIC_MAGNITUDE, MAX_NUMERIC_MAGNITUDE))
+    } else {
+        None
+    }
+}
+
+fn sanitize_unit_interval(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
 }
 
 fn parse_background_color(value: &str) -> Option<Option<Rgba>> {
@@ -2962,7 +3052,11 @@ fn parse_rgb_function(inner: &str, alpha: u8) -> Option<Rgba> {
 }
 
 fn parse_alpha(value: &str) -> Option<u8> {
-    let alpha = value.parse::<f32>().ok()?.clamp(0.0, 1.0);
+    let alpha = value.parse::<f32>().ok()?;
+    if !alpha.is_finite() {
+        return None;
+    }
+    let alpha = alpha.clamp(0.0, 1.0);
     Some((alpha * 255.0).round() as u8)
 }
 

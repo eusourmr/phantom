@@ -1,0 +1,9 @@
+# Phantom security-sensitive repository ownership.
+* @eusourmr
+/.github/ @eusourmr
+/crates/phantom-security/ @eusourmr
+/crates/phantom-net/ @eusourmr
+/crates/phantom-html/ @eusourmr
+/crates/phantom-css/ @eusourmr
+/crates/phantom-layout/ @eusourmr
+/security/ @eusourmr
