@@ -120,8 +120,8 @@ fn duplicate_attributes_keep_first_value_and_account_error()
 }
 
 #[test]
-fn missing_whitespace_after_quoted_value_is_recoverable()
--> Result<(), Box<dyn std::error::Error>> {
+fn missing_whitespace_after_quoted_value_is_recoverable() -> Result<(), Box<dyn std::error::Error>>
+{
     let output = tokenize("<div a='1'b='2'>")?;
     let tag = output.tokens.iter().find_map(|token| match token {
         Token::StartTag(tag) => Some(tag),
@@ -219,8 +219,7 @@ fn unterminated_tag_records_eof_error_without_emitting_partial_tag() -> Result<(
 }
 
 #[test]
-fn malformed_doctype_accounts_error_and_forces_quirks()
--> Result<(), Box<dyn std::error::Error>> {
+fn malformed_doctype_accounts_error_and_forces_quirks() -> Result<(), Box<dyn std::error::Error>> {
     let output = tokenize("<!DOCTYPE>")?;
     let doctype = output.tokens.iter().find_map(|token| match token {
         Token::Doctype(doctype) => Some(doctype),
