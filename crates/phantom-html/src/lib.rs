@@ -9,6 +9,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod tokenizer;
+
 use std::collections::BTreeMap;
 
 use phantom_dom::{Document, DomError, ElementData, NodeId, NodeKind};
