@@ -349,6 +349,7 @@ pub enum PaintError {
 ///
 /// Returns [`PaintError::TextCapacityExceeded`] if a compact UTF-8 range can
 /// no longer address the shared paint text buffer.
+// PHANTOM_2C13_FORM_CONTROL_PAINT_BOUNDARY
 pub fn build_paint_list(
     layout: &LayoutSnapshot,
     styles: &StyleMap,
@@ -362,7 +363,7 @@ pub fn build_paint_list(
 
     for layout_box in layout.boxes() {
         match layout_box.kind() {
-            LayoutKind::Root | LayoutKind::Line => {}
+            LayoutKind::Root | LayoutKind::Line | LayoutKind::Control { .. } => {}
 
             LayoutKind::Block | LayoutKind::Flex => {
                 push_background(&mut paint, layout_box, styles);

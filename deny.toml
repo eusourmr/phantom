@@ -1,0 +1,15 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.25.1 is a transitive dependency through eframe/winit/sctk-adwaita; the advisory is unmaintained-only, cargo-audit reports no vulnerability, and RustSec states no safe upgrade is currently available. Track upstream replacement before Beta." },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

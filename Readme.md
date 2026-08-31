@@ -1,82 +1,88 @@
 # Phantom
 
-**Phantom** is an independent, open-source browser and web engine project designed from the ground up around safety, auditability, modularity, semantic understanding and human-controlled agentic execution.
+**Phantom** is an independent, open-source browser and web-engine project written primarily in Rust. It is being built incrementally from first principles around safety, auditability, modularity and explicit human control.
 
-Phantom is **not a Chromium, WebKit or Gecko fork**. The project intends to build its own engine incrementally while remaining standards-oriented and interoperable with the open web.
+Phantom is **not a Chromium, WebKit or Gecko fork**. Independence does not mean reimplementing every supporting component in-house: standards, test suites and carefully selected open-source libraries may be used where they do not replace Phantom's browser-engine architecture.
 
-> Correctness before convenience. Security before compatibility. Composition before inheritance. Explicit before implicit. Auditable before clever.
-> 
+> Correctness before convenience. Security before compatibility. Explicit before implicit. Auditable before clever.
 
-> <img width="1672" height="941" alt="phantom" src="https://github.com/user-attachments/assets/a88a874e-272e-4856-84cc-14068bd05016" />
-## Why Phantom
+## Current status
 
-Today's browsers are optimized around pages, tabs and URLs. Phantom is exploring a different model: the browser as an execution environment that can understand context, represent semantic entities, remember user-authorized knowledge and let agents act only through explicit security capabilities.
+Phantom is an **active pre-alpha engine and native browser shell**, not a production-ready general-purpose browser.
 
-Read the [Manifesto](MANIFESTO.md).
+The repository already contains executable Rust code for:
 
-## Status
+- native desktop browser shell (`phantom-browser`);
+- DOM (`phantom-dom`);
+- independent bounded HTML parser/tree builder (`phantom-html`);
+- CSS parsing, cascade and computed style (`phantom-css`);
+- block/inline/Flexbox layout (`phantom-layout`);
+- renderer-neutral paint commands (`phantom-paint`);
+- text boundary (`phantom-text`);
+- raster/animated image handling (`phantom-image`);
+- HTTP/HTTPS transport, bounded response policy and partitioned cache (`phantom-net`);
+- security capabilities (`phantom-security`);
+- engine orchestration (`phantom-engine`).
 
-Phantom is at **foundation stage (`0.0.1`)**. It is not yet a usable browser. The first milestone is deliberately narrow: establish a clean Rust workspace, strong invariants, a capability security model and a minimal DOM/engine boundary before implementing HTML, CSS, layout and rendering.
+The current development line is the **2C series**, focused on robust real-network document/image loading, cache semantics, navigation lifecycle and browser-chrome usability.
 
-## Initial architecture
+The project does **not** claim full HTML/CSS/JavaScript compatibility today.
+
+## Near-term goal: Engine Beta, not “Chrome replacement”
+
+The near-term milestone is deliberately bounded: **Phantom Engine Beta**.
+
+Engine Beta means a testable independent engine capable of loading and painting a documented subset of the open web with robust navigation, networking, HTML/CSS parsing, text and images. It does **not** mean full parity with Chromium, Gecko or WebKit.
+
+See [BETA-SCOPE](docs/BETA-SCOPE.md).
+
+A later **Browser Technology Preview** introduces the scripting runtime boundary and enough JavaScript/DOM integration to exercise dynamic pages. Full ECMAScript engine/JIT work is not a prerequisite for Engine Beta and is not promised as a solo-project deliverable.
+
+## Architecture
 
 ```text
-Phantom Browser
-      |
-      v
-Phantom Engine
-      |
-      +-- DOM
-      +-- HTML            (planned)
-      +-- CSS / Style     (planned)
-      +-- Layout          (planned)
-      +-- Render / GPU    (planned)
-      +-- JavaScript      (planned)
-      +-- Network         (planned)
-      +-- Storage         (planned)
-      +-- Security
-      |
-      +-- Semantic Runtime (planned)
-      +-- Memory           (planned)
-      `-- Agent Runtime    (planned)
+Native Phantom Browser
+        |
+        v
+phantom-engine
+        |
+        +-- phantom-html  -> phantom-dom
+        +-- phantom-css
+        +-- phantom-layout
+        +-- phantom-paint
+        +-- phantom-text
+        +-- phantom-image
+        +-- phantom-net
+        `-- phantom-security
 ```
 
-Initial crates:
+The semantic/memory/agent vision remains part of Phantom's long-term product thesis, but it is **post-browser-beta work and does not block the browser engine**.
 
-- `phantom-core` — shared low-level types and invariants.
-- `phantom-security` — capability-based authorization primitives.
-- `phantom-dom` — invariant-preserving DOM foundation.
-- `phantom-engine` — top-level engine orchestration boundary.
-- `phantom-browser` — native browser bootstrap executable.
+See [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), [PARSER-STRATEGY](docs/PARSER-STRATEGY.md) and [SCRIPTING-STRATEGY](docs/SCRIPTING-STRATEGY.md).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md), [CODING.md](CODING.md) and [ROADMAP.md](ROADMAP.md).
+## Build and quality gates
 
-## Engineering constitution
-
-- Rust is the primary implementation language.
-- `unsafe` is forbidden by default.
-- Composition and traits are preferred over inheritance-style hierarchies.
-- Domain types are preferred over primitive strings and boolean switches.
-- Expected failures use typed errors and `Result`.
-- Production code avoids `unwrap()`, `expect()`, `panic!()`, `todo!()` and `unimplemented!()`.
-- Privileged side effects require explicit capabilities.
-- Cross-process and cross-component input is untrusted by default.
-- Critical behavior must be testable, observable and auditable.
-
-## Build
-
-A current stable Rust toolchain is required.
+Rust 1.95 is pinned by `rust-toolchain.toml`.
 
 ```bash
 cargo fmt --all --check
+cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-## Project page
+CI runs against real Rust code. Linux performs format, check, Clippy, tests and docs; Windows checks/tests and builds the native browser shell.
 
-The repository contains a static project page under `site/`, prepared for GitHub Pages. It presents the manifesto, architecture and roadmap without requiring a frontend framework.
+## Engineering rules
+
+- Rust is the primary implementation language.
+- `unsafe` is forbidden by default.
+- Production code avoids `unwrap()`, `expect()`, `panic!()`, `todo!()` and `unimplemented!()`.
+- New dependencies require a concrete implementation reason.
+- Web input is untrusted by default.
+- Compatibility claims require tests.
+- Large future subsystems are not created as empty abstractions.
 
 ## Security
 
@@ -84,7 +90,7 @@ Do not report vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Structural changes require an ADR under `docs/adr/`.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Structural changes require an ADR when appropriate.
 
 ## License
 

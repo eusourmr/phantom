@@ -1,4 +1,7 @@
-//! Deterministic Network Isolation Key and partitioned HTTP-cache tests for Phantom 2C-8.
+//! Network Isolation Key/cache regressions adapted to the 2D-5 private-network policy.
+//!
+//! Local test resources use explicit local top-level origins so the tests exercise
+//! cache partitioning without pretending a public page may reach loopback.
 
 use std::error::Error;
 use std::io::{self, Read, Write};
@@ -23,7 +26,7 @@ fn same_partition_reuses_fresh_binary_response() -> Result<(), Box<dyn Error>> {
     });
 
     let resource = HttpUrl::parse(&format!("http://{address}/shared.png"))?;
-    let top = HttpUrl::parse("https://site-a.example/page")?;
+    let top = HttpUrl::parse("http://127.0.0.1:41001/page")?;
     let key = NetworkIsolationKey::from_top_level(&top);
     let client = NetworkClient::new();
 
@@ -46,8 +49,8 @@ fn different_top_level_partitions_do_not_share_the_same_resource() -> Result<(),
     let server = thread::spawn(move || -> io::Result<usize> { serve_up_to_two_requests(listener) });
 
     let resource = HttpUrl::parse(&format!("http://{address}/third-party.png"))?;
-    let top_a = HttpUrl::parse("https://site-a.example/page")?;
-    let top_b = HttpUrl::parse("https://site-b.example/page")?;
+    let top_a = HttpUrl::parse("http://127.0.0.1:41001/page")?;
+    let top_b = HttpUrl::parse("http://127.0.0.1:41002/page")?;
     let key_a = NetworkIsolationKey::from_top_level(&top_a);
     let key_b = NetworkIsolationKey::from_top_level(&top_b);
     let client = NetworkClient::new();
@@ -72,7 +75,7 @@ fn frame_dimension_also_partitions_network_state() -> Result<(), Box<dyn Error>>
     let server = thread::spawn(move || -> io::Result<usize> { serve_up_to_two_requests(listener) });
 
     let resource = HttpUrl::parse(&format!("http://{address}/frame-resource.png"))?;
-    let top = HttpUrl::parse("https://container.example/page")?;
+    let top = HttpUrl::parse("http://127.0.0.1:41003/page")?;
     let frame_a = HttpUrl::parse("https://frame-a.example/embed")?;
     let frame_b = HttpUrl::parse("https://frame-b.example/embed")?;
     let key_a = NetworkIsolationKey::new(&top, &frame_a);

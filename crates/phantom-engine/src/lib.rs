@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use phantom_dom::{Document, ElementData, NodeId, NodeKind};
 use phantom_html::HtmlError;
 
@@ -19,8 +21,8 @@ pub use phantom_image::{
     ImageMetadata, ImageResourceId, IntrinsicSize, probe_image,
 };
 pub use phantom_layout::{
-    LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect, build_layout_snapshot,
-    build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
+    ControlKind, LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect,
+    build_layout_snapshot, build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
     build_layout_snapshot_with_shaper_and_images,
 };
 pub use phantom_paint::{
@@ -32,6 +34,200 @@ use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 
+// PHANTOM_2C14_FRAGMENT_TARGET
+/// One visible same-document fragment target resolved from the active snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FragmentTarget {
+    id: String,
+    top: f32,
+}
+
+impl FragmentTarget {
+    /// Returns the matched HTML `id`.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the target's top edge in document coordinates.
+    #[must_use]
+    pub const fn top(&self) -> f32 {
+        self.top
+    }
+}
+// PHANTOM_2C13_FORM_NAVIGATION_I
+/// Stable document-generation-local identifier for one form control.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FormControlId(u64);
+
+impl FormControlId {
+    /// Returns the underlying DOM identifier value.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Stable document-generation-local identifier for one `<form>`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FormId(u64);
+
+impl FormId {
+    /// Returns the underlying DOM identifier value.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Browser-control role supported by Form Navigation I.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormControlKind {
+    /// `<input type=text>` or omitted type.
+    Text,
+    /// `<input type=search>`.
+    Search,
+    /// `<input type=submit>` or a submit `<button>`.
+    Submit,
+}
+
+/// One visible form-control region derived from the cold layout snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormControlRegion {
+    id: FormControlId,
+    form: FormId,
+    kind: FormControlKind,
+    rect: Rect,
+    name: Option<String>,
+    initial_value: String,
+    placeholder: String,
+    label: String,
+    enabled: bool,
+}
+
+impl FormControlRegion {
+    /// Returns the control identifier.
+    #[must_use]
+    pub const fn id(&self) -> FormControlId {
+        self.id
+    }
+
+    /// Returns the owning form.
+    #[must_use]
+    pub const fn form(&self) -> FormId {
+        self.form
+    }
+
+    /// Returns the supported control role.
+    #[must_use]
+    pub const fn kind(&self) -> FormControlKind {
+        self.kind
+    }
+
+    /// Returns the document-coordinate widget rectangle.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Returns the HTML control name when declared.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Returns the initial HTML value.
+    #[must_use]
+    pub fn initial_value(&self) -> &str {
+        &self.initial_value
+    }
+
+    /// Returns the placeholder text for editable controls.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Returns the browser-visible control label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Returns whether the HTML `disabled` attribute is absent.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// Deterministic GET form submission prepared by the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormGetSubmission {
+    action: String,
+    fields: Vec<(String, String)>,
+}
+
+impl FormGetSubmission {
+    /// Returns the raw form action reference. Empty means the current document.
+    #[must_use]
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Returns successful name/value pairs in DOM order.
+    #[must_use]
+    pub fn fields(&self) -> &[(String, String)] {
+        &self.fields
+    }
+}
+
+/// Errors produced while preparing the bounded Form Navigation I subset.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum FormSubmissionError {
+    /// The requested form does not exist in the active document.
+    #[error("form not found in active document")]
+    FormNotFound,
+
+    /// The form requests a method not implemented by Form Navigation I.
+    #[error("unsupported form method: {0}")]
+    UnsupportedMethod(String),
+}
+// PHANTOM_2C12_LINK_NAVIGATION_I
+/// One clickable hyperlink region in the active cold layout snapshot.
+///
+/// URL resolution deliberately remains outside the engine. `href` is preserved
+/// exactly as declared so browser navigation can resolve it against the
+/// committed document URL through `phantom-net`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkRegion {
+    href: String,
+    rect: Rect,
+    opens_new_context: bool,
+}
+
+impl LinkRegion {
+    /// Returns the raw `href` value declared by the nearest ancestor anchor.
+    #[must_use]
+    pub fn href(&self) -> &str {
+        &self.href
+    }
+
+    /// Returns the clickable rectangle in document coordinates.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Returns whether HTML `target="_blank"` requested a new browsing context.
+    ///
+    /// Named browsing contexts other than `_blank` are intentionally outside
+    /// this first navigation slice.
+    #[must_use]
+    pub const fn opens_new_context(&self) -> bool {
+        self.opens_new_context
+    }
+}
 /// One image subresource request discovered in the active document snapshot.
 ///
 /// The request contains only the opaque engine resource identifier and the raw
@@ -42,6 +238,7 @@ pub struct ImageRequest {
     resource: ImageResourceId,
     source: String,
     loading: ImageLoading,
+    priority: ResourcePriority,
     top: f32,
     bottom: f32,
 }
@@ -57,6 +254,40 @@ pub enum ImageLoading {
     Lazy,
 }
 
+/// Fetch priority hint exposed by HTML `fetchpriority`.
+///
+/// Ordering is intentional: `High < Auto < Low`, allowing normal Rust sorting
+/// to place higher-priority work first without numeric magic constants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResourcePriority {
+    /// User-agent scheduling should prefer this resource over normal work.
+    High,
+
+    /// Use the browser's normal scheduling policy.
+    #[default]
+    Auto,
+
+    /// User-agent scheduling may defer this resource behind normal work.
+    Low,
+}
+
+/// One `<link rel="preload" as="image">` hint discovered in the document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImagePreloadRequest {
+    source: String,
+    priority: ResourcePriority,
+}
+
+// PHANTOM_2C11_SITE_IDENTITY_I
+/// One site icon explicitly declared by the active document.
+///
+/// Site Identity I intentionally does not synthesize `/favicon.ico`. The
+/// browser fetches only a document-declared `<link rel="icon" href="...">`
+/// whose MIME type is compatible with Phantom's current raster decoder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteIconRequest {
+    source: String,
+}
 impl ImageRequest {
     /// Returns the opaque resource identifier used by layout and paint.
     #[must_use]
@@ -76,6 +307,12 @@ impl ImageRequest {
         self.loading
     }
 
+    /// Returns the normalized `fetchpriority` scheduling hint.
+    #[must_use]
+    pub const fn priority(&self) -> ResourcePriority {
+        self.priority
+    }
+
     /// Returns the image border-box top in document coordinates.
     #[must_use]
     pub const fn top(&self) -> f32 {
@@ -89,6 +326,27 @@ impl ImageRequest {
     }
 }
 
+impl ImagePreloadRequest {
+    /// Returns the raw preload source reference from the document.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the normalized preload `fetchpriority` hint.
+    #[must_use]
+    pub const fn priority(&self) -> ResourcePriority {
+        self.priority
+    }
+}
+
+impl SiteIconRequest {
+    /// Returns the raw icon URL reference declared by the document.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
 /// High-level lifecycle state of a Phantom engine instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineState {
@@ -126,6 +384,7 @@ pub struct Engine {
     images: ImageCatalog,
     layout: LayoutSnapshot,
     paint: PaintList,
+    links: Vec<LinkRegion>,
     state: EngineState,
 }
 
@@ -145,6 +404,7 @@ impl Engine {
             images: ImageCatalog::default(),
             layout: LayoutSnapshot::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             paint: PaintList::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
+            links: Vec::new(),
             state: EngineState::Idle,
         }
     }
@@ -185,6 +445,209 @@ impl Engine {
         &self.paint
     }
 
+    /// Resolves a visible HTML `id` to its first laid-out document position.
+    ///
+    /// Fragment decoding beyond the serialized first-slice identifier is
+    /// deliberately deferred to the standards-conformance phase.
+    #[must_use]
+    pub fn fragment_target(&self, fragment: &str) -> Option<FragmentTarget> {
+        if fragment.is_empty() {
+            return None;
+        }
+
+        let target_node = self.document.nodes().find_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+
+            (element.attribute("id") == Some(fragment)).then_some(node.id())
+        })?;
+
+        let top = self
+            .layout
+            .boxes()
+            .iter()
+            .filter(|layout_box| {
+                node_is_descendant_or_self(&self.document, layout_box.source_node(), target_node)
+            })
+            .map(|layout_box| layout_box.rect().y())
+            .min_by(f32::total_cmp)?;
+
+        Some(FragmentTarget {
+            id: fragment.to_owned(),
+            top,
+        })
+    }
+    /// Returns visible controls supported by Browser Inputs I.
+    ///
+    /// Hidden inputs participate in submission but deliberately have no visual
+    /// region. Unsupported control types remain outside this first slice.
+    #[must_use]
+    pub fn form_control_regions(&self) -> Vec<FormControlRegion> {
+        self.layout
+            .boxes()
+            .iter()
+            .filter_map(|layout_box| {
+                let LayoutKind::Control { kind } = layout_box.kind() else {
+                    return None;
+                };
+
+                let node_id = layout_box.source_node();
+                let element = element_for(&self.document, node_id)?;
+                let form_node = form_for_node(&self.document, node_id)?;
+                let form = FormId(form_node.as_u64());
+
+                let kind = match kind {
+                    ControlKind::TextInput => FormControlKind::Text,
+                    ControlKind::SearchInput => FormControlKind::Search,
+                    ControlKind::SubmitButton => FormControlKind::Submit,
+                };
+
+                let initial_value = element.attribute("value").unwrap_or_default().to_owned();
+                let placeholder = element
+                    .attribute("placeholder")
+                    .unwrap_or_default()
+                    .to_owned();
+
+                Some(FormControlRegion {
+                    id: FormControlId(node_id.as_u64()),
+                    form,
+                    kind,
+                    rect: layout_box.rect(),
+                    name: element.attribute("name").map(str::to_owned),
+                    initial_value,
+                    placeholder,
+                    label: form_control_label(&self.document, node_id, element, kind),
+                    enabled: element.attribute("disabled").is_none(),
+                })
+            })
+            .collect()
+    }
+
+    /// Builds a deterministic GET submission for one form.
+    ///
+    /// The current-value map is owned by the browser shell; the immutable DOM is
+    /// not mutated merely because a user edits an input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FormSubmissionError::FormNotFound`] for an unknown form or
+    /// [`FormSubmissionError::UnsupportedMethod`] for non-GET forms.
+    pub fn build_get_form_submission(
+        &self,
+        form: FormId,
+        submitter: Option<FormControlId>,
+        values: &BTreeMap<FormControlId, String>,
+    ) -> Result<FormGetSubmission, FormSubmissionError> {
+        let form_node = self
+            .document
+            .nodes()
+            .find(|node| node.id().as_u64() == form.as_u64())
+            .filter(|node| {
+                matches!(
+                    node.kind(),
+                    NodeKind::Element(element) if element.tag_name() == "form"
+                )
+            })
+            .ok_or(FormSubmissionError::FormNotFound)?;
+
+        let NodeKind::Element(form_element) = form_node.kind() else {
+            return Err(FormSubmissionError::FormNotFound);
+        };
+
+        let method = form_element
+            .attribute("method")
+            .unwrap_or("get")
+            .trim()
+            .to_ascii_lowercase();
+
+        if !method.is_empty() && method != "get" {
+            return Err(FormSubmissionError::UnsupportedMethod(method));
+        }
+
+        let action = form_element
+            .attribute("action")
+            .unwrap_or_default()
+            .to_owned();
+
+        let mut fields = Vec::new();
+
+        for node in self.document.nodes() {
+            let NodeKind::Element(element) = node.kind() else {
+                continue;
+            };
+
+            if form_for_node(&self.document, node.id()) != Some(form_node.id()) {
+                continue;
+            }
+
+            if element.attribute("disabled").is_some() {
+                continue;
+            }
+
+            let Some(name) = element.attribute("name").filter(|name| !name.is_empty()) else {
+                continue;
+            };
+
+            let control_id = FormControlId(node.id().as_u64());
+
+            match element.tag_name() {
+                "input" => {
+                    let input_type = normalized_input_type(element);
+
+                    match input_type.as_str() {
+                        "" | "text" | "search" | "hidden" => {
+                            let value = values.get(&control_id).cloned().unwrap_or_else(|| {
+                                element.attribute("value").unwrap_or_default().to_owned()
+                            });
+
+                            fields.push((name.to_owned(), value));
+                        }
+
+                        "submit" if submitter == Some(control_id) => {
+                            fields.push((
+                                name.to_owned(),
+                                element.attribute("value").unwrap_or_default().to_owned(),
+                            ));
+                        }
+
+                        _ => {}
+                    }
+                }
+
+                "button" if button_is_submit(element) && submitter == Some(control_id) => {
+                    fields.push((
+                        name.to_owned(),
+                        element.attribute("value").unwrap_or_default().to_owned(),
+                    ));
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok(FormGetSubmission { action, fields })
+    }
+    /// Returns clickable hyperlink regions for the active layout snapshot.
+    ///
+    /// Regions are generated only for visible text/image layout fragments that
+    /// descend from an `<a href>` element. This avoids making non-rendered DOM
+    /// nodes interactive.
+    #[must_use]
+    pub fn link_regions(&self) -> &[LinkRegion] {
+        &self.links
+    }
+
+    /// Hit-tests one document-coordinate point against hyperlink fragments.
+    ///
+    /// Later paint-order fragments win when boxes overlap.
+    #[must_use]
+    pub fn link_at(&self, x: f32, y: f32) -> Option<&LinkRegion> {
+        self.links
+            .iter()
+            .rev()
+            .find(|region| rect_contains(region.rect(), x, y))
+    }
     /// Returns responsive image subresources for a default device-pixel ratio.
     ///
     /// This keeps URL fetching outside the engine while making HTML candidate
@@ -214,16 +677,21 @@ impl Engine {
 
                 let node_id = layout_box.source_node();
                 let source = select_image_source(&self.document, node_id, viewport_width, dpr)?;
-                let loading = element_for(&self.document, node_id)
+                let element = element_for(&self.document, node_id);
+                let loading = element
                     .and_then(|element| element.attribute("loading"))
                     .filter(|value| value.eq_ignore_ascii_case("lazy"))
                     .map_or(ImageLoading::Eager, |_| ImageLoading::Lazy);
+                let priority = element.map_or(ResourcePriority::Auto, |element| {
+                    resource_priority(element.attribute("fetchpriority"))
+                });
                 let rect = layout_box.rect();
 
                 Some(ImageRequest {
                     resource,
                     source,
                     loading,
+                    priority,
                     top: rect.y(),
                     bottom: rect.bottom(),
                 })
@@ -231,6 +699,82 @@ impl Engine {
             .collect()
     }
 
+    /// Returns image preload hints for a default device-pixel ratio.
+    #[must_use]
+    pub fn image_preload_requests(&self) -> Vec<ImagePreloadRequest> {
+        self.image_preload_requests_for_device(1.0)
+    }
+
+    /// Returns `<link rel="preload" as="image">` requests selected for the
+    /// supplied device-pixel ratio.
+    ///
+    /// This initial standards slice supports `href`, `imagesrcset`,
+    /// `imagesizes`, simple `media`, supported image `type`, and
+    /// `fetchpriority`. Fetching remains outside the engine.
+    #[must_use]
+    pub fn image_preload_requests_for_device(
+        &self,
+        device_pixel_ratio: f32,
+    ) -> Vec<ImagePreloadRequest> {
+        let viewport_width = self.layout.viewport_width().max(1.0);
+        let dpr = device_pixel_ratio.max(0.1);
+
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+
+                preload_image_from_element(element, viewport_width, dpr)
+            })
+            .collect()
+    }
+
+    // PHANTOM_2C15_SITE_IDENTITY_II
+    /// Returns supported document-declared site icons in DOM declaration order.
+    ///
+    /// Missing MIME type remains eligible because the bounded decoder is
+    /// authoritative after fetch. Explicitly unsupported MIME types are skipped.
+    #[must_use]
+    pub fn site_icon_requests(&self) -> Vec<SiteIconRequest> {
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+
+                site_icon_from_element(element)
+            })
+            .collect()
+    }
+
+    /// Returns the first supported declared site icon.
+    ///
+    /// Kept as a compatibility convenience for callers that only need one
+    /// candidate. Browser Site Identity II uses [`Self::site_icon_requests`].
+    #[must_use]
+    pub fn site_icon_request(&self) -> Option<SiteIconRequest> {
+        self.site_icon_requests().into_iter().next()
+    }
+
+    /// Returns the normalized text of the first HTML `<title>` element.
+    #[must_use]
+    pub fn document_title(&self) -> Option<String> {
+        let title_node = self.document.nodes().find_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+
+            (element.tag_name() == "title").then_some(node.id())
+        })?;
+
+        let raw = descendant_text_content(&self.document, title_node);
+        let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        (!normalized.is_empty()).then_some(normalized)
+    }
     /// Parses HTML and replaces all engine snapshots.
     ///
     /// The active pipeline is:
@@ -260,12 +804,14 @@ impl Engine {
         let layout =
             build_layout_snapshot_with_images(&document, &styles, viewport_width, &images)?;
         let paint = build_paint_list(&layout, &styles)?;
+        let links = build_link_regions(&document, &layout);
 
         self.document = document;
         self.styles = styles;
         self.images = images;
         self.layout = layout;
         self.paint = paint;
+        self.links = links;
         self.state = EngineState::Ready;
 
         Ok(())
@@ -308,14 +854,169 @@ impl Engine {
         )?;
 
         let paint = build_paint_list(&layout, &self.styles)?;
+        let links = build_link_regions(&self.document, &layout);
 
         self.layout = layout;
         self.paint = paint;
+        self.links = links;
 
         Ok(())
     }
 }
 
+fn node_is_descendant_or_self(document: &Document, node_id: NodeId, ancestor: NodeId) -> bool {
+    let mut current = Some(node_id);
+
+    while let Some(current_id) = current {
+        if current_id == ancestor {
+            return true;
+        }
+
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+
+    false
+}
+fn form_for_node(document: &Document, node_id: NodeId) -> Option<NodeId> {
+    let mut current = document.node(node_id)?.parent();
+
+    while let Some(current_id) = current {
+        let node = document.node(current_id)?;
+
+        if let NodeKind::Element(element) = node.kind()
+            && element.tag_name() == "form"
+        {
+            return Some(current_id);
+        }
+
+        current = node.parent();
+    }
+
+    None
+}
+
+fn normalized_input_type(element: &ElementData) -> String {
+    element
+        .attribute("type")
+        .unwrap_or("text")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn button_is_submit(element: &ElementData) -> bool {
+    matches!(
+        element
+            .attribute("type")
+            .unwrap_or("submit")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "" | "submit"
+    )
+}
+
+fn form_control_label(
+    document: &Document,
+    node_id: NodeId,
+    element: &ElementData,
+    kind: FormControlKind,
+) -> String {
+    match kind {
+        FormControlKind::Text | FormControlKind::Search => String::new(),
+
+        FormControlKind::Submit if element.tag_name() == "input" => element
+            .attribute("value")
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Submit")
+            .to_owned(),
+
+        FormControlKind::Submit => {
+            let text = descendant_text_content(document, node_id);
+            if text.trim().is_empty() {
+                "Submit".to_owned()
+            } else {
+                text.trim().to_owned()
+            }
+        }
+    }
+}
+
+fn descendant_text_content(document: &Document, node_id: NodeId) -> String {
+    let Some(node) = document.node(node_id) else {
+        return String::new();
+    };
+
+    let mut text = String::new();
+    let mut stack = node.children().iter().rev().copied().collect::<Vec<_>>();
+
+    while let Some(current_id) = stack.pop() {
+        let Some(current) = document.node(current_id) else {
+            continue;
+        };
+
+        match current.kind() {
+            NodeKind::Text(value) => text.push_str(value),
+            NodeKind::Document | NodeKind::Element(_) | NodeKind::Comment(_) => {}
+        }
+
+        stack.extend(current.children().iter().rev().copied());
+    }
+
+    text
+}
+fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkRegion> {
+    layout
+        .boxes()
+        .iter()
+        .filter_map(|layout_box| {
+            if !matches!(
+                layout_box.kind(),
+                LayoutKind::Text { .. } | LayoutKind::Image { .. }
+            ) {
+                return None;
+            }
+
+            let anchor = link_element_for_node(document, layout_box.source_node())?;
+            let href = anchor.attribute("href")?.to_owned();
+            let rect = layout_box.rect();
+
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                return None;
+            }
+
+            Some(LinkRegion {
+                href,
+                rect,
+                opens_new_context: anchor
+                    .attribute("target")
+                    .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank")),
+            })
+        })
+        .collect()
+}
+
+fn link_element_for_node(document: &Document, node_id: NodeId) -> Option<&ElementData> {
+    let mut current = Some(node_id);
+
+    while let Some(current_id) = current {
+        let node = document.node(current_id)?;
+
+        if let NodeKind::Element(element) = node.kind()
+            && element.tag_name() == "a"
+            && element.attribute("href").is_some()
+        {
+            return Some(element);
+        }
+
+        current = node.parent();
+    }
+
+    None
+}
+
+fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.x() && y >= rect.y() && x <= rect.x() + rect.width() && y <= rect.y() + rect.height()
+}
 #[derive(Clone, Copy, Debug)]
 enum CandidateDescriptor {
     Density(f32),
@@ -404,6 +1105,91 @@ fn select_from_element(element: &ElementData, viewport_width: f32, dpr: f32) -> 
         .map(str::to_owned)
 }
 
+fn resource_priority(value: Option<&str>) -> ResourcePriority {
+    match value.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("high") => ResourcePriority::High,
+        Some(value) if value.eq_ignore_ascii_case("low") => ResourcePriority::Low,
+        _ => ResourcePriority::Auto,
+    }
+}
+
+fn preload_image_from_element(
+    element: &ElementData,
+    viewport_width: f32,
+    dpr: f32,
+) -> Option<ImagePreloadRequest> {
+    if element.tag_name() != "link"
+        || !rel_has_token(element.attribute("rel"), "preload")
+        || !element
+            .attribute("as")
+            .is_some_and(|value| value.eq_ignore_ascii_case("image"))
+        || !supported_source_type(element.attribute("type"))
+        || !media_matches(element.attribute("media"), viewport_width)
+    {
+        return None;
+    }
+
+    let source = element
+        .attribute("imagesrcset")
+        .and_then(|srcset| {
+            select_srcset(srcset, element.attribute("imagesizes"), viewport_width, dpr)
+        })
+        .or_else(|| {
+            element
+                .attribute("href")
+                .map(str::trim)
+                .filter(|source| !source.is_empty())
+                .map(str::to_owned)
+        })?;
+
+    Some(ImagePreloadRequest {
+        source,
+        priority: resource_priority(element.attribute("fetchpriority")),
+    })
+}
+
+fn rel_has_token(value: Option<&str>, token: &str) -> bool {
+    value.is_some_and(|value| {
+        value
+            .split_ascii_whitespace()
+            .any(|candidate| candidate.eq_ignore_ascii_case(token))
+    })
+}
+
+fn site_icon_from_element(element: &ElementData) -> Option<SiteIconRequest> {
+    if element.tag_name() != "link"
+        || !rel_has_token(element.attribute("rel"), "icon")
+        || !site_icon_type_supported(element.attribute("type"))
+    {
+        return None;
+    }
+
+    let source = element
+        .attribute("href")
+        .map(str::trim)
+        .filter(|source| !source.is_empty())?
+        .to_owned();
+
+    Some(SiteIconRequest { source })
+}
+
+fn site_icon_type_supported(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "image/png"
+            | "image/jpeg"
+            | "image/jpg"
+            | "image/gif"
+            | "image/webp"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
+            | "image/ico"
+    )
+}
 fn element_for(document: &Document, node_id: NodeId) -> Option<&ElementData> {
     let node = document.node(node_id)?;
     let NodeKind::Element(element) = node.kind() else {

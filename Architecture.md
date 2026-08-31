@@ -2,128 +2,111 @@
 
 ## Architectural intent
 
-Phantom is designed as two cooperating systems:
+Phantom's implemented core is a web engine plus native browser shell. The long-term intelligence thesis is deliberately separated from the browser-engine execution roadmap.
 
-1. **Web Engine** — parse, execute, layout, render, communicate, store and isolate web content.
-2. **Intelligence Runtime** — understand semantic entities, retain user-authorized memory, reason about goals and propose or execute actions through explicit policy gates.
+### System A — Web engine (active)
 
-The intelligence runtime is not allowed to bypass browser security boundaries.
+Parse documents, compute style, lay out content, paint, fetch resources and enforce security/resource boundaries.
 
-## Dependency direction
+### System B — Intelligence runtime (deferred product layer)
+
+Semantic entities, user-authorized memory and human-controlled actions are post-browser-beta work. They may never bypass web/security boundaries and are **not prerequisites for Engine Beta**.
+
+## Current implemented dependency shape
 
 ```text
-Browser / Embedders
-        |
-        v
-Application / Engine orchestration
-        |
-        v
-Domain components
-        |
-        v
-Core types and contracts
+phantom-browser
+      |
+      v
+phantom-engine
+      |
+      +-- phantom-dom
+      +-- phantom-html
+      +-- phantom-css
+      +-- phantom-layout
+      +-- phantom-paint
+      +-- phantom-text
+      +-- phantom-image
+      +-- phantom-net
+      +-- phantom-security
+      `-- phantom-core
 ```
 
-Infrastructure adapters implement contracts exposed toward the domain/application boundary. Domain crates do not depend on the UI, operating-system shell, telemetry backend or concrete storage implementation.
+The repository creates new crates only for real implementation needs.
 
-## Target process model
+## Execution order
+
+The project follows this priority order:
+
+1. browser correctness and crash resistance;
+2. parser/layout/network compatibility;
+3. script-ready architecture and dynamic-page support;
+4. security/isolation hardening proportional to implemented capabilities;
+5. product intelligence only after browser fundamentals are stable.
+
+This order resolves an important architectural rule: **Phantom must remain a browser with optional intelligence, not an intelligence system with a browser attached.**
+
+## Scripting boundary
+
+JavaScript is no longer treated as a remote, isolated “phase 5”. The architecture must be script-ready before substantial dynamic-page work.
+
+The future scripting layer interacts through explicit contracts:
+
+```text
+ECMAScript Runtime
+       |
+       v
+phantom-script boundary
+       |
+       +-- DOM mutation commands
+       +-- events/task queues
+       +-- timers
+       `-- network/fetch capability
+```
+
+The ECMAScript implementation can be replaceable. Browser independence does not require owning a JIT compiler. A third-party ECMAScript runtime may initially be embedded behind a Phantom-controlled boundary, subject to security, licensing and maintenance review.
+
+## Parser ownership
+
+`phantom-html` and `phantom-css` are currently bounded, independent implementations. They do not claim full WHATWG/CSS conformance.
+
+Their compatibility strategy is:
+
+- measured subsets;
+- explicit error recovery;
+- WPT-derived regression cases;
+- fuzzing for untrusted input;
+- no silent “full standards compliance” claim.
+
+See `docs/PARSER-STRATEGY.md`.
+
+## Rendering
+
+The native shell currently paints Phantom's own renderer-neutral commands through its chosen UI backend. A bespoke GPU compositor is **not an Engine Beta gate**. GPU architecture is introduced only when compatibility/performance evidence justifies the cost.
+
+## Network and security
+
+Network URLs, response budgets, cache semantics and isolation keys are explicit Phantom domain concepts. Network and parser input are untrusted.
+
+Future process sandboxing remains a target, but the roadmap distinguishes current in-process boundaries from a future multi-process security architecture.
+
+## Target process model (future, not current)
 
 ```text
 Browser Process
   |-- Policy Broker
-  |-- Network Service       [sandboxed]
-  |-- GPU Service           [sandboxed]
-  |-- Storage Service
-  |-- Intelligence Service  [sandboxed]
-  |-- Extension/WASM Service[sandboxed]
-  `-- Site Instances        [sandboxed]
+  |-- Network Service       [candidate future sandbox]
+  |-- GPU Service           [candidate future sandbox]
+  `-- Site Instances        [candidate future sandbox]
 ```
 
-No process is trusted merely because it belongs to Phantom. IPC input is validated at every boundary.
+This diagram is a target architecture and must not be read as implemented functionality.
 
 ## Core principles
 
-### Strong types
-Represent domain concepts as domain types. Avoid primitive obsession.
-
-### Composition
-Behavior is assembled from small components and traits. Deep inheritance-style hierarchies are prohibited.
-
-### Explicit side effects
-Network, filesystem, microphone, camera, clipboard, location, credential and action execution access require explicit capabilities.
-
-### Invalid states should be unrepresentable
-Use enums, constructors and private fields to enforce invariants at compile time whenever practical.
-
-### Unsafe isolation
-The default workspace forbids unsafe Rust. If low-level FFI becomes necessary, it must live in a dedicated crate with a documented safety contract, focused fuzzing and explicit security ownership.
-
-## Planned crate families
-
-```text
-core/
-  phantom-core
-  phantom-protocol
-
-web/
-  phantom-dom
-  phantom-html
-  phantom-css
-  phantom-style
-  phantom-layout
-  phantom-web-api
-  phantom-js
-
-render/
-  phantom-scene
-  phantom-render
-  phantom-gpu
-
-platform/
-  phantom-network
-  phantom-storage
-  phantom-sandbox
-  phantom-os
-
-intelligence/
-  phantom-semantic
-  phantom-memory
-  phantom-agent
-  phantom-policy
-
-product/
-  phantom-engine
-  phantom-browser
-  phantom-embed
-```
-
-Crates are added only when an implementation need exists; this map is a target, not permission to create empty abstractions.
-
-## Semantic runtime
-
-Phantom will maintain a semantic representation separate from the DOM. The semantic graph may identify typed entities such as flights, prices, people, organizations, documents, products, laws, reservations and actions.
-
-Every semantic assertion should preserve provenance and distinguish observed data, parsed structured data, model inference, user-provided information, stale information and conflicts.
-
-## Human-controlled agent runtime
-
-```text
-Agent proposal
-      |
-      v
-Policy evaluation
-      |
-      +--> deny
-      +--> execute low-risk capability
-      `--> require human approval --> execute
-```
-
-High-impact actions must never be silently escalated by an agent.
-
-## Auditability
-
-Security-sensitive actions emit structured audit events with correlation identifiers. Audit events record the requested action, policy decision, capability used, approval state when applicable and execution outcome without leaking secrets.
-
-## Compatibility strategy
-
-Phantom pursues standards compliance incrementally. Compatibility shortcuts must not silently weaken security invariants. Exceptions require documentation and tests.
+- strong domain types;
+- explicit side effects;
+- invalid states prevented where practical;
+- `unsafe` forbidden by default;
+- bounded resource consumption on hostile input;
+- observable/testable behavior over speculative abstraction.
