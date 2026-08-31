@@ -21,7 +21,7 @@ fn token_stream_is_deterministic() -> Result<(), TokenizerError> {
 }
 
 #[test]
-fn start_end_tags_attributes_and_utf8_spans_are_exact() -> Result<(), TokenizerError> {
+fn start_end_tags_attributes_and_utf8_spans_are_exact() -> Result<(), Box<dyn std::error::Error>> {
     let source = "<DIV ID='A'>Olá</DIV>";
     let output = tokenize(source)?;
 
@@ -29,7 +29,7 @@ fn start_end_tags_attributes_and_utf8_spans_are_exact() -> Result<(), TokenizerE
         Token::StartTag(tag) => Some(tag),
         _ => None,
     });
-    let start = start.expect("start tag token");
+    let start = start.ok_or_else(|| std::io::Error::other("start tag token"))?;
     assert_eq!(start.name, "div");
     assert_eq!(start.name_span, SourceSpan::new(1, 4));
     assert_eq!(start.span, SourceSpan::new(0, 12));
@@ -43,14 +43,14 @@ fn start_end_tags_attributes_and_utf8_spans_are_exact() -> Result<(), TokenizerE
         Token::Character(text) if text.data == "Olá" => Some(text),
         _ => None,
     });
-    let text = text.expect("UTF-8 character token");
+    let text = text.ok_or_else(|| std::io::Error::other("UTF-8 character token"))?;
     assert_eq!(text.span, SourceSpan::new(12, 16));
 
     let end = output.tokens.iter().find_map(|token| match token {
         Token::EndTag(tag) => Some(tag),
         _ => None,
     });
-    let end = end.expect("end tag token");
+    let end = end.ok_or_else(|| std::io::Error::other("end tag token"))?;
     assert_eq!(end.name, "div");
     assert_eq!(end.name_span, SourceSpan::new(18, 21));
     assert_eq!(end.span, SourceSpan::new(16, 22));
@@ -98,13 +98,14 @@ fn malformed_tag_open_records_error_and_recovers_as_text() -> Result<(), Tokeniz
 }
 
 #[test]
-fn duplicate_attributes_keep_first_value_and_account_error() -> Result<(), TokenizerError> {
+fn duplicate_attributes_keep_first_value_and_account_error()
+-> Result<(), Box<dyn std::error::Error>> {
     let output = tokenize("<div A='first' a='second'></div>")?;
     let tag = output.tokens.iter().find_map(|token| match token {
         Token::StartTag(tag) => Some(tag),
         _ => None,
     });
-    let tag = tag.expect("start tag token");
+    let tag = tag.ok_or_else(|| std::io::Error::other("start tag token"))?;
 
     assert_eq!(tag.attributes.len(), 1);
     assert_eq!(tag.attributes[0].name, "a");
@@ -119,13 +120,14 @@ fn duplicate_attributes_keep_first_value_and_account_error() -> Result<(), Token
 }
 
 #[test]
-fn missing_whitespace_after_quoted_value_is_recoverable() -> Result<(), TokenizerError> {
+fn missing_whitespace_after_quoted_value_is_recoverable()
+-> Result<(), Box<dyn std::error::Error>> {
     let output = tokenize("<div a='1'b='2'>")?;
     let tag = output.tokens.iter().find_map(|token| match token {
         Token::StartTag(tag) => Some(tag),
         _ => None,
     });
-    let tag = tag.expect("start tag token");
+    let tag = tag.ok_or_else(|| std::io::Error::other("start tag token"))?;
 
     assert_eq!(tag.attributes.len(), 2);
     assert!(
@@ -217,13 +219,14 @@ fn unterminated_tag_records_eof_error_without_emitting_partial_tag() -> Result<(
 }
 
 #[test]
-fn malformed_doctype_accounts_error_and_forces_quirks() -> Result<(), TokenizerError> {
+fn malformed_doctype_accounts_error_and_forces_quirks()
+-> Result<(), Box<dyn std::error::Error>> {
     let output = tokenize("<!DOCTYPE>")?;
     let doctype = output.tokens.iter().find_map(|token| match token {
         Token::Doctype(doctype) => Some(doctype),
         _ => None,
     });
-    let doctype = doctype.expect("doctype token");
+    let doctype = doctype.ok_or_else(|| std::io::Error::other("doctype token"))?;
 
     assert!(doctype.force_quirks);
     assert!(doctype.name.is_none());
