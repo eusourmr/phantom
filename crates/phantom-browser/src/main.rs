@@ -1224,11 +1224,24 @@ impl PhantomApp {
         });
     }
     fn loading_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
-        let heading = match tab.loading_action() {
-            Some(NavigationAction::New) => "Abrindo página",
-            Some(NavigationAction::History(_)) => "Restaurando histórico",
-            Some(NavigationAction::Reload) => "Recarregando página",
-            None => "Carregando",
+        let heading = match tab.navigation_phase() {
+            NavigationPhase::Parsing => "Construindo página",
+            NavigationPhase::Fetching => match tab.loading_action() {
+                Some(NavigationAction::New) => "Abrindo página",
+                Some(NavigationAction::History(_)) => "Restaurando histórico",
+                Some(NavigationAction::Reload) => "Recarregando página",
+                None => "Carregando",
+            },
+            NavigationPhase::Empty | NavigationPhase::Ready | NavigationPhase::Failed => {
+                "Carregando"
+            }
+        };
+        let stage = match tab.navigation_phase() {
+            NavigationPhase::Fetching => "Rede · recebendo documento",
+            NavigationPhase::Parsing => "Estrutura · HTML → DOM → layout",
+            NavigationPhase::Empty | NavigationPhase::Ready | NavigationPhase::Failed => {
+                "Preparando navegação"
+            }
         };
 
         ui.add_space(64.0);
@@ -1242,8 +1255,20 @@ impl PhantomApp {
             ui.spinner();
             ui.add_space(10.0);
             ui.heading(heading);
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(tab.address.as_str()).small().weak());
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(10)
+                .inner_margin(egui::Margin::symmetric(9, 5))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(stage).size(11.5).strong());
+                });
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(truncate_text(tab.address.as_str(), 88))
+                    .small()
+                    .weak(),
+            );
         });
     }
 
@@ -1544,6 +1569,7 @@ impl PhantomApp {
             || !self.tabs[active_index].address.trim().is_empty();
         let loading = self.tabs[active_index].is_loading();
         let origin_identity = navigation_origin_identity(&self.tabs[active_index]);
+        let phase_badge = navigation_phase_badge(&self.tabs[active_index]);
 
         egui::Area::new(egui::Id::new("phantom-floating-navigation"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -18.0])
@@ -1609,6 +1635,20 @@ impl PhantomApp {
                                 };
 
                                 ui.label(lucide_text(icon, 14.0)).on_hover_text(tooltip);
+                            }
+
+                            if let Some((label, tooltip)) = phase_badge.as_ref() {
+                                let badge = egui::Frame::new()
+                                    .fill(ui.visuals().faint_bg_color)
+                                    .corner_radius(9)
+                                    .inner_margin(egui::Margin::symmetric(7, 4))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(label.as_str()).size(10.5).strong(),
+                                        );
+                                    });
+
+                                badge.response.on_hover_text(tooltip.as_str());
                             }
 
                             let address_width = (ui.available_width() - 58.0).max(180.0);
@@ -1715,6 +1755,24 @@ impl eframe::App for PhantomApp {
             });
 
         self.floating_navigation(ui.ctx());
+    }
+}
+
+fn navigation_phase_badge(tab: &BrowserTab) -> Option<(String, String)> {
+    match tab.navigation_phase() {
+        NavigationPhase::Empty => None,
+        NavigationPhase::Fetching => {
+            Some(("NET".to_owned(), "Rede · recebendo documento".to_owned()))
+        }
+        NavigationPhase::Parsing => Some((
+            "DOM".to_owned(),
+            "Estrutura · HTML → DOM → layout".to_owned(),
+        )),
+        NavigationPhase::Ready => Some((
+            format!("DOM {}", tab.engine.document().len()),
+            tab.status.clone(),
+        )),
+        NavigationPhase::Failed => Some(("ERR".to_owned(), tab.status.clone())),
     }
 }
 
