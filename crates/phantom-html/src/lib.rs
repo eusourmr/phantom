@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod tokenizer;
+pub mod tree_builder;
 
 use std::collections::BTreeMap;
 
