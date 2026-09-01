@@ -329,6 +329,9 @@ impl TreeBuilder {
 
     fn process_in_head(&mut self, token: &Token) -> Result<(), TreeBuilderError> {
         match token {
+            Token::Character(character) if self.current_open_is_head_container() => {
+                self.append_text(&character.data)
+            }
             Token::Character(character) if character.data.trim().is_empty() => {
                 self.append_text(&character.data)
             }
@@ -672,6 +675,13 @@ impl TreeBuilder {
             NodeKind::Element(element) => Some(element.tag_name()),
             NodeKind::Document | NodeKind::Text(_) | NodeKind::Comment(_) => None,
         })
+    }
+
+    fn current_open_is_head_container(&self) -> bool {
+        self.open_elements
+            .last()
+            .and_then(|node| self.tag_name(*node))
+            .is_some_and(is_head_container_element)
     }
 
     fn has_open(&self, tag_name: &str) -> bool {
