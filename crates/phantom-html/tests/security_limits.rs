@@ -14,6 +14,16 @@ fn rejects_source_above_document_admission_budget() {
 }
 
 #[test]
+fn accepts_nesting_at_depth_budget() {
+    let source = format!(
+        "{}ok{}",
+        "<div>".repeat(MAX_HTML_NESTING_DEPTH),
+        "</div>".repeat(MAX_HTML_NESTING_DEPTH),
+    );
+    assert!(parse(&source).is_ok());
+}
+
+#[test]
 fn rejects_nesting_above_depth_budget() {
     let source = "<div>".repeat(MAX_HTML_NESTING_DEPTH.saturating_add(1));
     assert!(matches!(parse(&source), Err(HtmlError::NestingTooDeep)));

@@ -189,14 +189,16 @@ fn tokenizer_diagnostics_flow_into_structural_report() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn character_references_remain_deferred_to_2e3() -> Result<(), Box<dyn Error>> {
+fn character_references_flow_into_dom_and_report() -> Result<(), Box<dyn Error>> {
     let output = tokenize_and_build("<p>A&amp;B</p>")?;
     let document = output.document();
     let paragraph =
         element_id(document, "p").ok_or_else(|| std::io::Error::other("paragraph element"))?;
 
-    assert_eq!(descendant_text(document, paragraph), "A&amp;B");
+    assert_eq!(descendant_text(document, paragraph), "A&B");
     assert_eq!(output.report().character_reference_candidates, 1);
+    assert_eq!(output.report().character_references_resolved, 1);
+    assert_eq!(output.report().character_references_preserved, 0);
     Ok(())
 }
 

@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use phantom_dom::{Document, ElementData, NodeId, NodeKind};
-use phantom_html::HtmlError;
+use phantom_html::{HtmlError, tree_builder::TreeBuildReport};
 
 pub use phantom_css::{
     AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing, ComputedStyle, Display,
@@ -380,6 +380,7 @@ pub enum EngineError {
 #[derive(Debug)]
 pub struct Engine {
     document: Document,
+    html_build_report: Option<TreeBuildReport>,
     styles: StyleMap,
     images: ImageCatalog,
     layout: LayoutSnapshot,
@@ -400,6 +401,7 @@ impl Engine {
     pub fn new() -> Self {
         Self {
             document: Document::new(),
+            html_build_report: None,
             styles: StyleMap::default(),
             images: ImageCatalog::default(),
             layout: LayoutSnapshot::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
@@ -419,6 +421,12 @@ impl Engine {
     #[must_use]
     pub const fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Returns the bounded report produced by the parse that built the active DOM.
+    #[must_use]
+    pub const fn html_build_report(&self) -> Option<&TreeBuildReport> {
+        self.html_build_report.as_ref()
     }
 
     /// Returns the active computed-style snapshot.
@@ -798,7 +806,7 @@ impl Engine {
         source: &str,
         viewport_width: f32,
     ) -> Result<(), EngineError> {
-        let document = phantom_html::parse(source)?;
+        let (document, html_build_report) = phantom_html::parse_with_report(source)?;
         let styles = phantom_css::compute_styles(&document);
         let images = ImageCatalog::default();
         let layout =
@@ -807,6 +815,7 @@ impl Engine {
         let links = build_link_regions(&document, &layout);
 
         self.document = document;
+        self.html_build_report = Some(html_build_report);
         self.styles = styles;
         self.images = images;
         self.layout = layout;
@@ -1463,15 +1472,35 @@ mod tests {
         let mut engine = Engine::new();
 
         engine.load_html_with_viewport(
-            "<div style=\"width: 50%; background: #112233\">Phantom</div>",
+            "<body style=\"margin: 0\"><div id=\"relayout-target\" style=\"width: 50%; background: #112233\">Phantom</div></body>",
             1000.0,
         )?;
+
+        let target_node = engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
+                NodeKind::Element(element)
+                    if element.attribute("id") == Some("relayout-target") =>
+                {
+                    Some(node.id())
+                }
+                NodeKind::Document
+                | NodeKind::Element(_)
+                | NodeKind::Text(_)
+                | NodeKind::Comment(_) => None,
+            });
+        assert!(target_node.is_some());
+        let target_node = target_node.unwrap_or(engine.document().root());
 
         let initial_width = engine
             .layout()
             .boxes()
             .iter()
-            .find(|layout_box| matches!(layout_box.kind(), LayoutKind::Block))
+            .find(|layout_box| {
+                layout_box.source_node() == target_node
+                    && matches!(layout_box.kind(), LayoutKind::Block)
+            })
             .map(|layout_box| layout_box.rect().width())
             .unwrap_or_default();
 
@@ -1481,7 +1510,10 @@ mod tests {
             .layout()
             .boxes()
             .iter()
-            .find(|layout_box| matches!(layout_box.kind(), LayoutKind::Block))
+            .find(|layout_box| {
+                layout_box.source_node() == target_node
+                    && matches!(layout_box.kind(), LayoutKind::Block)
+            })
             .map(|layout_box| layout_box.rect().width())
             .unwrap_or_default();
 

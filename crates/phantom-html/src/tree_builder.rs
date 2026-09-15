@@ -1,21 +1,18 @@
-//! Standards-shaped HTML tree-builder foundation for Phantom.
+//! Standards-shaped HTML tree builder for Phantom.
 //!
-//! `2E-2` consumes the deterministic token stream established in `2E-1` and
-//! turns it into Phantom's owned DOM representation. The builder intentionally
-//! implements a bounded first subset of HTML insertion modes and recovery.
-//!
-//! The rendering-facing [`crate::parse`] compatibility path remains unchanged
-//! in 2E-2 because raw-text/RCDATA and character-reference semantics are
-//! completed in 2E-3 before the final parser cutover.
+//! Cycle 2E makes this builder the single rendering-facing consumer of
+//! Phantom's deterministic tokenizer. It implements a bounded, measured subset
+//! of HTML insertion modes and malformed-markup recovery while preserving the
+//! inherited 2D security budgets.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use phantom_dom::{Document, DomError, ElementData, NodeId, NodeKind};
 use thiserror::Error;
 
 use crate::{
     MAX_HTML_NESTING_DEPTH, MAX_RETAINED_TEXT_BYTES, MAX_TEXT_NODE_BYTES,
-    tokenizer::{SourceSpan, Token, Tokenization, TokenizerError, tokenize},
+    tokenizer::{SourceSpan, Token, Tokenization, TokenizerError, TokenizerState, tokenize},
 };
 
 /// Maximum number of retained structural recovery diagnostics.
@@ -36,6 +33,14 @@ pub enum TreeRecoveryCode {
     ImplicitBodyElement,
     /// A new block-like element implicitly closed an open paragraph.
     ImplicitParagraphClose,
+    /// A repeated list item implicitly closed an open `<li>`.
+    ImplicitListItemClose,
+    /// A `dt`/`dd` start tag implicitly closed the previous definition item.
+    ImplicitDefinitionItemClose,
+    /// A heading start tag implicitly closed another open heading.
+    ImplicitHeadingClose,
+    /// A stray `</p>` synthesized and immediately closed an empty paragraph.
+    StrayParagraphEndTag,
     /// A start tag was ignored because the structural element already existed.
     IgnoredStartTag,
     /// An end tag could not match any currently open element.
@@ -57,19 +62,44 @@ pub struct TreeRecovery {
     pub span: SourceSpan,
 }
 
+/// Parser generation that produced the active Phantom DOM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlParserGeneration {
+    /// Cycle-2E native tokenizer -> tree-builder production pipeline.
+    Native2E,
+}
+
 /// Deterministic structural intelligence produced while building a DOM.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeBuildReport {
+    /// Parser generation that produced this DOM.
+    pub parser_generation: HtmlParserGeneration,
+    /// Final tokenizer state observed before EOF.
+    pub tokenizer_final_state: TokenizerState,
     /// Number of non-EOF tokens consumed by the tree builder.
     pub tokens_processed: usize,
     /// Number of DOM nodes in the completed document, including its root.
     pub nodes_created: usize,
     /// Maximum number of simultaneously open HTML elements.
     pub max_open_elements: usize,
-    /// Recoverable tokenizer parse errors inherited from 2E-1.
+    /// Total recoverable tokenizer parse errors, including truncated diagnostics.
     pub tokenizer_parse_errors: usize,
-    /// Character-reference candidates deferred to 2E-3.
+    /// Whether tokenizer diagnostics reached their deterministic cap.
+    pub tokenizer_diagnostics_truncated: bool,
+    /// Total character-reference candidates observed.
     pub character_reference_candidates: usize,
+    /// Number of references resolved.
+    pub character_references_resolved: usize,
+    /// Number of ampersands preserved because no supported reference resolved.
+    pub character_references_preserved: usize,
+    /// Whether character-reference diagnostics reached their deterministic cap.
+    pub character_reference_diagnostics_truncated: bool,
+    /// Number of RCDATA sections entered.
+    pub rcdata_sections: usize,
+    /// Number of RAWTEXT sections entered.
+    pub rawtext_sections: usize,
+    /// Number of script-data sections entered.
+    pub script_data_sections: usize,
     /// Total structural recoveries, including entries not retained individually.
     pub recoveries_total: usize,
     /// Bounded ordered structural-recovery diagnostics.
@@ -91,11 +121,20 @@ pub struct TreeBuildReport {
 impl TreeBuildReport {
     fn new(tokenization: &Tokenization) -> Self {
         Self {
+            parser_generation: HtmlParserGeneration::Native2E,
+            tokenizer_final_state: tokenization.final_state,
             tokens_processed: 0,
             nodes_created: 1,
             max_open_elements: 0,
-            tokenizer_parse_errors: tokenization.parse_errors.len(),
-            character_reference_candidates: tokenization.character_references.len(),
+            tokenizer_parse_errors: tokenization.parse_errors_total,
+            tokenizer_diagnostics_truncated: tokenization.parse_errors_truncated,
+            character_reference_candidates: tokenization.character_references_total,
+            character_references_resolved: tokenization.character_references_resolved,
+            character_references_preserved: tokenization.character_references_preserved,
+            character_reference_diagnostics_truncated: tokenization.character_references_truncated,
+            rcdata_sections: tokenization.rcdata_sections,
+            rawtext_sections: tokenization.rawtext_sections,
+            script_data_sections: tokenization.script_data_sections,
             recoveries_total: 0,
             recoveries: Vec::new(),
             recoveries_truncated: false,
@@ -108,7 +147,7 @@ impl TreeBuildReport {
     }
 }
 
-/// Successful 2E-2 token-to-DOM construction.
+/// Successful native token-to-DOM construction.
 #[derive(Debug)]
 pub struct TreeBuildOutput {
     document: Document,
@@ -135,7 +174,7 @@ impl TreeBuildOutput {
     }
 }
 
-/// Fatal 2E-2 tree-builder failure.
+/// Fatal native tree-builder failure.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum TreeBuilderError {
     /// The DOM rejected a requested mutation.
@@ -177,11 +216,10 @@ pub fn build(tokenization: &Tokenization) -> Result<TreeBuildOutput, TreeBuilder
     TreeBuilder::new(tokenization).run(&tokenization.tokens)
 }
 
-/// Runs the connected 2E-1 -> 2E-2 structural pipeline.
+/// Runs Phantom's connected tokenizer -> tree-builder structural pipeline.
 ///
-/// This API is intentionally available before [`crate::parse`] is migrated so
-/// the new parser architecture can be validated independently against the
-/// established rendering path.
+/// This is the authoritative DOM-construction path used by [`crate::parse`] at
+/// the cycle-2E cutover.
 ///
 /// # Errors
 ///
@@ -206,6 +244,7 @@ enum InsertionMode {
 struct TreeBuilder {
     document: Document,
     open_elements: Vec<NodeId>,
+    non_author_elements: BTreeSet<NodeId>,
     html_element: Option<NodeId>,
     head_element: Option<NodeId>,
     body_element: Option<NodeId>,
@@ -219,6 +258,7 @@ impl TreeBuilder {
         Self {
             document: Document::new(),
             open_elements: Vec::new(),
+            non_author_elements: BTreeSet::new(),
             html_element: None,
             head_element: None,
             body_element: None,
@@ -317,6 +357,13 @@ impl TreeBuilder {
                 self.create_head(Some(tag), false, tag.span)?;
                 self.mode = InsertionMode::InHead;
                 Ok(())
+            }
+            Token::StartTag(tag)
+                if is_head_void_element(&tag.name) || is_head_container_element(&tag.name) =>
+            {
+                self.create_head(None, true, tag.span)?;
+                self.mode = InsertionMode::InHead;
+                self.process_in_head(token)
             }
             _ => {
                 self.create_head(None, true, token_span(token))?;
@@ -433,6 +480,24 @@ impl TreeBuilder {
                 self.append_element(tag, true)?;
                 Ok(())
             }
+            Token::StartTag(tag) if tag.name == "li" => {
+                self.close_paragraph_if_open(tag.span);
+                self.close_list_item_if_open(tag.span);
+                self.append_element(tag, true)?;
+                Ok(())
+            }
+            Token::StartTag(tag) if matches!(tag.name.as_str(), "dt" | "dd") => {
+                self.close_paragraph_if_open(tag.span);
+                self.close_definition_item_if_open(tag.span);
+                self.append_element(tag, true)?;
+                Ok(())
+            }
+            Token::StartTag(tag) if is_heading(&tag.name) => {
+                self.close_paragraph_if_open(tag.span);
+                self.close_heading_if_open(tag.span);
+                self.append_element(tag, true)?;
+                Ok(())
+            }
             Token::StartTag(tag) => {
                 if closes_paragraph_on_start(&tag.name) {
                     self.close_paragraph_if_open(tag.span);
@@ -446,6 +511,12 @@ impl TreeBuilder {
                     }
                     self.append_element(tag, true)?;
                 }
+                Ok(())
+            }
+            Token::EndTag(tag) if tag.name == "p" && !self.has_open("p") => {
+                self.record_recovery(TreeRecoveryCode::StrayParagraphEndTag, tag.span);
+                self.append_synthetic_element("p", true)?;
+                self.close_through("p");
                 Ok(())
             }
             Token::EndTag(tag) if tag.name == "body" => {
@@ -525,7 +596,7 @@ impl TreeBuilder {
             NodeKind::Element(ElementData::with_attributes("html", attributes)),
         )?;
         self.html_element = Some(node);
-        self.push_open(node)?;
+        self.push_open(node, !implicit)?;
 
         if implicit {
             self.report.implicit_html = true;
@@ -560,7 +631,7 @@ impl TreeBuilder {
             NodeKind::Element(ElementData::with_attributes("head", attributes)),
         )?;
         self.head_element = Some(node);
-        self.push_open(node)?;
+        self.push_open(node, !implicit)?;
 
         if implicit {
             self.report.implicit_head = true;
@@ -582,7 +653,8 @@ impl TreeBuilder {
             }
             if !self.has_open("body") {
                 self.close_to_html();
-                self.push_open(existing)?;
+                let authored = !self.non_author_elements.contains(&existing);
+                self.push_open(existing, authored)?;
             }
             return Ok(existing);
         }
@@ -603,7 +675,7 @@ impl TreeBuilder {
             NodeKind::Element(ElementData::with_attributes("body", attributes)),
         )?;
         self.body_element = Some(node);
-        self.push_open(node)?;
+        self.push_open(node, !implicit)?;
 
         if implicit {
             self.report.implicit_body = true;
@@ -625,7 +697,24 @@ impl TreeBuilder {
             .append_child(parent, NodeKind::Element(element))?;
 
         if push {
-            self.push_open(node)?;
+            self.push_open(node, true)?;
+        }
+
+        Ok(node)
+    }
+
+    fn append_synthetic_element(
+        &mut self,
+        tag_name: &str,
+        push: bool,
+    ) -> Result<NodeId, TreeBuilderError> {
+        let parent = self.current_parent();
+        let node = self
+            .document
+            .append_child(parent, NodeKind::Element(ElementData::new(tag_name)))?;
+
+        if push {
+            self.push_open(node, false)?;
         }
 
         Ok(node)
@@ -651,14 +740,25 @@ impl TreeBuilder {
         Ok(())
     }
 
-    fn push_open(&mut self, node: NodeId) -> Result<(), TreeBuilderError> {
-        if self.open_elements.len() >= MAX_HTML_NESTING_DEPTH {
+    fn push_open(&mut self, node: NodeId, authored: bool) -> Result<(), TreeBuilderError> {
+        if authored && self.authored_open_elements() >= MAX_HTML_NESTING_DEPTH {
             return Err(TreeBuilderError::NestingTooDeep);
+        }
+
+        if !authored {
+            self.non_author_elements.insert(node);
         }
 
         self.open_elements.push(node);
         self.report.max_open_elements = self.report.max_open_elements.max(self.open_elements.len());
         Ok(())
+    }
+
+    fn authored_open_elements(&self) -> usize {
+        self.open_elements
+            .iter()
+            .filter(|node| !self.non_author_elements.contains(*node))
+            .count()
     }
 
     fn current_parent(&self) -> NodeId {
@@ -709,6 +809,46 @@ impl TreeBuilder {
         popped
     }
 
+    fn close_nearest_matching(&mut self, tag_names: &[&str]) -> usize {
+        let Some(index) = self.open_elements.iter().rposition(|node| {
+            self.tag_name(*node)
+                .is_some_and(|tag_name| tag_names.contains(&tag_name))
+        }) else {
+            return 0;
+        };
+
+        let popped = self.open_elements.len().saturating_sub(index);
+        self.open_elements.truncate(index);
+        popped
+    }
+
+    fn close_matching_in_scope(&mut self, tag_names: &[&str], boundaries: &[&str]) -> usize {
+        let mut matched_index = None;
+
+        for (index, node) in self.open_elements.iter().enumerate().rev() {
+            let Some(tag_name) = self.tag_name(*node) else {
+                continue;
+            };
+
+            if boundaries.contains(&tag_name) {
+                break;
+            }
+
+            if tag_names.contains(&tag_name) {
+                matched_index = Some(index);
+                break;
+            }
+        }
+
+        let Some(index) = matched_index else {
+            return 0;
+        };
+
+        let popped = self.open_elements.len().saturating_sub(index);
+        self.open_elements.truncate(index);
+        popped
+    }
+
     fn close_to_html(&mut self) {
         let Some(html) = self.html_element else {
             self.open_elements.clear();
@@ -728,13 +868,32 @@ impl TreeBuilder {
         }
     }
 
+    fn close_list_item_if_open(&mut self, span: SourceSpan) {
+        if self.close_matching_in_scope(&["li"], &["ul", "ol"]) > 0 {
+            self.record_recovery(TreeRecoveryCode::ImplicitListItemClose, span);
+        }
+    }
+
+    fn close_definition_item_if_open(&mut self, span: SourceSpan) {
+        if self.close_matching_in_scope(&["dt", "dd"], &["dl"]) > 0 {
+            self.record_recovery(TreeRecoveryCode::ImplicitDefinitionItemClose, span);
+        }
+    }
+
+    fn close_heading_if_open(&mut self, span: SourceSpan) {
+        if self.close_nearest_matching(&["h1", "h2", "h3", "h4", "h5", "h6"]) > 0 {
+            self.record_recovery(TreeRecoveryCode::ImplicitHeadingClose, span);
+        }
+    }
+
     fn ensure_body_open(&mut self) -> Result<(), TreeBuilderError> {
         let span = SourceSpan::new(0, 0);
         let implicit = self.body_element.is_none();
         let body = self.create_body(None, implicit, span)?;
         if !self.has_open("body") {
             self.close_to_html();
-            self.push_open(body)?;
+            let authored = !self.non_author_elements.contains(&body);
+            self.push_open(body, authored)?;
         }
         Ok(())
     }
@@ -815,6 +974,10 @@ fn is_void_element(tag_name: &str) -> bool {
     )
 }
 
+fn is_heading(tag_name: &str) -> bool {
+    matches!(tag_name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+}
+
 fn closes_paragraph_on_start(tag_name: &str) -> bool {
     matches!(
         tag_name,
@@ -822,8 +985,10 @@ fn closes_paragraph_on_start(tag_name: &str) -> bool {
             | "article"
             | "aside"
             | "blockquote"
+            | "dd"
             | "div"
             | "dl"
+            | "dt"
             | "fieldset"
             | "footer"
             | "form"
@@ -836,6 +1001,7 @@ fn closes_paragraph_on_start(tag_name: &str) -> bool {
             | "header"
             | "hgroup"
             | "hr"
+            | "li"
             | "main"
             | "menu"
             | "nav"

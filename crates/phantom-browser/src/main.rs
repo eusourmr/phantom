@@ -1768,10 +1768,22 @@ fn navigation_phase_badge(tab: &BrowserTab) -> Option<(String, String)> {
             "DOM".to_owned(),
             "Estrutura · HTML → DOM → layout".to_owned(),
         )),
-        NavigationPhase::Ready => Some((
-            format!("DOM {}", tab.engine.document().len()),
-            tab.status.clone(),
-        )),
+        NavigationPhase::Ready => {
+            let tooltip = tab.engine.html_build_report().map_or_else(
+                || tab.status.clone(),
+                |report| {
+                    format!(
+                        "Phantom HTML nativo · tokenizer → tree builder → DOM · {} referências resolvidas · {} preservadas · {} recuperações · {} erros recuperáveis",
+                        report.character_references_resolved,
+                        report.character_references_preserved,
+                        report.recoveries_total,
+                        report.tokenizer_parse_errors,
+                    )
+                },
+            );
+
+            Some((format!("HTML {}", tab.engine.document().len()), tooltip))
+        }
         NavigationPhase::Failed => Some(("ERR".to_owned(), tab.status.clone())),
     }
 }
