@@ -3325,6 +3325,15 @@ fn justify_offsets(
                 (0.0, base_gap)
             }
         }
+
+        JustifyContent::SpaceAround => {
+            if item_count > 0 {
+                let distributed = free / item_count as f32;
+                (distributed * 0.5, base_gap + distributed)
+            } else {
+                (0.0, base_gap)
+            }
+        }
     }
 }
 
@@ -3378,6 +3387,11 @@ fn align_content_offsets(
             base_gap + free / line_count.saturating_sub(1) as f32,
             0.0,
         ),
+
+        AlignContent::SpaceAround => {
+            let distributed = free / line_count as f32;
+            (distributed * 0.5, base_gap + distributed, 0.0)
+        }
     }
 }
 

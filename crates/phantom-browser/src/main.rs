@@ -900,6 +900,8 @@ impl PhantomApp {
         }
     }
 
+    // PHANTOM_2F7_UI_ALPHA_1
+    // PHANTOM_2F_FINAL_UI_CONSOLIDATED
     fn top_chrome(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
         let mut activate_tab = None;
@@ -915,18 +917,18 @@ impl PhantomApp {
         let panel_fill = ui.visuals().panel_fill;
 
         egui::Panel::top("phantom-top-chrome")
-            .exact_size(44.0)
+            .exact_size(50.0)
             .frame(
                 egui::Frame::new()
                     .fill(panel_fill)
-                    .inner_margin(egui::Margin::symmetric(7, 5)),
+                    .inner_margin(egui::Margin::symmetric(10, 7)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let is_active = index == self.active_tab;
                         let title = tab_title(tab);
-                        let width = if tab.pinned { 42.0 } else { 168.0 };
+                        let width = if tab.pinned { 44.0 } else { 184.0 };
                         let fill = if is_active {
                             ui.visuals().extreme_bg_color
                         } else {
@@ -935,8 +937,8 @@ impl PhantomApp {
 
                         let tab_frame = egui::Frame::new()
                             .fill(fill)
-                            .corner_radius(8)
-                            .inner_margin(egui::Margin::symmetric(5, 3))
+                            .corner_radius(10)
+                            .inner_margin(egui::Margin::symmetric(7, 4))
                             .show(ui, |ui| {
                                 ui.set_width(width);
 
@@ -977,12 +979,15 @@ impl PhantomApp {
                                             (width - 36.0).max(80.0)
                                         };
 
+                                        let title_text = if is_active {
+                                            egui::RichText::new(title.clone()).size(13.0).strong()
+                                        } else {
+                                            egui::RichText::new(title.clone()).size(13.0)
+                                        };
+
                                         ui.add_sized(
                                             [title_width, 24.0],
-                                            egui::Button::new(
-                                                egui::RichText::new(title.clone()).size(13.0),
-                                            )
-                                            .frame(false),
+                                            egui::Button::new(title_text).frame(false),
                                         )
                                     };
                                     let close_clicked = !tab.pinned
@@ -1181,7 +1186,13 @@ impl PhantomApp {
 
             ui.heading("Nova aba");
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Phantom Independent Web Browser").size(17.0));
+            ui.label(egui::RichText::new("Phantom · Independent Web Browser").size(17.0));
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("UI Alpha 1 · motor próprio em Rust")
+                    .size(11.5)
+                    .weak(),
+            );
             ui.add_space(14.0);
             ui.label(egui::RichText::new(&tab.status).small().weak());
         });
@@ -1551,13 +1562,15 @@ impl PhantomApp {
     }
     fn floating_navigation(&mut self, context: &egui::Context) {
         let pointer_in_zone = pointer_in_navigation_zone(context);
-        let visible = self.floating_bar_forced || pointer_in_zone;
+        let phase = self.active_tab().navigation_phase();
+        let visible =
+            self.floating_bar_forced || pointer_in_zone || !matches!(phase, NavigationPhase::Ready);
 
         if !visible {
             return;
         }
 
-        let bar_width = (context.content_rect().width() * 0.66).clamp(440.0, 920.0);
+        let bar_width = (context.content_rect().width() * 0.72).clamp(500.0, 980.0);
         let mut command = None;
         let mut keep_forced = self.floating_bar_forced;
         let mut focus_consumed = false;
@@ -1572,14 +1585,14 @@ impl PhantomApp {
         let phase_badge = navigation_phase_badge(&self.tabs[active_index]);
 
         egui::Area::new(egui::Id::new("phantom-floating-navigation"))
-            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -18.0])
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
             .order(egui::Order::Foreground)
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(ui.visuals().panel_fill)
                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                    .corner_radius(18)
-                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .corner_radius(20)
+                    .inner_margin(egui::Margin::symmetric(14, 11))
                     .show(ui, |ui| {
                         ui.set_width(bar_width);
 

@@ -15,7 +15,7 @@
 use std::array;
 use std::collections::BTreeMap;
 
-use phantom_dom::{Document, ElementData, Node, NodeId, NodeKind};
+use phantom_dom::{Document, ElementData, MAX_DOM_NODES, Node, NodeId, NodeKind};
 
 const ROOT_FONT_SIZE_PX: f32 = 16.0;
 const NO_STYLE: usize = usize::MAX;
@@ -26,6 +26,8 @@ const MAX_DECLARATIONS_PER_RULE: usize = 64;
 const MAX_SELECTOR_BYTES: usize = 4 * 1024;
 const MAX_SELECTOR_PARTS: usize = 32;
 const MAX_CLASSES_PER_COMPOUND: usize = 32;
+const MAX_ATTRIBUTE_SELECTORS_PER_COMPOUND: usize = 32;
+const MAX_PSEUDO_CLASSES_PER_COMPOUND: usize = 32;
 const MAX_INLINE_STYLE_BYTES: usize = 64 * 1024;
 const MAX_CASCADE_RULE_EVALUATIONS: usize = 2_000_000;
 const MAX_NUMERIC_MAGNITUDE: f32 = 1_000_000.0;
@@ -247,6 +249,9 @@ pub enum JustifyContent {
 
     /// Remaining space is distributed between adjacent items.
     SpaceBetween,
+
+    /// Remaining space is distributed around items with half-size edge spaces.
+    SpaceAround,
 }
 
 /// Cross-axis alignment used by a flex container.
@@ -282,6 +287,9 @@ pub enum AlignContent {
 
     /// Extra space is distributed between flex lines.
     SpaceBetween,
+
+    /// Extra space is distributed around flex lines with half-size edge spaces.
+    SpaceAround,
 }
 
 /// Per-item override of a flex container's `align-items`.
@@ -815,6 +823,11 @@ impl Stylesheet {
                 continue;
             }
 
+            let Some(selectors) = parse_selector_list(block.selector) else {
+                source_order = source_order.saturating_add(1);
+                continue;
+            };
+
             let declarations = parse_declarations(block.body);
 
             if declarations.is_empty() {
@@ -822,14 +835,10 @@ impl Stylesheet {
                 continue;
             }
 
-            for selector_source in block.selector.split(',') {
+            for selector in selectors {
                 if rules.len() >= MAX_ACCEPTED_RULES {
                     break 'blocks;
                 }
-
-                let Some(selector) = Selector::parse(selector_source) else {
-                    continue;
-                };
 
                 rules.push(StyleRule {
                     specificity: selector.specificity(),
@@ -864,6 +873,7 @@ pub fn compute_styles(document: &Document) -> StyleMap {
     let author_css = collect_author_css(document);
     let stylesheet = Stylesheet::parse(&author_css);
 
+    let selector_context = SelectorMatchContext::build(document);
     let mut style_map = StyleMap::default();
     let mut interner = BTreeMap::new();
     let mut stack = vec![document.root()];
@@ -886,6 +896,7 @@ pub fn compute_styles(document: &Document) -> StyleMap {
                 document,
                 node_id,
                 &stylesheet,
+                &selector_context,
                 parent_style.as_ref(),
                 &mut style,
                 &mut cascade_budget,
@@ -1057,10 +1068,25 @@ impl Property {
             Self::FlexBasis => 40,
         }
     }
+
+    const fn is_inherited(self) -> bool {
+        matches!(
+            self,
+            Self::Color | Self::FontSize | Self::FontWeight | Self::FontStyle | Self::FontFamily
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssWideKeyword {
+    Inherit,
+    Initial,
+    Unset,
 }
 
 #[derive(Debug, Clone)]
 enum SpecifiedValue {
+    CssWide(CssWideKeyword),
     Display(Display),
     Color(Rgba),
     BackgroundColor(Option<Rgba>),
@@ -1095,6 +1121,64 @@ enum SpecifiedLength {
     Percent(f32),
 }
 
+#[derive(Debug, Clone, Default)]
+struct SelectorMatchContext {
+    sibling_positions: Vec<(u32, u32)>,
+}
+
+impl SelectorMatchContext {
+    fn build(document: &Document) -> Self {
+        let mut sibling_positions = vec![(0, 0); document.len()];
+
+        for parent in document.nodes() {
+            let total = parent
+                .children()
+                .iter()
+                .filter(|child_id| {
+                    document
+                        .node(**child_id)
+                        .is_some_and(|child| matches!(child.kind(), NodeKind::Element(_)))
+                })
+                .count();
+            let Ok(total) = u32::try_from(total) else {
+                continue;
+            };
+
+            let mut index = 0_u32;
+            for child_id in parent.children() {
+                let Some(child) = document.node(*child_id) else {
+                    continue;
+                };
+                if !matches!(child.kind(), NodeKind::Element(_)) {
+                    continue;
+                }
+
+                index = index.saturating_add(1);
+                let Ok(node_index) = usize::try_from(child_id.as_u64()) else {
+                    continue;
+                };
+                if sibling_positions.len() <= node_index {
+                    sibling_positions.resize(node_index.saturating_add(1), (0, 0));
+                }
+                sibling_positions[node_index] = (index, total);
+            }
+        }
+
+        Self { sibling_positions }
+    }
+
+    fn sibling_position(&self, node_id: NodeId) -> Option<(u32, u32)> {
+        let node_index = usize::try_from(node_id.as_u64()).ok()?;
+        let position = *self.sibling_positions.get(node_index)?;
+
+        if position.0 == 0 {
+            None
+        } else {
+            Some(position)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Selector {
     parts: Vec<SelectorPart>,
@@ -1112,11 +1196,49 @@ enum Combinator {
     Child,
 }
 
+#[derive(Debug, Clone)]
+enum AttributeSelector {
+    Exists(String),
+    Equals { name: String, value: String },
+}
+
+impl AttributeSelector {
+    fn matches(&self, element: &ElementData) -> bool {
+        match self {
+            Self::Exists(name) => element.attribute(name).is_some(),
+            Self::Equals { name, value } => element.attribute(name) == Some(value.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StructuralPseudoClass {
+    First,
+    Last,
+    Nth(u32),
+}
+
+impl StructuralPseudoClass {
+    fn matches(self, context: &SelectorMatchContext, node_id: NodeId) -> bool {
+        let Some((index, total)) = context.sibling_position(node_id) else {
+            return false;
+        };
+
+        match self {
+            Self::First => index == 1,
+            Self::Last => index == total,
+            Self::Nth(expected) => index == expected,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct CompoundSelector {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
+    attributes: Vec<AttributeSelector>,
+    pseudo_classes: Vec<StructuralPseudoClass>,
     universal: bool,
 }
 
@@ -1124,17 +1246,7 @@ impl Selector {
     fn parse(source: &str) -> Option<Self> {
         let source = source.trim();
 
-        if source.len() > MAX_SELECTOR_BYTES {
-            return None;
-        }
-
-        if source.is_empty()
-            || source.starts_with('@')
-            || source.contains('+')
-            || source.contains('~')
-            || source.contains(':')
-            || source.contains('[')
-        {
+        if source.len() > MAX_SELECTOR_BYTES || source.is_empty() || source.starts_with('@') {
             return None;
         }
 
@@ -1155,7 +1267,12 @@ impl Selector {
             })
     }
 
-    fn matches(&self, document: &Document, node_id: NodeId) -> bool {
+    fn matches(
+        &self,
+        document: &Document,
+        node_id: NodeId,
+        context: &SelectorMatchContext,
+    ) -> bool {
         let Some(last_index) = self.parts.len().checked_sub(1) else {
             return false;
         };
@@ -1164,7 +1281,7 @@ impl Selector {
 
         if !self.parts[last_index]
             .compound
-            .matches_node(document, current)
+            .matches_node(document, current, context)
         {
             return false;
         }
@@ -1181,7 +1298,7 @@ impl Selector {
                         return false;
                     };
 
-                    if !left.compound.matches_node(document, parent) {
+                    if !left.compound.matches_node(document, parent, context) {
                         return false;
                     }
 
@@ -1189,7 +1306,8 @@ impl Selector {
                 }
 
                 Combinator::Descendant => {
-                    let Some(ancestor) = matching_ancestor(document, current, &left.compound)
+                    let Some(ancestor) =
+                        matching_ancestor(document, current, &left.compound, context)
                     else {
                         return false;
                     };
@@ -1220,61 +1338,55 @@ impl CompoundSelector {
             cursor += 1;
         } else if bytes
             .first()
-            .is_some_and(|byte| *byte != b'.' && *byte != b'#')
+            .is_some_and(|byte| !matches!(*byte, b'.' | b'#' | b'[' | b':'))
         {
-            let start = cursor;
-
-            while cursor < bytes.len() && bytes[cursor] != b'.' && bytes[cursor] != b'#' {
-                if !is_identifier_byte(bytes[cursor]) {
-                    return None;
-                }
-
-                cursor += 1;
-            }
-
-            if cursor == start {
-                return None;
-            }
-
-            selector.tag = Some(source[start..cursor].to_ascii_lowercase());
+            let tag = parse_selector_identifier(source, &mut cursor)?;
+            selector.tag = Some(tag.to_ascii_lowercase());
         }
 
         while cursor < bytes.len() {
-            let prefix = bytes[cursor];
+            match bytes[cursor] {
+                b'.' => {
+                    if selector.classes.len() >= MAX_CLASSES_PER_COMPOUND {
+                        return None;
+                    }
 
-            if prefix != b'.' && prefix != b'#' {
-                return None;
-            }
-
-            cursor += 1;
-            let start = cursor;
-
-            while cursor < bytes.len() && bytes[cursor] != b'.' && bytes[cursor] != b'#' {
-                if !is_identifier_byte(bytes[cursor]) {
-                    return None;
+                    cursor += 1;
+                    selector
+                        .classes
+                        .push(parse_selector_identifier(source, &mut cursor)?);
                 }
 
-                cursor += 1;
-            }
+                b'#' => {
+                    if selector.id.is_some() {
+                        return None;
+                    }
 
-            if cursor == start {
-                return None;
-            }
-
-            let value = source[start..cursor].to_owned();
-
-            if prefix == b'#' {
-                if selector.id.is_some() {
-                    return None;
+                    cursor += 1;
+                    selector.id = Some(parse_selector_identifier(source, &mut cursor)?);
                 }
 
-                selector.id = Some(value);
-            } else {
-                if selector.classes.len() >= MAX_CLASSES_PER_COMPOUND {
-                    return None;
+                b'[' => {
+                    if selector.attributes.len() >= MAX_ATTRIBUTE_SELECTORS_PER_COMPOUND {
+                        return None;
+                    }
+
+                    selector
+                        .attributes
+                        .push(parse_attribute_selector(source, &mut cursor)?);
                 }
 
-                selector.classes.push(value);
+                b':' => {
+                    if selector.pseudo_classes.len() >= MAX_PSEUDO_CLASSES_PER_COMPOUND {
+                        return None;
+                    }
+
+                    selector
+                        .pseudo_classes
+                        .push(parse_structural_pseudo_class(source, &mut cursor)?);
+                }
+
+                _ => return None,
             }
         }
 
@@ -1282,6 +1394,8 @@ impl CompoundSelector {
             || selector.tag.is_some()
             || selector.id.is_some()
             || !selector.classes.is_empty()
+            || !selector.attributes.is_empty()
+            || !selector.pseudo_classes.is_empty()
         {
             Some(selector)
         } else {
@@ -1290,14 +1404,25 @@ impl CompoundSelector {
     }
 
     fn specificity(&self) -> Specificity {
+        let class_like = self
+            .classes
+            .len()
+            .saturating_add(self.attributes.len())
+            .saturating_add(self.pseudo_classes.len());
+
         Specificity {
             ids: u16::from(self.id.is_some()),
-            classes: u16::try_from(self.classes.len()).unwrap_or(u16::MAX),
+            classes: u16::try_from(class_like).unwrap_or(u16::MAX),
             tags: u16::from(self.tag.is_some()),
         }
     }
 
-    fn matches_node(&self, document: &Document, node_id: NodeId) -> bool {
+    fn matches_node(
+        &self,
+        document: &Document,
+        node_id: NodeId,
+        context: &SelectorMatchContext,
+    ) -> bool {
         let Some(node) = document.node(node_id) else {
             return false;
         };
@@ -1306,7 +1431,13 @@ impl CompoundSelector {
             return false;
         };
 
-        self.matches_element(element)
+        if !self.matches_element(element) {
+            return false;
+        }
+
+        self.pseudo_classes
+            .iter()
+            .all(|pseudo| pseudo.matches(context, node_id))
     }
 
     fn matches_element(&self, element: &ElementData) -> bool {
@@ -1324,11 +1455,17 @@ impl CompoundSelector {
 
         let element_classes = element.attribute("class").unwrap_or_default();
 
-        self.classes.iter().all(|class| {
+        if !self.classes.iter().all(|class| {
             element_classes
                 .split_ascii_whitespace()
                 .any(|candidate| candidate == class)
-        })
+        }) {
+            return false;
+        }
+
+        self.attributes
+            .iter()
+            .all(|attribute| attribute.matches(element))
     }
 }
 
@@ -1338,15 +1475,156 @@ struct RuleBlock<'a> {
     body: &'a str,
 }
 
+fn parse_selector_list(source: &str) -> Option<Vec<Selector>> {
+    let source = source.trim();
+
+    if source.is_empty() || source.len() > MAX_SELECTOR_BYTES {
+        return None;
+    }
+
+    let selector_sources = split_selector_list(source)?;
+    let mut selectors = Vec::with_capacity(selector_sources.len());
+
+    for selector_source in selector_sources {
+        if selectors.len() >= MAX_ACCEPTED_RULES {
+            return None;
+        }
+
+        selectors.push(Selector::parse(selector_source)?);
+    }
+
+    if selectors.is_empty() {
+        None
+    } else {
+        Some(selectors)
+    }
+}
+
+fn split_selector_list(source: &str) -> Option<Vec<&str>> {
+    let bytes = source.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut cursor = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut brackets = 0_u32;
+    let mut parentheses = 0_u32;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'[' => brackets = brackets.saturating_add(1),
+                b']' => {
+                    if brackets == 0 {
+                        return None;
+                    }
+                    brackets -= 1;
+                }
+                b'(' => parentheses = parentheses.saturating_add(1),
+                b')' => {
+                    if parentheses == 0 {
+                        return None;
+                    }
+                    parentheses -= 1;
+                }
+                b',' if brackets == 0 && parentheses == 0 => {
+                    let part = source[start..cursor].trim();
+                    if part.is_empty() {
+                        return None;
+                    }
+                    parts.push(part);
+                    start = cursor.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        cursor += 1;
+    }
+
+    if quote.is_some() || brackets != 0 || parentheses != 0 {
+        return None;
+    }
+
+    let last = source[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    parts.push(last);
+
+    Some(parts)
+}
+
 fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
     let mut parts = Vec::new();
     let mut buffer = String::new();
     let mut pending = None;
     let mut invalid = false;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut brackets = 0_u32;
+    let mut parentheses = 0_u32;
 
     for character in source.chars() {
+        if let Some(active_quote) = quote {
+            buffer.push(character);
+
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
         match character {
-            '>' => {
+            '\'' | '"' => {
+                quote = Some(character);
+                buffer.push(character);
+            }
+
+            '[' => {
+                brackets = brackets.saturating_add(1);
+                buffer.push(character);
+            }
+
+            ']' => {
+                if brackets == 0 {
+                    invalid = true;
+                    break;
+                }
+                brackets -= 1;
+                buffer.push(character);
+            }
+
+            '(' => {
+                parentheses = parentheses.saturating_add(1);
+                buffer.push(character);
+            }
+
+            ')' => {
+                if parentheses == 0 {
+                    invalid = true;
+                    break;
+                }
+                parentheses -= 1;
+                buffer.push(character);
+            }
+
+            '>' if brackets == 0 && parentheses == 0 => {
                 if !flush_selector_part(&mut parts, &mut buffer, &mut pending) {
                     invalid = true;
                     break;
@@ -1360,7 +1638,12 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
                 pending = Some(Combinator::Child);
             }
 
-            character if character.is_whitespace() => {
+            '+' | '~' if brackets == 0 && parentheses == 0 => {
+                invalid = true;
+                break;
+            }
+
+            character if character.is_whitespace() && brackets == 0 && parentheses == 0 => {
                 if !buffer.is_empty() && !flush_selector_part(&mut parts, &mut buffer, &mut pending)
                 {
                     invalid = true;
@@ -1382,15 +1665,15 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
         }
     }
 
+    if quote.is_some() || brackets != 0 || parentheses != 0 {
+        return None;
+    }
+
     if invalid || !flush_selector_part(&mut parts, &mut buffer, &mut pending) {
         return None;
     }
 
-    if pending.is_some() {
-        return None;
-    }
-
-    if parts.len() > MAX_SELECTOR_PARTS {
+    if pending.is_some() || parts.len() > MAX_SELECTOR_PARTS {
         return None;
     }
 
@@ -1426,6 +1709,168 @@ fn flush_selector_part(
     true
 }
 
+fn parse_selector_identifier(source: &str, cursor: &mut usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let start = *cursor;
+
+    while *cursor < bytes.len() && is_identifier_byte(bytes[*cursor]) {
+        *cursor += 1;
+    }
+
+    if *cursor == start {
+        None
+    } else {
+        Some(source[start..*cursor].to_owned())
+    }
+}
+
+fn parse_attribute_selector(source: &str, cursor: &mut usize) -> Option<AttributeSelector> {
+    let bytes = source.as_bytes();
+
+    if bytes.get(*cursor) != Some(&b'[') {
+        return None;
+    }
+    *cursor += 1;
+    skip_selector_whitespace(bytes, cursor);
+
+    let name = parse_selector_identifier(source, cursor)?.to_ascii_lowercase();
+    skip_selector_whitespace(bytes, cursor);
+
+    if bytes.get(*cursor) == Some(&b']') {
+        *cursor += 1;
+        return Some(AttributeSelector::Exists(name));
+    }
+
+    if bytes.get(*cursor) != Some(&b'=') {
+        return None;
+    }
+    *cursor += 1;
+    skip_selector_whitespace(bytes, cursor);
+
+    let value = match bytes.get(*cursor).copied() {
+        Some(b'\'') | Some(b'"') => parse_quoted_selector_value(source, cursor)?,
+        Some(_) => parse_unquoted_selector_value(source, cursor)?,
+        None => return None,
+    };
+
+    skip_selector_whitespace(bytes, cursor);
+    if bytes.get(*cursor) != Some(&b']') {
+        return None;
+    }
+    *cursor += 1;
+
+    Some(AttributeSelector::Equals { name, value })
+}
+
+fn parse_quoted_selector_value(source: &str, cursor: &mut usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let quote = *bytes.get(*cursor)?;
+    *cursor += 1;
+
+    let mut value = String::new();
+
+    while *cursor < bytes.len() {
+        if bytes[*cursor] == quote {
+            *cursor += 1;
+            return Some(value);
+        }
+
+        if bytes[*cursor] == b'\\' {
+            *cursor += 1;
+            if *cursor >= bytes.len() {
+                return None;
+            }
+        }
+
+        let character = source[*cursor..].chars().next()?;
+        value.push(character);
+        *cursor += character.len_utf8();
+    }
+
+    None
+}
+
+fn parse_unquoted_selector_value(source: &str, cursor: &mut usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let start = *cursor;
+
+    while *cursor < bytes.len() {
+        let byte = bytes[*cursor];
+
+        if byte.is_ascii_whitespace() || byte == b']' {
+            break;
+        }
+
+        if matches!(byte, b'\'' | b'"' | b'=' | b'[' | b'(' | b')' | b'\\') {
+            return None;
+        }
+
+        *cursor += 1;
+    }
+
+    if *cursor == start {
+        None
+    } else {
+        Some(source[start..*cursor].to_owned())
+    }
+}
+
+fn parse_structural_pseudo_class(
+    source: &str,
+    cursor: &mut usize,
+) -> Option<StructuralPseudoClass> {
+    let bytes = source.as_bytes();
+
+    if bytes.get(*cursor) != Some(&b':') {
+        return None;
+    }
+    *cursor += 1;
+
+    let name = parse_selector_identifier(source, cursor)?.to_ascii_lowercase();
+
+    match name.as_str() {
+        "first-child" => Some(StructuralPseudoClass::First),
+        "last-child" => Some(StructuralPseudoClass::Last),
+        "nth-child" => {
+            if bytes.get(*cursor) != Some(&b'(') {
+                return None;
+            }
+            *cursor += 1;
+            let argument_start = *cursor;
+
+            while *cursor < bytes.len() && bytes[*cursor] != b')' {
+                *cursor += 1;
+            }
+
+            if bytes.get(*cursor) != Some(&b')') {
+                return None;
+            }
+
+            let argument = source[argument_start..*cursor].trim();
+            *cursor += 1;
+
+            if argument.is_empty() || !argument.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+
+            let index = argument.parse::<usize>().ok()?;
+            if index == 0 || index > MAX_DOM_NODES {
+                return None;
+            }
+            let index = u32::try_from(index).ok()?;
+
+            Some(StructuralPseudoClass::Nth(index))
+        }
+        _ => None,
+    }
+}
+
+fn skip_selector_whitespace(bytes: &[u8], cursor: &mut usize) {
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+}
+
 fn parent_element(document: &Document, node_id: NodeId) -> Option<NodeId> {
     let mut parent = document.node(node_id)?.parent();
 
@@ -1446,11 +1891,12 @@ fn matching_ancestor(
     document: &Document,
     node_id: NodeId,
     selector: &CompoundSelector,
+    context: &SelectorMatchContext,
 ) -> Option<NodeId> {
     let mut ancestor = parent_element(document, node_id);
 
     while let Some(ancestor_id) = ancestor {
-        if selector.matches_node(document, ancestor_id) {
+        if selector.matches_node(document, ancestor_id, context) {
             return Some(ancestor_id);
         }
 
@@ -1468,6 +1914,7 @@ fn apply_cascade(
     document: &Document,
     node_id: NodeId,
     stylesheet: &Stylesheet,
+    selector_context: &SelectorMatchContext,
     parent_style: Option<&ComputedStyle>,
     style: &mut ComputedStyle,
     cascade_budget: &mut usize,
@@ -1480,7 +1927,7 @@ fn apply_cascade(
         }
         *cascade_budget = cascade_budget.saturating_sub(1);
 
-        if !rule.selector.matches(document, node_id) {
+        if !rule.selector.matches(document, node_id, selector_context) {
             continue;
         }
 
@@ -1559,17 +2006,11 @@ fn apply_winners(
     parent_style: Option<&ComputedStyle>,
     winners: &[Option<CascadeWinner>; Property::COUNT],
 ) {
-    if let Some(winner) = winner_for(winners, Property::FontSize)
-        && let SpecifiedValue::FontSize(length) = winner
-        && let Some(size) = resolve_font_size(*length, style.font_size)
-    {
-        style.font_size = size.max(1.0);
-    }
-
     for property in [
         Property::Display,
         Property::Color,
         Property::BackgroundColor,
+        Property::FontSize,
         Property::FontWeight,
         Property::FontStyle,
         Property::FontFamily,
@@ -1625,12 +2066,101 @@ fn winner_for(
         .map(|winner| &winner.value)
 }
 
+fn apply_css_wide_keyword(
+    style: &mut ComputedStyle,
+    parent_style: Option<&ComputedStyle>,
+    property: Property,
+    keyword: CssWideKeyword,
+) {
+    let should_inherit = match keyword {
+        CssWideKeyword::Inherit => true,
+        CssWideKeyword::Initial => false,
+        CssWideKeyword::Unset => property.is_inherited(),
+    };
+
+    if should_inherit && let Some(parent) = parent_style {
+        copy_computed_property(style, parent, property);
+        return;
+    }
+
+    let initial = ComputedStyle::default();
+    copy_computed_property(style, &initial, property);
+}
+
+fn copy_computed_property(target: &mut ComputedStyle, source: &ComputedStyle, property: Property) {
+    match property {
+        Property::Display => target.display = source.display,
+        Property::Color => target.color = source.color,
+        Property::BackgroundColor => target.background_color = source.background_color,
+        Property::FontSize => target.font_size = source.font_size,
+        Property::FontWeight => target.font_weight = source.font_weight,
+        Property::FontStyle => target.font_style = source.font_style,
+        Property::FontFamily => target.font_family = source.font_family,
+        Property::TextDecoration => target.underline = source.underline,
+
+        Property::MarginTop => {
+            target.margin.top = source.margin.top;
+            target.margin_auto.top = source.margin_auto.top;
+        }
+        Property::MarginRight => {
+            target.margin.right = source.margin.right;
+            target.margin_auto.right = source.margin_auto.right;
+        }
+        Property::MarginBottom => {
+            target.margin.bottom = source.margin.bottom;
+            target.margin_auto.bottom = source.margin_auto.bottom;
+        }
+        Property::MarginLeft => {
+            target.margin.left = source.margin.left;
+            target.margin_auto.left = source.margin_auto.left;
+        }
+
+        Property::PaddingTop => target.padding.top = source.padding.top,
+        Property::PaddingRight => target.padding.right = source.padding.right,
+        Property::PaddingBottom => target.padding.bottom = source.padding.bottom,
+        Property::PaddingLeft => target.padding.left = source.padding.left,
+
+        Property::BorderTopWidth => target.border_width.top = source.border_width.top,
+        Property::BorderRightWidth => target.border_width.right = source.border_width.right,
+        Property::BorderBottomWidth => target.border_width.bottom = source.border_width.bottom,
+        Property::BorderLeftWidth => target.border_width.left = source.border_width.left,
+        Property::BorderColor => target.border_color = source.border_color,
+        Property::BorderStyle => target.border_style = source.border_style,
+        Property::BoxSizing => target.box_sizing = source.box_sizing,
+        Property::ObjectFit => target.object_fit = source.object_fit,
+        Property::ObjectPosition => target.object_position = source.object_position,
+
+        Property::Width => target.width = source.width,
+        Property::MinWidth => target.min_width = source.min_width,
+        Property::MaxWidth => target.max_width = source.max_width,
+        Property::Height => target.height = source.height,
+        Property::MinHeight => target.min_height = source.min_height,
+        Property::MaxHeight => target.max_height = source.max_height,
+
+        Property::FlexDirection => target.flex_direction = source.flex_direction,
+        Property::FlexWrap => target.flex_wrap = source.flex_wrap,
+        Property::JustifyContent => target.justify_content = source.justify_content,
+        Property::AlignItems => target.align_items = source.align_items,
+        Property::AlignContent => target.align_content = source.align_content,
+        Property::AlignSelf => target.align_self = source.align_self,
+        Property::Gap => target.gap = source.gap,
+        Property::FlexGrow => target.flex_grow = source.flex_grow,
+        Property::FlexShrink => target.flex_shrink = source.flex_shrink,
+        Property::FlexBasis => target.flex_basis = source.flex_basis,
+    }
+}
+
 fn apply_value(
     style: &mut ComputedStyle,
-    _parent_style: Option<&ComputedStyle>,
+    parent_style: Option<&ComputedStyle>,
     property: Property,
     value: &SpecifiedValue,
 ) {
+    if let SpecifiedValue::CssWide(keyword) = value {
+        apply_css_wide_keyword(style, parent_style, property, *keyword);
+        return;
+    }
+
     match (property, value) {
         (Property::Display, SpecifiedValue::Display(display)) => {
             style.display = *display;
@@ -1642,6 +2172,14 @@ fn apply_value(
 
         (Property::BackgroundColor, SpecifiedValue::BackgroundColor(background)) => {
             style.background_color = *background;
+        }
+
+        (Property::FontSize, SpecifiedValue::FontSize(length)) => {
+            let inherited_size = parent_style.map_or(ROOT_FONT_SIZE_PX, |parent| parent.font_size);
+
+            if let Some(size) = resolve_font_size(*length, inherited_size) {
+                style.font_size = size.max(1.0);
+            }
         }
 
         (Property::FontWeight, SpecifiedValue::FontWeight(weight)) => {
@@ -1962,31 +2500,50 @@ fn scan_rule_blocks(source: &str) -> Vec<RuleBlock<'_>> {
         }
 
         let selector_start = cursor;
-        let Some(open_brace) = find_unquoted_byte(bytes, cursor, b'{') else {
-            break;
-        };
 
-        let selector = &source[selector_start..open_brace];
-        let body_start = open_brace.saturating_add(1);
-        let Some(close_brace) = find_matching_brace(bytes, body_start) else {
-            break;
-        };
+        match scan_rule_prelude(bytes, cursor) {
+            RulePreludeBoundary::OpenBrace(open_brace) => {
+                let body_start = open_brace.saturating_add(1);
+                let Some(close_brace) = find_matching_brace(bytes, body_start) else {
+                    break;
+                };
 
-        blocks.push(RuleBlock {
-            selector,
-            body: &source[body_start..close_brace],
-        });
+                let selector = source[selector_start..open_brace].trim();
 
-        cursor = close_brace.saturating_add(1);
+                if !selector.is_empty() {
+                    blocks.push(RuleBlock {
+                        selector,
+                        body: &source[body_start..close_brace],
+                    });
+                }
+
+                cursor = close_brace.saturating_add(1);
+            }
+
+            RulePreludeBoundary::Recover(next) => {
+                cursor = next;
+            }
+
+            RulePreludeBoundary::End => break,
+        }
     }
 
     blocks
 }
 
-fn find_unquoted_byte(bytes: &[u8], start: usize, needle: u8) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RulePreludeBoundary {
+    OpenBrace(usize),
+    Recover(usize),
+    End,
+}
+
+fn scan_rule_prelude(bytes: &[u8], start: usize) -> RulePreludeBoundary {
     let mut cursor = start;
     let mut quote = None;
     let mut escaped = false;
+    let mut parentheses = 0_u32;
+    let mut brackets = 0_u32;
 
     while cursor < bytes.len() {
         let byte = bytes[cursor];
@@ -1999,16 +2556,27 @@ fn find_unquoted_byte(bytes: &[u8], start: usize, needle: u8) -> Option<usize> {
             } else if byte == active_quote {
                 quote = None;
             }
-        } else if byte == b'\'' || byte == b'"' {
-            quote = Some(byte);
-        } else if byte == needle {
-            return Some(cursor);
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'(' => parentheses = parentheses.saturating_add(1),
+                b')' => parentheses = parentheses.saturating_sub(1),
+                b'[' => brackets = brackets.saturating_add(1),
+                b']' => brackets = brackets.saturating_sub(1),
+                b'{' if parentheses == 0 && brackets == 0 => {
+                    return RulePreludeBoundary::OpenBrace(cursor);
+                }
+                b';' | b'}' if parentheses == 0 && brackets == 0 => {
+                    return RulePreludeBoundary::Recover(cursor.saturating_add(1));
+                }
+                _ => {}
+            }
         }
 
-        cursor += 1;
+        cursor = cursor.saturating_add(1);
     }
 
-    None
+    RulePreludeBoundary::End
 }
 
 fn find_matching_brace(bytes: &[u8], start: usize) -> Option<usize> {
@@ -2179,7 +2747,113 @@ fn strip_important(value: &str) -> (&str, bool) {
     }
 }
 
+fn parse_css_wide_keyword(value: &str) -> Option<CssWideKeyword> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Some(CssWideKeyword::Inherit),
+        "initial" => Some(CssWideKeyword::Initial),
+        "unset" => Some(CssWideKeyword::Unset),
+        _ => None,
+    }
+}
+
+fn css_wide_properties(property: &str) -> Option<Vec<Property>> {
+    let properties = match property {
+        "display" => vec![Property::Display],
+        "color" => vec![Property::Color],
+        "background" | "background-color" => vec![Property::BackgroundColor],
+        "font-size" => vec![Property::FontSize],
+        "font-weight" => vec![Property::FontWeight],
+        "font-style" => vec![Property::FontStyle],
+        "font-family" => vec![Property::FontFamily],
+        "text-decoration" | "text-decoration-line" => vec![Property::TextDecoration],
+
+        "margin" => vec![
+            Property::MarginTop,
+            Property::MarginRight,
+            Property::MarginBottom,
+            Property::MarginLeft,
+        ],
+        "margin-top" => vec![Property::MarginTop],
+        "margin-right" => vec![Property::MarginRight],
+        "margin-bottom" => vec![Property::MarginBottom],
+        "margin-left" => vec![Property::MarginLeft],
+
+        "padding" => vec![
+            Property::PaddingTop,
+            Property::PaddingRight,
+            Property::PaddingBottom,
+            Property::PaddingLeft,
+        ],
+        "padding-top" => vec![Property::PaddingTop],
+        "padding-right" => vec![Property::PaddingRight],
+        "padding-bottom" => vec![Property::PaddingBottom],
+        "padding-left" => vec![Property::PaddingLeft],
+
+        "border-width" => vec![
+            Property::BorderTopWidth,
+            Property::BorderRightWidth,
+            Property::BorderBottomWidth,
+            Property::BorderLeftWidth,
+        ],
+        "border-top-width" => vec![Property::BorderTopWidth],
+        "border-right-width" => vec![Property::BorderRightWidth],
+        "border-bottom-width" => vec![Property::BorderBottomWidth],
+        "border-left-width" => vec![Property::BorderLeftWidth],
+        "border-color" => vec![Property::BorderColor],
+        "border-style" => vec![Property::BorderStyle],
+        "border" => vec![
+            Property::BorderTopWidth,
+            Property::BorderRightWidth,
+            Property::BorderBottomWidth,
+            Property::BorderLeftWidth,
+            Property::BorderColor,
+            Property::BorderStyle,
+        ],
+
+        "box-sizing" => vec![Property::BoxSizing],
+        "object-fit" => vec![Property::ObjectFit],
+        "object-position" => vec![Property::ObjectPosition],
+
+        "width" => vec![Property::Width],
+        "min-width" => vec![Property::MinWidth],
+        "max-width" => vec![Property::MaxWidth],
+        "height" => vec![Property::Height],
+        "min-height" => vec![Property::MinHeight],
+        "max-height" => vec![Property::MaxHeight],
+
+        "flex-direction" => vec![Property::FlexDirection],
+        "flex-wrap" => vec![Property::FlexWrap],
+        "flex-flow" => vec![Property::FlexDirection, Property::FlexWrap],
+        "justify-content" => vec![Property::JustifyContent],
+        "align-items" => vec![Property::AlignItems],
+        "align-content" => vec![Property::AlignContent],
+        "align-self" => vec![Property::AlignSelf],
+        "gap" => vec![Property::Gap],
+        "flex-grow" => vec![Property::FlexGrow],
+        "flex-shrink" => vec![Property::FlexShrink],
+        "flex-basis" => vec![Property::FlexBasis],
+        "flex" => vec![
+            Property::FlexGrow,
+            Property::FlexShrink,
+            Property::FlexBasis,
+        ],
+
+        _ => return None,
+    };
+
+    Some(properties)
+}
+
 fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    if let Some(keyword) = parse_css_wide_keyword(value)
+        && let Some(properties) = css_wide_properties(property)
+    {
+        return properties
+            .into_iter()
+            .map(|property| (property, SpecifiedValue::CssWide(keyword)))
+            .collect();
+    }
+
     match property {
         "display" => parse_display(value)
             .map(|display| vec![(Property::Display, SpecifiedValue::Display(display))])
@@ -2198,16 +2872,9 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             })
             .unwrap_or_default(),
 
-        "background" => parse_background_color(value)
-            .map(|color| {
-                vec![(
-                    Property::BackgroundColor,
-                    SpecifiedValue::BackgroundColor(color),
-                )]
-            })
-            .unwrap_or_default(),
+        "background" => parse_background_shorthand(value),
 
-        "font-size" => parse_specified_length(value, false)
+        "font-size" => parse_font_size_length(value)
             .map(|length| vec![(Property::FontSize, SpecifiedValue::FontSize(length))])
             .unwrap_or_default(),
 
@@ -2271,7 +2938,7 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
         "padding-bottom" => parse_edge_property(Property::PaddingBottom, value),
         "padding-left" => parse_edge_property(Property::PaddingLeft, value),
 
-        "border-width" => expand_edges(
+        "border-width" => expand_border_width_edges(
             value,
             [
                 Property::BorderTopWidth,
@@ -2281,13 +2948,13 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             ],
         ),
 
-        "border-top-width" => parse_edge_property(Property::BorderTopWidth, value),
+        "border-top-width" => parse_border_width_property(Property::BorderTopWidth, value),
 
-        "border-right-width" => parse_edge_property(Property::BorderRightWidth, value),
+        "border-right-width" => parse_border_width_property(Property::BorderRightWidth, value),
 
-        "border-bottom-width" => parse_edge_property(Property::BorderBottomWidth, value),
+        "border-bottom-width" => parse_border_width_property(Property::BorderBottomWidth, value),
 
-        "border-left-width" => parse_edge_property(Property::BorderLeftWidth, value),
+        "border-left-width" => parse_border_width_property(Property::BorderLeftWidth, value),
 
         "border-color" => parse_border_color(value)
             .map(|color| vec![(Property::BorderColor, SpecifiedValue::BorderColor(color))])
@@ -2450,6 +3117,7 @@ fn parse_justify_content(value: &str) -> Option<JustifyContent> {
         "center" => Some(JustifyContent::Center),
         "flex-end" | "end" => Some(JustifyContent::FlexEnd),
         "space-between" => Some(JustifyContent::SpaceBetween),
+        "space-around" => Some(JustifyContent::SpaceAround),
         _ => None,
     }
 }
@@ -2471,6 +3139,7 @@ fn parse_align_content(value: &str) -> Option<AlignContent> {
         "center" => Some(AlignContent::Center),
         "flex-end" | "end" => Some(AlignContent::FlexEnd),
         "space-between" => Some(AlignContent::SpaceBetween),
+        "space-around" => Some(AlignContent::SpaceAround),
         _ => None,
     }
 }
@@ -2491,7 +3160,9 @@ fn parse_non_negative_size_property(
     value: &str,
 ) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, true)
-        .filter(|length| !matches!(length, SpecifiedLength::Auto))
+        .filter(|length| {
+            !matches!(length, SpecifiedLength::Auto) && specified_length_is_non_negative(*length)
+        })
         .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
 }
@@ -2507,36 +3178,15 @@ fn parse_flex_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
 
     match normalized.as_str() {
         "none" => {
-            return vec![
-                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
-                (Property::FlexShrink, SpecifiedValue::Number(0.0)),
-                (
-                    Property::FlexBasis,
-                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
-                ),
-            ];
+            return flex_shorthand_values(0.0, 0.0, SpecifiedLength::Auto);
         }
 
         "auto" => {
-            return vec![
-                (Property::FlexGrow, SpecifiedValue::Number(1.0)),
-                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
-                (
-                    Property::FlexBasis,
-                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
-                ),
-            ];
+            return flex_shorthand_values(1.0, 1.0, SpecifiedLength::Auto);
         }
 
         "initial" => {
-            return vec![
-                (Property::FlexGrow, SpecifiedValue::Number(0.0)),
-                (Property::FlexShrink, SpecifiedValue::Number(1.0)),
-                (
-                    Property::FlexBasis,
-                    SpecifiedValue::SizeLength(SpecifiedLength::Auto),
-                ),
-            ];
+            return flex_shorthand_values(0.0, 1.0, SpecifiedLength::Auto);
         }
 
         _ => {}
@@ -2548,42 +3198,52 @@ fn parse_flex_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
         return Vec::new();
     }
 
+    if tokens.len() == 1 {
+        if let Some(grow) = parse_non_negative_float(tokens[0]) {
+            return flex_shorthand_values(grow, 1.0, SpecifiedLength::Px(0.0));
+        }
+
+        return parse_flex_basis_component(tokens[0])
+            .map(|basis| flex_shorthand_values(1.0, 1.0, basis))
+            .unwrap_or_default();
+    }
+
     let Some(grow) = parse_non_negative_float(tokens[0]) else {
         return Vec::new();
     };
 
-    let mut shrink = 1.0;
-    let mut basis = SpecifiedLength::Px(0.0);
-
-    match tokens.as_slice() {
-        [_] => {}
-
-        [_, second] => {
-            if let Some(number) = parse_non_negative_float(second) {
-                shrink = number;
-            } else if let Some(length) = parse_specified_length(second, true) {
-                basis = length;
-            } else {
-                return Vec::new();
-            }
+    if tokens.len() == 2 {
+        if let Some(shrink) = parse_non_negative_float(tokens[1]) {
+            return flex_shorthand_values(grow, shrink, SpecifiedLength::Px(0.0));
         }
 
-        [_, second, third] => {
-            let Some(number) = parse_non_negative_float(second) else {
-                return Vec::new();
-            };
-
-            let Some(length) = parse_specified_length(third, true) else {
-                return Vec::new();
-            };
-
-            shrink = number;
-            basis = length;
-        }
-
-        _ => {}
+        return parse_flex_basis_component(tokens[1])
+            .map(|basis| flex_shorthand_values(grow, 1.0, basis))
+            .unwrap_or_default();
     }
 
+    let Some(shrink) = parse_non_negative_float(tokens[1]) else {
+        return Vec::new();
+    };
+
+    let Some(basis) = parse_flex_basis_component(tokens[2]) else {
+        return Vec::new();
+    };
+
+    flex_shorthand_values(grow, shrink, basis)
+}
+
+fn parse_flex_basis_component(value: &str) -> Option<SpecifiedLength> {
+    parse_specified_length(value, true).filter(|length| {
+        matches!(length, SpecifiedLength::Auto) || specified_length_is_non_negative(*length)
+    })
+}
+
+fn flex_shorthand_values(
+    grow: f32,
+    shrink: f32,
+    basis: SpecifiedLength,
+) -> Vec<(Property, SpecifiedValue)> {
     vec![
         (Property::FlexGrow, SpecifiedValue::Number(grow)),
         (Property::FlexShrink, SpecifiedValue::Number(shrink)),
@@ -2607,13 +3267,19 @@ fn parse_margin_property(property: Property, value: &str) -> Vec<(Property, Spec
 
 fn parse_edge_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, false)
-        .filter(|length| !matches!(length, SpecifiedLength::Auto | SpecifiedLength::Percent(_)))
+        .filter(|length| {
+            !matches!(length, SpecifiedLength::Auto | SpecifiedLength::Percent(_))
+                && specified_length_is_non_negative(*length)
+        })
         .map(|length| vec![(property, SpecifiedValue::EdgeLength(length))])
         .unwrap_or_default()
 }
 
 fn parse_size_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
     parse_specified_length(value, true)
+        .filter(|length| {
+            matches!(length, SpecifiedLength::Auto) || specified_length_is_non_negative(*length)
+        })
         .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
 }
@@ -2630,8 +3296,57 @@ fn parse_constraint_property(
     }
 
     parse_specified_length(value, true)
+        .filter(|length| {
+            matches!(length, SpecifiedLength::Auto) || specified_length_is_non_negative(*length)
+        })
         .map(|length| vec![(property, SpecifiedValue::SizeLength(length))])
         .unwrap_or_default()
+}
+
+fn parse_border_width_value(value: &str) -> Option<SpecifiedLength> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "thin" => Some(SpecifiedLength::Px(1.0)),
+        "medium" => Some(SpecifiedLength::Px(3.0)),
+        "thick" => Some(SpecifiedLength::Px(5.0)),
+        _ => parse_specified_length(value, false).filter(|length| {
+            !matches!(length, SpecifiedLength::Auto | SpecifiedLength::Percent(_))
+                && specified_length_is_non_negative(*length)
+        }),
+    }
+}
+
+fn parse_border_width_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    parse_border_width_value(value)
+        .map(|length| vec![(property, SpecifiedValue::EdgeLength(length))])
+        .unwrap_or_default()
+}
+
+fn expand_border_width_edges(
+    value: &str,
+    properties: [Property; 4],
+) -> Vec<(Property, SpecifiedValue)> {
+    let parsed = value
+        .split_ascii_whitespace()
+        .map(parse_border_width_value)
+        .collect::<Option<Vec<_>>>();
+
+    let Some(values) = parsed else {
+        return Vec::new();
+    };
+
+    let edges = match values.as_slice() {
+        [all] => [*all, *all, *all, *all],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
+        [top, right, bottom, left] => [*top, *right, *bottom, *left],
+        _ => return Vec::new(),
+    };
+
+    properties
+        .into_iter()
+        .zip(edges)
+        .map(|(property, length)| (property, SpecifiedValue::EdgeLength(length)))
+        .collect()
 }
 
 fn parse_border_color(value: &str) -> Option<Option<Rgba>> {
@@ -2661,11 +3376,8 @@ fn parse_box_sizing(value: &str) -> Option<BoxSizing> {
 fn parse_border_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
     let normalized = value.trim();
 
-    if normalized.eq_ignore_ascii_case("none") {
-        return vec![(
-            Property::BorderStyle,
-            SpecifiedValue::BorderStyle(BorderStyle::None),
-        )];
+    if normalized.is_empty() {
+        return Vec::new();
     }
 
     let mut width = None;
@@ -2674,8 +3386,7 @@ fn parse_border_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
 
     for token in normalized.split_ascii_whitespace() {
         if width.is_none()
-            && let Some(length) = parse_specified_length(token, false)
-            && !matches!(length, SpecifiedLength::Auto | SpecifiedLength::Percent(_))
+            && let Some(length) = parse_border_width_value(token)
         {
             width = Some(length);
             continue;
@@ -2698,32 +3409,25 @@ fn parse_border_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
         return Vec::new();
     }
 
-    let mut declarations = Vec::new();
+    let width = width.unwrap_or(SpecifiedLength::Px(3.0));
+    let border_style = border_style.unwrap_or(BorderStyle::None);
+    let color = color.unwrap_or(None);
+    let mut declarations = Vec::with_capacity(6);
 
-    if let Some(length) = width {
-        for property in [
-            Property::BorderTopWidth,
-            Property::BorderRightWidth,
-            Property::BorderBottomWidth,
-            Property::BorderLeftWidth,
-        ] {
-            declarations.push((property, SpecifiedValue::EdgeLength(length)));
-        }
+    for property in [
+        Property::BorderTopWidth,
+        Property::BorderRightWidth,
+        Property::BorderBottomWidth,
+        Property::BorderLeftWidth,
+    ] {
+        declarations.push((property, SpecifiedValue::EdgeLength(width)));
     }
 
-    if let Some(parsed_style) = border_style {
-        declarations.push((
-            Property::BorderStyle,
-            SpecifiedValue::BorderStyle(parsed_style),
-        ));
-    }
-
-    if let Some(parsed_color) = color {
-        declarations.push((
-            Property::BorderColor,
-            SpecifiedValue::BorderColor(parsed_color),
-        ));
-    }
+    declarations.push((
+        Property::BorderStyle,
+        SpecifiedValue::BorderStyle(border_style),
+    ));
+    declarations.push((Property::BorderColor, SpecifiedValue::BorderColor(color)));
 
     declarations
 }
@@ -2774,10 +3478,10 @@ fn expand_edges(value: &str, properties: [Property; 4]) -> Vec<(Property, Specif
         return Vec::new();
     };
 
-    if values
-        .iter()
-        .any(|value| matches!(value, SpecifiedLength::Auto | SpecifiedLength::Percent(_)))
-    {
+    if values.iter().any(|value| {
+        matches!(value, SpecifiedLength::Auto | SpecifiedLength::Percent(_))
+            || !specified_length_is_non_negative(*value)
+    }) {
         return Vec::new();
     }
 
@@ -2882,6 +3586,16 @@ fn parse_font_style(value: &str) -> Option<FontStyle> {
     }
 }
 
+fn parse_font_size_length(value: &str) -> Option<SpecifiedLength> {
+    let length = parse_specified_length(value, true)?;
+
+    if matches!(length, SpecifiedLength::Auto) || !specified_length_is_non_negative(length) {
+        None
+    } else {
+        Some(length)
+    }
+}
+
 fn parse_specified_length(value: &str, allow_auto_percent: bool) -> Option<SpecifiedLength> {
     let normalized = value.trim().to_ascii_lowercase();
 
@@ -2889,8 +3603,12 @@ fn parse_specified_length(value: &str, allow_auto_percent: bool) -> Option<Speci
         return Some(SpecifiedLength::Auto);
     }
 
-    if normalized == "0" {
-        return Some(SpecifiedLength::Px(0.0));
+    if !normalized
+        .bytes()
+        .any(|byte| byte.is_ascii_alphabetic() || byte == b'%')
+    {
+        let number = parse_number(&normalized)?;
+        return (number == 0.0).then_some(SpecifiedLength::Px(0.0));
     }
 
     if let Some(number) = normalized.strip_suffix("px") {
@@ -2905,11 +3623,36 @@ fn parse_specified_length(value: &str, allow_auto_percent: bool) -> Option<Speci
         return parse_number(number).map(SpecifiedLength::Em);
     }
 
+    for (suffix, css_px_per_unit) in [
+        ("in", 96.0_f32),
+        ("cm", 96.0_f32 / 2.54_f32),
+        ("mm", 96.0_f32 / 25.4_f32),
+        ("q", 96.0_f32 / 101.6_f32),
+        ("pt", 96.0_f32 / 72.0_f32),
+        ("pc", 16.0_f32),
+    ] {
+        if let Some(number) = normalized.strip_suffix(suffix) {
+            return parse_number(number)
+                .and_then(|value| bounded_computed(value * css_px_per_unit))
+                .map(SpecifiedLength::Px);
+        }
+    }
+
     if allow_auto_percent && let Some(number) = normalized.strip_suffix('%') {
         return parse_number(number).map(SpecifiedLength::Percent);
     }
 
     None
+}
+
+fn specified_length_is_non_negative(length: SpecifiedLength) -> bool {
+    match length {
+        SpecifiedLength::Auto => true,
+        SpecifiedLength::Px(value)
+        | SpecifiedLength::Em(value)
+        | SpecifiedLength::Rem(value)
+        | SpecifiedLength::Percent(value) => value >= 0.0,
+    }
 }
 
 fn resolve_font_size(length: SpecifiedLength, inherited_size: f32) -> Option<f32> {
@@ -2984,6 +3727,26 @@ fn sanitize_unit_interval(value: f32) -> f32 {
     }
 }
 
+fn parse_background_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
+    let normalized = value.trim();
+
+    if normalized.eq_ignore_ascii_case("none") {
+        return vec![(
+            Property::BackgroundColor,
+            SpecifiedValue::BackgroundColor(None),
+        )];
+    }
+
+    parse_background_color(normalized)
+        .map(|color| {
+            vec![(
+                Property::BackgroundColor,
+                SpecifiedValue::BackgroundColor(color),
+            )]
+        })
+        .unwrap_or_default()
+}
+
 fn parse_background_color(value: &str) -> Option<Option<Rgba>> {
     if value.trim().eq_ignore_ascii_case("transparent") {
         Some(None)
@@ -2997,11 +3760,21 @@ fn parse_color(value: &str) -> Option<Rgba> {
 
     match normalized.as_str() {
         "black" => return Some(Rgba::new(0, 0, 0, 255)),
-        "white" => return Some(Rgba::new(255, 255, 255, 255)),
-        "red" => return Some(Rgba::new(255, 0, 0, 255)),
-        "green" => return Some(Rgba::new(0, 128, 0, 255)),
-        "blue" => return Some(Rgba::new(0, 0, 255, 255)),
+        "silver" => return Some(Rgba::new(192, 192, 192, 255)),
         "gray" | "grey" => return Some(Rgba::new(128, 128, 128, 255)),
+        "white" => return Some(Rgba::new(255, 255, 255, 255)),
+        "maroon" => return Some(Rgba::new(128, 0, 0, 255)),
+        "red" => return Some(Rgba::new(255, 0, 0, 255)),
+        "purple" => return Some(Rgba::new(128, 0, 128, 255)),
+        "fuchsia" | "magenta" => return Some(Rgba::new(255, 0, 255, 255)),
+        "green" => return Some(Rgba::new(0, 128, 0, 255)),
+        "lime" => return Some(Rgba::new(0, 255, 0, 255)),
+        "olive" => return Some(Rgba::new(128, 128, 0, 255)),
+        "yellow" => return Some(Rgba::new(255, 255, 0, 255)),
+        "navy" => return Some(Rgba::new(0, 0, 128, 255)),
+        "blue" => return Some(Rgba::new(0, 0, 255, 255)),
+        "teal" => return Some(Rgba::new(0, 128, 128, 255)),
+        "aqua" | "cyan" => return Some(Rgba::new(0, 255, 255, 255)),
         "transparent" => return Some(Rgba::new(0, 0, 0, 0)),
         _ => {}
     }
@@ -3027,9 +3800,9 @@ fn parse_color(value: &str) -> Option<Rgba> {
             return None;
         }
 
-        let red = channels[0].parse::<u8>().ok()?;
-        let green = channels[1].parse::<u8>().ok()?;
-        let blue = channels[2].parse::<u8>().ok()?;
+        let red = parse_rgb_channel(channels[0])?;
+        let green = parse_rgb_channel(channels[1])?;
+        let blue = parse_rgb_channel(channels[2])?;
         let alpha = parse_alpha(channels[3])?;
 
         return Some(Rgba::new(red, green, blue, alpha));
@@ -3041,7 +3814,7 @@ fn parse_color(value: &str) -> Option<Rgba> {
 fn parse_rgb_function(inner: &str, alpha: u8) -> Option<Rgba> {
     let channels: Vec<u8> = inner
         .split(',')
-        .map(|channel| channel.trim().parse::<u8>().ok())
+        .map(parse_rgb_channel)
         .collect::<Option<Vec<_>>>()?;
 
     if let [red, green, blue] = channels.as_slice() {
@@ -3051,12 +3824,30 @@ fn parse_rgb_function(inner: &str, alpha: u8) -> Option<Rgba> {
     }
 }
 
-fn parse_alpha(value: &str) -> Option<u8> {
-    let alpha = value.parse::<f32>().ok()?;
-    if !alpha.is_finite() {
-        return None;
+fn parse_rgb_channel(value: &str) -> Option<u8> {
+    let normalized = value.trim();
+
+    if let Some(percent) = normalized.strip_suffix('%') {
+        let percent = parse_number(percent)?;
+        if !(0.0..=100.0).contains(&percent) {
+            return None;
+        }
+
+        return Some((percent * 255.0 / 100.0).round() as u8);
     }
-    let alpha = alpha.clamp(0.0, 1.0);
+
+    normalized.parse::<u8>().ok()
+}
+
+fn parse_alpha(value: &str) -> Option<u8> {
+    let normalized = value.trim();
+
+    let alpha = if let Some(percent) = normalized.strip_suffix('%') {
+        (parse_number(percent)? / 100.0).clamp(0.0, 1.0)
+    } else {
+        parse_number(normalized)?.clamp(0.0, 1.0)
+    };
+
     Some((alpha * 255.0).round() as u8)
 }
 
@@ -3071,12 +3862,31 @@ fn parse_hex_color(hex: &str) -> Option<Rgba> {
             Some(Rgba::new(red, green, blue, 255))
         }
 
+        4 => {
+            let mut chars = hex.chars();
+            let red = expand_hex_nibble(chars.next()?)?;
+            let green = expand_hex_nibble(chars.next()?)?;
+            let blue = expand_hex_nibble(chars.next()?)?;
+            let alpha = expand_hex_nibble(chars.next()?)?;
+
+            Some(Rgba::new(red, green, blue, alpha))
+        }
+
         6 => {
             let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
             let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
             let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
 
             Some(Rgba::new(red, green, blue, 255))
+        }
+
+        8 => {
+            let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            let alpha = u8::from_str_radix(&hex[6..8], 16).ok()?;
+
+            Some(Rgba::new(red, green, blue, alpha))
         }
 
         _ => None,
