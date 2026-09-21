@@ -4,7 +4,8 @@
 //! geometry-oriented snapshot. The snapshot has no pointers or references into
 //! the DOM.
 //!
-//! The current milestone closes the first Phantom Flexbox core:
+//! The current milestone expands deterministic normal-flow geometry after the
+//! first Phantom Flexbox core. Supported layout behavior includes:
 //!
 //! - row, row-reverse, column, and column-reverse main axes;
 //! - horizontal and definite-height vertical flex wrapping;
@@ -14,6 +15,15 @@
 //! - stronger min-content and max-content intrinsic width measurement;
 //! - automatic min-content shrink floors for row flex items;
 //! - deterministic placement over the cold layout snapshot.
+//! - normal-flow horizontal `margin:auto` resolution for block-level boxes;
+//! - sibling and safe parent/child vertical-margin collapsing in normal flow;
+//! - `position: relative` as a post-flow subtree translation with physical
+//!   insets resolved against the containing content box;
+//! - `position: absolute` for principal boxes, removed from normal/flex flow
+//!   and anchored to the nearest positioned ancestor padding box;
+//! - fixed positioned boxes are removed from normal flow and use the viewport as their containing block;
+//! - absolute horizontal inset solving for `width:auto` when both physical
+//!   `left` and `right` are definite.
 //!
 //! Paint consumes only this cold snapshot and computed style.
 
@@ -24,7 +34,8 @@ use std::mem;
 use phantom_css::{
     AlignContent, AlignItems, AlignSelf, AutoEdges, BoxSizing, ComputedStyle,
     Display as CssDisplay, EdgeSizes, FlexDirection, FlexWrap, FontFamily as CssFontFamily,
-    FontStyle as CssFontStyle, FontWeight as CssFontWeight, JustifyContent, Length, StyleMap,
+    FontStyle as CssFontStyle, FontWeight as CssFontWeight, JustifyContent, Length,
+    Position as CssPosition, StyleMap, WhiteSpace as CssWhiteSpace,
 };
 use phantom_dom::{Document, ElementData, NodeId, NodeKind};
 use phantom_image::{ImageCatalog, ImageResourceId};
@@ -34,6 +45,9 @@ use phantom_text::{
 };
 use thiserror::Error;
 
+const DEFAULT_LAYOUT_VIEWPORT_HEIGHT: f32 = 768.0;
+
+// PHANTOM_2G13_VIEWPORT_GEOMETRY_FOUNDATION
 /// Stable index of a box inside one [`LayoutSnapshot`].
 ///
 /// The identifier is intentionally a compact integer instead of a pointer.
@@ -91,6 +105,12 @@ impl Rect {
     #[must_use]
     pub const fn height(self) -> f32 {
         self.height
+    }
+
+    /// Returns the right coordinate.
+    #[must_use]
+    pub fn right(self) -> f32 {
+        self.x + self.width
     }
 
     /// Returns the bottom coordinate.
@@ -254,6 +274,7 @@ pub struct LayoutSnapshot {
     text: String,
     resources: String,
     viewport_width: f32,
+    viewport_height: f32,
     content_height: f32,
 }
 
@@ -261,11 +282,18 @@ impl LayoutSnapshot {
     /// Creates an empty layout snapshot.
     #[must_use]
     pub fn empty(viewport_width: f32) -> Self {
+        Self::empty_with_viewport(viewport_width, DEFAULT_LAYOUT_VIEWPORT_HEIGHT)
+    }
+
+    /// Creates an empty layout snapshot with explicit two-dimensional viewport geometry.
+    #[must_use]
+    pub fn empty_with_viewport(viewport_width: f32, viewport_height: f32) -> Self {
         Self {
             boxes: Vec::new(),
             text: String::new(),
             resources: String::new(),
             viewport_width: sanitize_viewport_width(viewport_width),
+            viewport_height: sanitize_viewport_height(viewport_height),
             content_height: 0.0,
         }
     }
@@ -398,6 +426,12 @@ impl LayoutSnapshot {
         self.viewport_width
     }
 
+    /// Returns the viewport height used for this layout pass.
+    #[must_use]
+    pub const fn viewport_height(&self) -> f32 {
+        self.viewport_height
+    }
+
     /// Returns the measured vertical extent of the document.
     #[must_use]
     pub const fn content_height(&self) -> f32 {
@@ -424,10 +458,10 @@ pub enum LayoutError {
 /// Builds a cold, flat layout snapshot.
 ///
 /// The current geometry algorithm supports block flow, the first Inline
-/// Formatting Context, and Flexbox Core v1. Inline text wraps only at
-/// collapsible whitespace. Unbreakable words may overflow horizontally,
-/// matching the conservative behavior expected before `overflow-wrap` is
-/// implemented.
+/// Formatting Context, and Flexbox Core v1. Inline text follows the computed
+/// `white-space` mode for collapsing, preserved line breaks, and wrapping.
+/// Unbreakable words may overflow horizontally, matching the conservative
+/// behavior expected before `overflow-wrap` is implemented.
 ///
 /// # Errors
 ///
@@ -437,10 +471,36 @@ pub fn build_layout_snapshot(
     styles: &StyleMap,
     viewport_width: f32,
 ) -> Result<LayoutSnapshot, LayoutError> {
+    build_layout_snapshot_with_viewport(
+        document,
+        styles,
+        viewport_width,
+        DEFAULT_LAYOUT_VIEWPORT_HEIGHT,
+    )
+}
+
+/// Builds a cold layout snapshot with explicit two-dimensional viewport geometry.
+///
+/// # Errors
+///
+/// Returns [`LayoutError`] if compact box or text/resource index space is exceeded.
+pub fn build_layout_snapshot_with_viewport(
+    document: &Document,
+    styles: &StyleMap,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Result<LayoutSnapshot, LayoutError> {
     let shaper = FallbackTextShaper;
     let images = ImageCatalog::default();
 
-    build_layout_snapshot_with_shaper_and_images(document, styles, viewport_width, &shaper, &images)
+    build_layout_snapshot_with_shaper_and_images_and_viewport(
+        document,
+        styles,
+        viewport_width,
+        viewport_height,
+        &shaper,
+        &images,
+    )
 }
 
 /// Builds a cold layout snapshot with explicit image metadata.
@@ -458,9 +518,37 @@ pub fn build_layout_snapshot_with_images(
     viewport_width: f32,
     images: &ImageCatalog,
 ) -> Result<LayoutSnapshot, LayoutError> {
+    build_layout_snapshot_with_images_and_viewport(
+        document,
+        styles,
+        viewport_width,
+        DEFAULT_LAYOUT_VIEWPORT_HEIGHT,
+        images,
+    )
+}
+
+/// Builds a cold layout snapshot with image metadata and explicit viewport geometry.
+///
+/// # Errors
+///
+/// Returns [`LayoutError`] if compact box or text/resource index space is exceeded.
+pub fn build_layout_snapshot_with_images_and_viewport(
+    document: &Document,
+    styles: &StyleMap,
+    viewport_width: f32,
+    viewport_height: f32,
+    images: &ImageCatalog,
+) -> Result<LayoutSnapshot, LayoutError> {
     let shaper = FallbackTextShaper;
 
-    build_layout_snapshot_with_shaper_and_images(document, styles, viewport_width, &shaper, images)
+    build_layout_snapshot_with_shaper_and_images_and_viewport(
+        document,
+        styles,
+        viewport_width,
+        viewport_height,
+        &shaper,
+        images,
+    )
 }
 
 /// Builds a cold layout snapshot using an explicit text backend.
@@ -496,9 +584,34 @@ pub fn build_layout_snapshot_with_shaper_and_images<S: TextShaper + ?Sized>(
     shaper: &S,
     images: &ImageCatalog,
 ) -> Result<LayoutSnapshot, LayoutError> {
-    let viewport_width = sanitize_viewport_width(viewport_width);
+    build_layout_snapshot_with_shaper_and_images_and_viewport(
+        document,
+        styles,
+        viewport_width,
+        DEFAULT_LAYOUT_VIEWPORT_HEIGHT,
+        shaper,
+        images,
+    )
+}
 
-    let mut builder = LayoutBuilder::new(document, styles, shaper, images);
+/// Builds a cold layout snapshot using explicit text/image boundaries and full viewport geometry.
+///
+/// # Errors
+///
+/// Returns [`LayoutError`] if compact box or text/resource index space is exceeded.
+pub fn build_layout_snapshot_with_shaper_and_images_and_viewport<S: TextShaper + ?Sized>(
+    document: &Document,
+    styles: &StyleMap,
+    viewport_width: f32,
+    viewport_height: f32,
+    shaper: &S,
+    images: &ImageCatalog,
+) -> Result<LayoutSnapshot, LayoutError> {
+    let viewport_width = sanitize_viewport_width(viewport_width);
+    let viewport_height = sanitize_viewport_height(viewport_height);
+    let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
+
+    let mut builder = LayoutBuilder::new(document, styles, shaper, images, viewport);
 
     let root = builder.push_box(BoxSpec {
         source_node: document.root(),
@@ -519,7 +632,9 @@ pub fn build_layout_snapshot_with_shaper_and_images<S: TextShaper + ?Sized>(
             y: 0.0,
             width: viewport_width,
             underline: false,
-            whitespace: WhitespaceMode::Collapse,
+            whitespace: WhitespaceMode::Normal,
+            collapsed_first_child: None,
+            collapsed_last_child: None,
         },
     )?;
 
@@ -528,19 +643,41 @@ pub fn build_layout_snapshot_with_shaper_and_images<S: TextShaper + ?Sized>(
         Rect::new(0.0, 0.0, viewport_width, content_end.max(0.0)),
     )?;
 
+    // PHANTOM_2G11_POSITIONED_LAYOUT_II
+    // Root-level absolute children use the initial containing block and remain
+    // outside normal-flow height accounting.
+    builder.layout_absolute_children(document.root(), root)?;
+
+    // PHANTOM_2G10_POSITIONED_LAYOUT_I
+    // Relative positioning is a post-layout visual translation. It therefore
+    // preserves normal-flow footprint and flex sizing while translating the
+    // generated principal box plus its complete cold-snapshot subtree.
+    builder.apply_relative_positioning()?;
+
     Ok(LayoutSnapshot {
         boxes: builder.boxes,
         text: builder.text,
         resources: builder.resources,
         viewport_width,
+        viewport_height,
         content_height: content_end.max(0.0),
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+// PHANTOM_2G9_WHITE_SPACE_II
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WhitespaceMode {
-    Collapse,
-    Preserve,
+    Normal,
+    NoWrap,
+    Pre,
+    PreWrap,
+    PreLine,
+}
+
+impl WhitespaceMode {
+    const fn allows_wrap(self) -> bool {
+        matches!(self, Self::Normal | Self::PreWrap | Self::PreLine)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -552,6 +689,34 @@ struct FlowArea {
     width: f32,
     underline: bool,
     whitespace: WhitespaceMode,
+    collapsed_first_child: Option<NodeId>,
+    collapsed_last_child: Option<NodeId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParentChildMarginCollapse {
+    top: f32,
+    bottom: f32,
+    first_child: Option<NodeId>,
+    last_child: Option<NodeId>,
+}
+
+impl ParentChildMarginCollapse {
+    fn from_margin(margin: EdgeSizes) -> Self {
+        Self {
+            top: margin.top(),
+            bottom: margin.bottom(),
+            first_child: None,
+            last_child: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MarginCollapseChild {
+    Skip,
+    Block(NodeId, Box<ComputedStyle>),
+    Barrier,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -648,14 +813,19 @@ struct ReplacedImageSpec {
     border_height: f32,
 }
 
+// PHANTOM_2G4_INLINE_BASELINE_METRICS
+// PHANTOM_2G5_INLINE_REPLACED_BASELINE
 #[derive(Debug, Clone, Copy)]
 struct OpenLine {
     id: LayoutId,
     cursor_x: f32,
     used_width: f32,
     height: f32,
+    text_ascent: f32,
+    text_descent: f32,
+    text_line_gap: f32,
+    replaced_ascent: f32,
 }
-
 #[derive(Debug, Clone, Copy)]
 struct InlineFlow {
     parent: LayoutId,
@@ -688,6 +858,7 @@ struct LayoutBuilder<'a, S: TextShaper + ?Sized> {
     styles: &'a StyleMap,
     shaper: &'a S,
     images: &'a ImageCatalog,
+    viewport: Rect,
     boxes: Vec<LayoutBox>,
     last_child: Vec<Option<LayoutId>>,
     text: String,
@@ -700,6 +871,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         styles: &'a StyleMap,
         shaper: &'a S,
         images: &'a ImageCatalog,
+        viewport: Rect,
     ) -> Self {
         let estimated_boxes = document.len().saturating_mul(2).min(8192);
         let estimated_text = document.len().saturating_mul(24).min(1_048_576);
@@ -709,6 +881,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             styles,
             shaper,
             images,
+            viewport,
             boxes: Vec::with_capacity(estimated_boxes),
             last_child: Vec::with_capacity(estimated_boxes),
             text: String::with_capacity(estimated_text),
@@ -727,6 +900,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
         let children = parent_node.children().to_vec();
         let mut flow = InlineFlow::new(area);
+        let mut previous_block_margin_bottom = None;
 
         for child_id in children {
             let Some(child) = self.document.node(child_id) else {
@@ -736,7 +910,17 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             match child.kind() {
                 NodeKind::Comment(_) => {}
 
-                NodeKind::Document | NodeKind::Text(_) => {
+                NodeKind::Document => {
+                    previous_block_margin_bottom = None;
+                    self.append_inline_node(child_id, &mut flow, area.underline)?;
+                }
+
+                NodeKind::Text(text) => {
+                    if previous_block_margin_bottom.is_some() && text.trim().is_empty() {
+                        continue;
+                    }
+
+                    previous_block_margin_bottom = None;
                     self.append_inline_node(child_id, &mut flow, area.underline)?;
                 }
 
@@ -747,7 +931,16 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                         continue;
                     }
 
+                    // PHANTOM_2G11_POSITIONED_LAYOUT_II
+                    // Absolute principal boxes are laid out after the containing
+                    // principal box has its final geometry. They therefore do not
+                    // consume normal-flow space here.
+                    if matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed) {
+                        continue;
+                    }
+
                     if element.tag_name() == "br" {
+                        previous_block_margin_bottom = None;
                         let line_height = self.line_height_for(&style);
 
                         self.force_line_break(&mut flow, line_height)?;
@@ -757,6 +950,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                     if let Some(control_kind) = form_control_kind(element) {
                         match style.display() {
                             CssDisplay::Inline => {
+                                previous_block_margin_bottom = None;
                                 self.append_inline_control(
                                     child_id,
                                     &style,
@@ -768,20 +962,35 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                             CssDisplay::Block | CssDisplay::Flex => {
                                 self.finish_line(&mut flow, 0.0)?;
 
+                                let collapse_with_parent_top =
+                                    area.collapsed_first_child == Some(child_id);
+                                let collapse_with_parent_bottom =
+                                    area.collapsed_last_child == Some(child_id);
+                                let block_y = normal_flow_block_context_y(
+                                    flow.cursor_y,
+                                    previous_block_margin_bottom,
+                                    style.margin().top(),
+                                    collapse_with_parent_top,
+                                );
+
                                 let control = self.layout_block_control(
                                     child_id,
                                     &style,
                                     BlockContext {
                                         parent: area.layout_parent,
                                         x: area.x,
-                                        y: flow.cursor_y,
+                                        y: block_y,
                                         width: area.width,
                                         forced_border_width: None,
                                     },
                                     control_kind,
                                 )?;
 
-                                flow.cursor_y = control.outer_end_y;
+                                flow.cursor_y = normal_flow_block_outer_end_y(
+                                    &control,
+                                    collapse_with_parent_bottom,
+                                );
+                                previous_block_margin_bottom = Some(control.margin.bottom());
                                 flow.pending_space = false;
                             }
 
@@ -793,11 +1002,23 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                     if element.tag_name() == "img" {
                         match style.display() {
                             CssDisplay::Inline => {
+                                previous_block_margin_bottom = None;
                                 self.append_inline_image(child_id, &style, &mut flow)?;
                             }
 
                             CssDisplay::Block | CssDisplay::Flex => {
                                 self.finish_line(&mut flow, 0.0)?;
+
+                                let collapse_with_parent_top =
+                                    area.collapsed_first_child == Some(child_id);
+                                let collapse_with_parent_bottom =
+                                    area.collapsed_last_child == Some(child_id);
+                                let block_y = normal_flow_block_context_y(
+                                    flow.cursor_y,
+                                    previous_block_margin_bottom,
+                                    style.margin().top(),
+                                    collapse_with_parent_top,
+                                );
 
                                 let image = self.layout_block_image(
                                     child_id,
@@ -805,13 +1026,17 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                                     BlockContext {
                                         parent: area.layout_parent,
                                         x: area.x,
-                                        y: flow.cursor_y,
+                                        y: block_y,
                                         width: area.width,
                                         forced_border_width: None,
                                     },
                                 )?;
 
-                                flow.cursor_y = image.outer_end_y;
+                                flow.cursor_y = normal_flow_block_outer_end_y(
+                                    &image,
+                                    collapse_with_parent_bottom,
+                                );
+                                previous_block_margin_bottom = Some(image.margin.bottom());
 
                                 flow.pending_space = false;
                             }
@@ -826,23 +1051,40 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                         CssDisplay::Block | CssDisplay::Flex => {
                             self.finish_line(&mut flow, 0.0)?;
 
+                            let collapse_plan =
+                                self.parent_child_margin_collapse_plan(child_id, &style);
+                            let collapse_with_parent_top =
+                                area.collapsed_first_child == Some(child_id);
+                            let collapse_with_parent_bottom =
+                                area.collapsed_last_child == Some(child_id);
+                            let block_y = normal_flow_block_context_y(
+                                flow.cursor_y,
+                                previous_block_margin_bottom,
+                                collapse_plan.top,
+                                collapse_with_parent_top,
+                            );
+
                             let block = self.layout_block_element(
                                 child_id,
                                 &style,
                                 BlockContext {
                                     parent: area.layout_parent,
                                     x: area.x,
-                                    y: flow.cursor_y,
+                                    y: block_y,
                                     width: area.width,
                                     forced_border_width: None,
                                 },
+                                Some(collapse_plan),
                             )?;
 
-                            flow.cursor_y = block.outer_end_y;
+                            flow.cursor_y =
+                                normal_flow_block_outer_end_y(&block, collapse_with_parent_bottom);
+                            previous_block_margin_bottom = Some(block.margin.bottom());
                             flow.pending_space = false;
                         }
 
                         CssDisplay::Inline => {
+                            previous_block_margin_bottom = None;
                             self.append_inline_node(child_id, &mut flow, area.underline)?;
                         }
 
@@ -857,6 +1099,154 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         Ok(flow.cursor_y)
     }
 
+    // PHANTOM_2G3_PARENT_CHILD_MARGIN_COLLAPSING
+    // PHANTOM_2G3_DEEP_CHAIN_LINEARIZATION
+    fn parent_child_margin_collapse_plan(
+        &self,
+        node_id: NodeId,
+        style: &ComputedStyle,
+    ) -> ParentChildMarginCollapse {
+        let margin = style.margin();
+        let mut plan = ParentChildMarginCollapse::from_margin(margin);
+
+        if !self.can_collapse_block_with_children(node_id, style) {
+            return plan;
+        }
+
+        let padding = style.padding();
+        let border = style.border_width();
+
+        let first = if edge_is_zero(padding.top()) && edge_is_zero(border.top()) {
+            self.first_margin_collapse_block_child(node_id)
+        } else {
+            None
+        };
+
+        let last = if edge_is_zero(padding.bottom())
+            && edge_is_zero(border.bottom())
+            && allows_bottom_parent_margin_collapse(style)
+        {
+            self.last_margin_collapse_block_child(node_id)
+        } else {
+            None
+        };
+
+        match (first, last) {
+            (Some((first_id, first_style)), Some((last_id, _))) if first_id == last_id => {
+                let child_plan = self.parent_child_margin_collapse_plan(first_id, &first_style);
+
+                plan.top = collapse_adjoining_vertical_margins(plan.top, child_plan.top);
+                plan.bottom = collapse_adjoining_vertical_margins(plan.bottom, child_plan.bottom);
+                plan.first_child = Some(first_id);
+                plan.last_child = Some(last_id);
+            }
+            (first, last) => {
+                if let Some((first_id, first_style)) = first {
+                    let first_plan = self.parent_child_margin_collapse_plan(first_id, &first_style);
+                    plan.top = collapse_adjoining_vertical_margins(plan.top, first_plan.top);
+                    plan.first_child = Some(first_id);
+                }
+
+                if let Some((last_id, last_style)) = last {
+                    let last_plan = self.parent_child_margin_collapse_plan(last_id, &last_style);
+                    plan.bottom =
+                        collapse_adjoining_vertical_margins(plan.bottom, last_plan.bottom);
+                    plan.last_child = Some(last_id);
+                }
+            }
+        }
+
+        plan
+    }
+
+    fn can_collapse_block_with_children(&self, node_id: NodeId, style: &ComputedStyle) -> bool {
+        if style.display() != CssDisplay::Block
+            || matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed)
+        {
+            return false;
+        }
+
+        let Some(node) = self.document.node(node_id) else {
+            return false;
+        };
+        let NodeKind::Element(element) = node.kind() else {
+            return false;
+        };
+
+        if matches!(element.tag_name(), "html" | "body" | "img" | "br") {
+            return false;
+        }
+
+        form_control_kind(element).is_none()
+    }
+
+    fn first_margin_collapse_block_child(
+        &self,
+        parent_id: NodeId,
+    ) -> Option<(NodeId, ComputedStyle)> {
+        let parent = self.document.node(parent_id)?;
+
+        for child_id in parent.children() {
+            match self.classify_margin_collapse_child(*child_id) {
+                MarginCollapseChild::Skip => {}
+                MarginCollapseChild::Block(id, style) => return Some((id, *style)),
+                MarginCollapseChild::Barrier => return None,
+            }
+        }
+
+        None
+    }
+
+    fn last_margin_collapse_block_child(
+        &self,
+        parent_id: NodeId,
+    ) -> Option<(NodeId, ComputedStyle)> {
+        let parent = self.document.node(parent_id)?;
+
+        for child_id in parent.children().iter().rev() {
+            match self.classify_margin_collapse_child(*child_id) {
+                MarginCollapseChild::Skip => {}
+                MarginCollapseChild::Block(id, style) => return Some((id, *style)),
+                MarginCollapseChild::Barrier => return None,
+            }
+        }
+
+        None
+    }
+
+    fn classify_margin_collapse_child(&self, child_id: NodeId) -> MarginCollapseChild {
+        let Some(child) = self.document.node(child_id) else {
+            return MarginCollapseChild::Skip;
+        };
+
+        match child.kind() {
+            NodeKind::Comment(_) => MarginCollapseChild::Skip,
+            NodeKind::Text(text) => {
+                if text.trim().is_empty() {
+                    MarginCollapseChild::Skip
+                } else {
+                    MarginCollapseChild::Barrier
+                }
+            }
+            NodeKind::Element(element) => {
+                let style = self.styles.get(child_id).cloned().unwrap_or_default();
+
+                if style.display() == CssDisplay::None
+                    || matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed)
+                {
+                    return MarginCollapseChild::Skip;
+                }
+
+                if element.tag_name() == "br" || style.display() != CssDisplay::Block {
+                    return MarginCollapseChild::Barrier;
+                }
+
+                MarginCollapseChild::Block(child_id, Box::new(style))
+            }
+            NodeKind::Document => MarginCollapseChild::Barrier,
+        }
+    }
+
     fn layout_block_control(
         &mut self,
         node_id: NodeId,
@@ -864,9 +1254,16 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         context: BlockContext,
         kind: ControlKind,
     ) -> Result<BlockLayoutResult, LayoutError> {
-        let margin = style.margin();
+        let computed_margin = style.margin();
         let (control_width, control_height) =
             control_box_size(style, context.width, kind, context.forced_border_width);
+        let margin = resolve_normal_flow_horizontal_margins(
+            computed_margin,
+            style.margin_auto(),
+            context.width,
+            control_width,
+            context.forced_border_width.is_some(),
+        );
 
         let x = context.x + margin.left();
         let y = context.y + margin.top();
@@ -907,7 +1304,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         let has_content = flow.line.is_some_and(|line| line.used_width > 0.0);
         let used_width = flow.line.map(|line| line.used_width).unwrap_or_default();
 
-        if has_content && used_width + outer_width > flow.width {
+        if flow.whitespace.allows_wrap() && has_content && used_width + outer_width > flow.width {
             self.finish_line(flow, 0.0)?;
             self.ensure_line(flow)?;
         }
@@ -916,13 +1313,26 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             return Ok(());
         };
 
+        let current_baseline_ascent = line.text_ascent.max(line.replaced_ascent);
+        let next_replaced_ascent = line.replaced_ascent.max(outer_height);
+        let next_baseline_ascent = line.text_ascent.max(next_replaced_ascent);
+
+        if next_baseline_ascent > current_baseline_ascent {
+            self.shift_line_baseline_children(
+                line.id,
+                next_baseline_ascent - current_baseline_ascent,
+            )?;
+        }
+
+        let control_y = flow.cursor_y + next_baseline_ascent - margin.bottom() - control_height;
+
         self.push_box(BoxSpec {
             source_node: node_id,
             parent: Some(line.id),
             kind: LayoutKind::Control { kind },
             rect: Rect::new(
                 line.cursor_x + margin.left(),
-                flow.cursor_y + margin.top(),
+                control_y,
                 control_width,
                 control_height,
             ),
@@ -934,13 +1344,20 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         if let Some(open_line) = flow.line.as_mut() {
             open_line.cursor_x += outer_width;
             open_line.used_width += outer_width;
-            open_line.height = open_line.height.max(outer_height);
+            open_line.replaced_ascent = next_replaced_ascent;
+
+            let baseline_ascent = open_line.text_ascent.max(open_line.replaced_ascent);
+            let inline_line_height =
+                baseline_ascent + open_line.text_descent + open_line.text_line_gap;
+
+            open_line.height = open_line.height.max(inline_line_height);
         }
 
         flow.pending_space = false;
 
         Ok(())
     }
+
     fn layout_block_image(
         &mut self,
         node_id: NodeId,
@@ -950,7 +1367,14 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         let spec =
             self.replaced_image_spec(node_id, style, context.width, context.forced_border_width);
 
-        let margin = style.margin();
+        let computed_margin = style.margin();
+        let margin = resolve_normal_flow_horizontal_margins(
+            computed_margin,
+            style.margin_auto(),
+            context.width,
+            spec.border_width,
+            context.forced_border_width.is_some(),
+        );
         let padding = style.padding();
         let border = style.border_width();
 
@@ -1015,7 +1439,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
         let used_width = flow.line.map(|line| line.used_width).unwrap_or_default();
 
-        if has_content && used_width + outer_width > flow.width {
+        if flow.whitespace.allows_wrap() && has_content && used_width + outer_width > flow.width {
             self.finish_line(flow, 0.0)?;
 
             self.ensure_line(flow)?;
@@ -1024,6 +1448,19 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         let Some(line) = flow.line else {
             return Ok(());
         };
+
+        let current_baseline_ascent = line.text_ascent.max(line.replaced_ascent);
+        let next_replaced_ascent = line.replaced_ascent.max(outer_height);
+        let next_baseline_ascent = line.text_ascent.max(next_replaced_ascent);
+
+        if next_baseline_ascent > current_baseline_ascent {
+            self.shift_line_baseline_children(
+                line.id,
+                next_baseline_ascent - current_baseline_ascent,
+            )?;
+        }
+
+        let image_y = flow.cursor_y + next_baseline_ascent - margin.bottom() - spec.border_height;
 
         let (source_start, source_len) = self.push_resource_string(&spec.source)?;
 
@@ -1041,7 +1478,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             },
             rect: Rect::new(
                 line.cursor_x + margin.left(),
-                flow.cursor_y + margin.top(),
+                image_y,
                 spec.border_width,
                 spec.border_height,
             ),
@@ -1052,10 +1489,14 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
         if let Some(open_line) = flow.line.as_mut() {
             open_line.cursor_x += outer_width;
-
             open_line.used_width += outer_width;
+            open_line.replaced_ascent = next_replaced_ascent;
 
-            open_line.height = open_line.height.max(outer_height);
+            let baseline_ascent = open_line.text_ascent.max(open_line.replaced_ascent);
+            let inline_line_height =
+                baseline_ascent + open_line.text_descent + open_line.text_line_gap;
+
+            open_line.height = open_line.height.max(inline_line_height);
         }
 
         flow.pending_space = false;
@@ -1232,15 +1673,25 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         node_id: NodeId,
         style: &ComputedStyle,
         context: BlockContext,
+        collapse_plan: Option<ParentChildMarginCollapse>,
     ) -> Result<BlockLayoutResult, LayoutError> {
-        let margin = style.margin();
+        let source_margin = style.margin();
+        let collapse_plan =
+            collapse_plan.unwrap_or_else(|| ParentChildMarginCollapse::from_margin(source_margin));
+        let computed_margin = EdgeSizes::new(
+            collapse_plan.top,
+            source_margin.right(),
+            collapse_plan.bottom,
+            source_margin.left(),
+        );
         let padding = style.padding();
         let border = style.border_width();
 
         let horizontal_non_content =
             padding.left() + padding.right() + border.left() + border.right();
 
-        let available_border_width = (context.width - margin.left() - margin.right()).max(0.0);
+        let available_border_width =
+            (context.width - computed_margin.left() - computed_margin.right()).max(0.0);
 
         let (content_width, border_box_width) = if let Some(forced_border_width) =
             context.forced_border_width
@@ -1281,6 +1732,14 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             }
         };
 
+        let margin = resolve_normal_flow_horizontal_margins(
+            computed_margin,
+            style.margin_auto(),
+            context.width,
+            border_box_width,
+            context.forced_border_width.is_some(),
+        );
+
         let x = context.x + margin.left();
         let y = context.y + margin.top();
 
@@ -1300,11 +1759,8 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             border,
         })?;
 
-        let whitespace = if is_pre_element(self.document, node_id) {
-            WhitespaceMode::Preserve
-        } else {
-            WhitespaceMode::Collapse
-        };
+        // PHANTOM_2G7_WHITE_SPACE_LAYOUT
+        let whitespace = whitespace_mode_from_computed(style);
 
         let child_content_x = x + border.left() + padding.left();
 
@@ -1346,6 +1802,8 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                     width: content_width,
                     underline: style.underline(),
                     whitespace,
+                    collapsed_first_child: collapse_plan.first_child,
+                    collapsed_last_child: collapse_plan.last_child,
                 },
             )?;
 
@@ -1396,6 +1854,13 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             layout_id,
             Rect::new(x, y, border_box_width, border_box_height),
         )?;
+
+        // PHANTOM_2G11_POSITIONED_LAYOUT_II
+        // A positioned principal box owns the absolute descendants for which it
+        // is the containing block. Static intermediates are traversed later.
+        if style.position() != CssPosition::Static {
+            self.layout_absolute_children(node_id, layout_id)?;
+        }
 
         Ok(BlockLayoutResult {
             id: layout_id,
@@ -1478,7 +1943,9 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
             let style = self.styles.get(*child_id).cloned().unwrap_or_default();
 
-            if style.display() == CssDisplay::None {
+            if style.display() == CssDisplay::None
+                || matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed)
+            {
                 continue;
             }
 
@@ -1780,7 +2247,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             return self.layout_anonymous_text_item(node_id, style, &text, context);
         }
 
-        self.layout_block_element(node_id, style, context)
+        self.layout_block_element(node_id, style, context, None)
     }
 
     fn layout_anonymous_text_item(
@@ -1812,7 +2279,9 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             y: context.y,
             width: width.max(1.0),
             underline: style.underline(),
-            whitespace: WhitespaceMode::Collapse,
+            whitespace: whitespace_mode_from_computed(style),
+            collapsed_first_child: None,
+            collapsed_last_child: None,
         });
 
         self.append_text(node_id, text, style, &mut flow, style.underline())?;
@@ -2709,6 +3178,323 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         Ok(())
     }
 
+    // PHANTOM_2G11_POSITIONED_LAYOUT_II
+    // PHANTOM_2G12_POSITIONED_LAYOUT_III
+    // PHANTOM_2G14_FIXED_POSITIONING_I
+    fn layout_absolute_children(
+        &mut self,
+        dom_parent: NodeId,
+        layout_parent: LayoutId,
+    ) -> Result<(), LayoutError> {
+        let Some(parent) = self.document.node(dom_parent) else {
+            return Ok(());
+        };
+
+        // Walk through static DOM intermediates. A relative/absolute descendant
+        // establishes its own absolute-positioning boundary and is therefore not
+        // traversed here. This lets us wait until the actual containing block has
+        // final geometry before resolving percentage/bottom insets.
+        let mut pending = parent.children().iter().rev().copied().collect::<Vec<_>>();
+
+        while let Some(child_id) = pending.pop() {
+            let Some(child) = self.document.node(child_id) else {
+                continue;
+            };
+            let NodeKind::Element(element) = child.kind() else {
+                continue;
+            };
+
+            let style = self.styles.get(child_id).cloned().unwrap_or_default();
+            if style.display() == CssDisplay::None {
+                continue;
+            }
+
+            if matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed) {
+                let control_kind = form_control_kind(element);
+                let is_image = element.tag_name() == "img";
+                let is_break = element.tag_name() == "br";
+
+                // PHANTOM_2G14_FIXED_POSITIONING_I
+                // Fixed boxes use the viewport directly. Absolute boxes keep the
+                // nearest positioned ancestor / initial-containing-block contract.
+                let containing = if style.position() == CssPosition::Fixed {
+                    self.viewport
+                } else {
+                    self.absolute_containing_block_rect(layout_parent)
+                        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
+                };
+
+                let forced_border_width = if control_kind.is_none() && !is_image {
+                    absolute_auto_border_width(&style, containing.width())
+                } else {
+                    None
+                };
+
+                let context = BlockContext {
+                    parent: layout_parent,
+                    x: containing.x(),
+                    y: containing.y(),
+                    width: containing.width(),
+                    forced_border_width,
+                };
+
+                let result = if let Some(control_kind) = control_kind {
+                    self.layout_block_control(child_id, &style, context, control_kind)?
+                } else if is_image {
+                    self.layout_block_image(child_id, &style, context)?
+                } else if is_break {
+                    continue;
+                } else {
+                    // Absolute/fixed inline elements are blockified at this foundation
+                    // boundary by routing them through the principal block builder.
+                    self.layout_block_element(child_id, &style, context, None)?
+                };
+
+                self.place_positioned_box(result.id, &style, containing)?;
+                continue;
+            }
+
+            if style.position() != CssPosition::Static && style.display() != CssDisplay::Inline {
+                continue;
+            }
+
+            for descendant in child.children().iter().rev() {
+                pending.push(*descendant);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn absolute_containing_block_rect(&self, from: LayoutId) -> Option<Rect> {
+        let mut current = Some(from);
+
+        while let Some(id) = current {
+            let index = usize::try_from(id.0).ok()?;
+            let layout_box = self.boxes.get(index)?;
+
+            if layout_box.kind == LayoutKind::Root {
+                // PHANTOM_2G13_VIEWPORT_GEOMETRY_FOUNDATION
+                // The initial containing block is the viewport, not the measured
+                // document-content height stored on the cold root box.
+                return Some(self.viewport);
+            }
+
+            let establishes = self
+                .styles
+                .get(layout_box.source_node)
+                .is_some_and(|style| style.position() != CssPosition::Static);
+
+            if establishes {
+                return Some(Rect::new(
+                    layout_box.rect.x() + layout_box.border.left(),
+                    layout_box.rect.y() + layout_box.border.top(),
+                    (layout_box.rect.width()
+                        - layout_box.border.left()
+                        - layout_box.border.right())
+                    .max(0.0),
+                    (layout_box.rect.height()
+                        - layout_box.border.top()
+                        - layout_box.border.bottom())
+                    .max(0.0),
+                ));
+            }
+
+            current = layout_box.parent;
+        }
+
+        None
+    }
+
+    fn place_positioned_box(
+        &mut self,
+        id: LayoutId,
+        style: &ComputedStyle,
+        containing: Rect,
+    ) -> Result<(), LayoutError> {
+        let rect = self
+            .get_box_rect(id)
+            .ok_or(LayoutError::BoxCapacityExceeded)?;
+        let margin = style.margin();
+
+        let target_x = match style.left() {
+            Length::Auto => match style.right() {
+                Length::Auto => containing.x() + margin.left(),
+                right => {
+                    containing.right()
+                        - resolve_relative_offset(right, containing.width())
+                        - margin.right()
+                        - rect.width()
+                }
+            },
+            left => {
+                containing.x() + resolve_relative_offset(left, containing.width()) + margin.left()
+            }
+        };
+
+        let target_y = match style.top() {
+            Length::Auto => match style.bottom() {
+                Length::Auto => containing.y() + margin.top(),
+                bottom => {
+                    containing.bottom()
+                        - resolve_relative_offset(bottom, containing.height())
+                        - margin.bottom()
+                        - rect.height()
+                }
+            },
+            top => {
+                containing.y() + resolve_relative_offset(top, containing.height()) + margin.top()
+            }
+        };
+
+        self.shift_subtree_preserving_fixed_descendants(
+            id,
+            target_x - rect.x(),
+            target_y - rect.y(),
+        )
+    }
+
+    // PHANTOM_2G10_POSITIONED_LAYOUT_I
+    fn apply_relative_positioning(&mut self) -> Result<(), LayoutError> {
+        let box_count = self.boxes.len();
+
+        for index in 0..box_count {
+            let (id, source_node, kind) = {
+                let layout_box = self
+                    .boxes
+                    .get(index)
+                    .ok_or(LayoutError::BoxCapacityExceeded)?;
+
+                (layout_box.id, layout_box.source_node, layout_box.kind)
+            };
+
+            if !matches!(
+                kind,
+                LayoutKind::Block
+                    | LayoutKind::Flex
+                    | LayoutKind::Image { .. }
+                    | LayoutKind::Control { .. }
+            ) {
+                continue;
+            }
+
+            let Some(style) = self.styles.get(source_node) else {
+                continue;
+            };
+
+            if style.position() != CssPosition::Relative {
+                continue;
+            }
+
+            let containing = self
+                .position_containing_block_rect(id)
+                .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+
+            let dx = relative_axis_delta(style.left(), style.right(), containing.width());
+            let dy = relative_axis_delta(style.top(), style.bottom(), containing.height());
+
+            if dx != 0.0 || dy != 0.0 {
+                self.shift_subtree_preserving_fixed_descendants(id, dx, dy)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn position_containing_block_rect(&self, id: LayoutId) -> Option<Rect> {
+        let index = usize::try_from(id.0).ok()?;
+        let mut parent = self.boxes.get(index)?.parent;
+
+        while let Some(parent_id) = parent {
+            let parent_index = usize::try_from(parent_id.0).ok()?;
+            let layout_box = self.boxes.get(parent_index)?;
+
+            match layout_box.kind {
+                LayoutKind::Root => return Some(layout_box.rect),
+                LayoutKind::Block | LayoutKind::Flex => {
+                    let horizontal_non_content = layout_box.border.left()
+                        + layout_box.padding.left()
+                        + layout_box.padding.right()
+                        + layout_box.border.right();
+                    let vertical_non_content = layout_box.border.top()
+                        + layout_box.padding.top()
+                        + layout_box.padding.bottom()
+                        + layout_box.border.bottom();
+
+                    return Some(Rect::new(
+                        layout_box.rect.x() + layout_box.border.left() + layout_box.padding.left(),
+                        layout_box.rect.y() + layout_box.border.top() + layout_box.padding.top(),
+                        (layout_box.rect.width() - horizontal_non_content).max(0.0),
+                        (layout_box.rect.height() - vertical_non_content).max(0.0),
+                    ));
+                }
+                LayoutKind::Line
+                | LayoutKind::Image { .. }
+                | LayoutKind::Control { .. }
+                | LayoutKind::Text { .. } => {}
+            }
+
+            parent = layout_box.parent;
+        }
+
+        None
+    }
+
+    // PHANTOM_2G14_FIXED_POSITIONING_I
+    // Ancestor placement/relative translations must not drag viewport-fixed descendants.
+    // Fixed principal boxes are attached directly to the positioned layout owner
+    // by layout_absolute_children, so pruning that child also prunes its subtree.
+    fn shift_subtree_preserving_fixed_descendants(
+        &mut self,
+        root: LayoutId,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(), LayoutError> {
+        let mut stack = vec![root];
+
+        while let Some(id) = stack.pop() {
+            let index = usize::try_from(id.0).map_err(|_| LayoutError::BoxCapacityExceeded)?;
+            let first_child = self
+                .boxes
+                .get(index)
+                .ok_or(LayoutError::BoxCapacityExceeded)?
+                .first_child;
+
+            if let Some(first_child) = first_child {
+                let mut child = Some(first_child);
+
+                while let Some(child_id) = child {
+                    let child_index = usize::try_from(child_id.0)
+                        .map_err(|_| LayoutError::BoxCapacityExceeded)?;
+                    let child_box = self
+                        .boxes
+                        .get(child_index)
+                        .ok_or(LayoutError::BoxCapacityExceeded)?;
+                    let next = child_box.next_sibling;
+                    let fixed = self
+                        .styles
+                        .get(child_box.source_node)
+                        .is_some_and(|style| style.position() == CssPosition::Fixed);
+
+                    if !fixed {
+                        stack.push(child_id);
+                    }
+
+                    child = next;
+                }
+            }
+
+            let layout_box = self
+                .boxes
+                .get_mut(index)
+                .ok_or(LayoutError::BoxCapacityExceeded)?;
+            layout_box.rect.x += dx;
+            layout_box.rect.y += dy;
+        }
+
+        Ok(())
+    }
+
     fn shift_subtree(&mut self, root: LayoutId, dx: f32, dy: f32) -> Result<(), LayoutError> {
         let mut stack = vec![root];
 
@@ -2811,7 +3597,9 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             }
 
             NodeKind::Element(element) => {
-                if style.display() == CssDisplay::None {
+                if style.display() == CssDisplay::None
+                    || matches!(style.position(), CssPosition::Absolute | CssPosition::Fixed)
+                {
                     return Ok(());
                 }
 
@@ -2832,19 +3620,30 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
                 match style.display() {
                     CssDisplay::Inline => {
+                        // PHANTOM_2G7_INLINE_WHITE_SPACE_OVERRIDE
+                        let previous_whitespace = flow.whitespace;
+                        flow.whitespace = whitespace_mode_from_computed(&style);
+
                         for child in children {
                             self.append_inline_node(child, flow, effective_underline)?;
                         }
+
+                        flow.whitespace = previous_whitespace;
                     }
 
                     CssDisplay::Block | CssDisplay::Flex => {
-                        self.force_line_break(flow, style.font_size() * 1.25)?;
+                        let line_height = self.line_height_for(&style);
+                        self.force_line_break(flow, line_height)?;
+
+                        let previous_whitespace = flow.whitespace;
+                        flow.whitespace = whitespace_mode_from_computed(&style);
 
                         for child in children {
                             self.append_inline_node(child, flow, effective_underline)?;
                         }
 
-                        self.force_line_break(flow, style.font_size() * 1.25)?;
+                        flow.whitespace = previous_whitespace;
+                        self.force_line_break(flow, line_height)?;
                     }
 
                     CssDisplay::None => {}
@@ -2864,12 +3663,24 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         underline: bool,
     ) -> Result<(), LayoutError> {
         match flow.whitespace {
-            WhitespaceMode::Collapse => {
-                self.append_collapsed_text(node_id, text, style, flow, underline)
+            WhitespaceMode::Normal => {
+                self.append_collapsed_text(node_id, text, style, flow, underline, true)
             }
 
-            WhitespaceMode::Preserve => {
-                self.append_preserved_text(node_id, text, style, flow, underline)
+            WhitespaceMode::NoWrap => {
+                self.append_collapsed_text(node_id, text, style, flow, underline, false)
+            }
+
+            WhitespaceMode::Pre => {
+                self.append_preserved_text(node_id, text, style, flow, underline, false)
+            }
+
+            WhitespaceMode::PreWrap => {
+                self.append_preserved_text(node_id, text, style, flow, underline, true)
+            }
+
+            WhitespaceMode::PreLine => {
+                self.append_pre_line_text(node_id, text, style, flow, underline)
             }
         }
     }
@@ -2881,13 +3692,21 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         style: &ComputedStyle,
         flow: &mut InlineFlow,
         underline: bool,
+        allow_wrap: bool,
     ) -> Result<(), LayoutError> {
         let mut word_start = None;
 
         for (index, character) in text.char_indices() {
             if character.is_whitespace() {
                 if let Some(start) = word_start.take() {
-                    self.append_word(node_id, &text[start..index], style, flow, underline)?;
+                    self.append_word(
+                        node_id,
+                        &text[start..index],
+                        style,
+                        flow,
+                        underline,
+                        allow_wrap,
+                    )?;
                 }
 
                 flow.pending_space = true;
@@ -2897,7 +3716,33 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         }
 
         if let Some(start) = word_start {
-            self.append_word(node_id, &text[start..], style, flow, underline)?;
+            self.append_word(node_id, &text[start..], style, flow, underline, allow_wrap)?;
+        }
+
+        Ok(())
+    }
+
+    fn append_pre_line_text(
+        &mut self,
+        node_id: NodeId,
+        text: &str,
+        style: &ComputedStyle,
+        flow: &mut InlineFlow,
+        underline: bool,
+    ) -> Result<(), LayoutError> {
+        let normalized = normalize_preserved_line_breaks(text);
+        let mut segments = normalized.split('\n').peekable();
+
+        while let Some(segment) = segments.next() {
+            if !segment.is_empty() {
+                self.append_collapsed_text(node_id, segment, style, flow, underline, true)?;
+            }
+
+            if segments.peek().is_some() {
+                flow.pending_space = false;
+                let line_height = self.line_height_for(style);
+                self.force_line_break(flow, line_height)?;
+            }
         }
 
         Ok(())
@@ -2910,23 +3755,94 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         style: &ComputedStyle,
         flow: &mut InlineFlow,
         underline: bool,
+        allow_wrap: bool,
     ) -> Result<(), LayoutError> {
         let expanded = text.replace('\t', "    ");
-        let mut segments = expanded.split('\n').peekable();
+        let normalized = normalize_preserved_line_breaks(&expanded);
+        let mut segments = normalized.split('\n').peekable();
 
         while let Some(segment) = segments.next() {
             if !segment.is_empty() {
-                self.push_text_fragment(node_id, segment, style, flow, underline, false)?;
+                if allow_wrap {
+                    self.append_preserved_wrapping_segment(
+                        node_id, segment, style, flow, underline,
+                    )?;
+                } else {
+                    self.push_text_fragment(node_id, segment, style, flow, underline, false)?;
+                }
             }
 
             if segments.peek().is_some() {
                 let line_height = self.line_height_for(style);
-
                 self.force_line_break(flow, line_height)?;
             }
         }
 
         Ok(())
+    }
+
+    fn append_preserved_wrapping_segment(
+        &mut self,
+        node_id: NodeId,
+        segment: &str,
+        style: &ComputedStyle,
+        flow: &mut InlineFlow,
+        underline: bool,
+    ) -> Result<(), LayoutError> {
+        let mut run_start = 0;
+        let mut run_is_space = None;
+
+        for (index, character) in segment.char_indices() {
+            let is_space = character == ' ';
+
+            match run_is_space {
+                None => run_is_space = Some(is_space),
+                Some(previous) if previous != is_space => {
+                    self.append_preserved_run(
+                        node_id,
+                        &segment[run_start..index],
+                        style,
+                        flow,
+                        underline,
+                    )?;
+                    run_start = index;
+                    run_is_space = Some(is_space);
+                }
+                Some(_) => {}
+            }
+        }
+
+        if run_start < segment.len() {
+            self.append_preserved_run(node_id, &segment[run_start..], style, flow, underline)?;
+        }
+
+        Ok(())
+    }
+
+    fn append_preserved_run(
+        &mut self,
+        node_id: NodeId,
+        run: &str,
+        style: &ComputedStyle,
+        flow: &mut InlineFlow,
+        underline: bool,
+    ) -> Result<(), LayoutError> {
+        if run.is_empty() {
+            return Ok(());
+        }
+
+        self.ensure_line(flow)?;
+
+        let text_style = text_style_from_computed(style);
+        let run_width = self.shaper.measure(run, text_style).advance();
+        let has_content = flow.line.is_some_and(|line| line.used_width > 0.0);
+        let used_width = flow.line.map(|line| line.used_width).unwrap_or_default();
+
+        if has_content && used_width + run_width > flow.width {
+            self.finish_line(flow, 0.0)?;
+        }
+
+        self.push_text_fragment(node_id, run, style, flow, underline, false)
     }
 
     fn append_word(
@@ -2936,6 +3852,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         style: &ComputedStyle,
         flow: &mut InlineFlow,
         underline: bool,
+        allow_wrap: bool,
     ) -> Result<(), LayoutError> {
         if word.is_empty() {
             return Ok(());
@@ -2956,7 +3873,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
 
         let used_width = flow.line.map(|line| line.used_width).unwrap_or_default();
 
-        if has_content && used_width + needed_width > flow.width {
+        if allow_wrap && has_content && used_width + needed_width > flow.width {
             self.finish_line(flow, 0.0)?;
             self.ensure_line(flow)?;
 
@@ -3011,7 +3928,27 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                 0.0
             };
 
-        let fragment_height = self.shaper.font_metrics(text_style).line_height();
+        let metrics = self.shaper.font_metrics(text_style);
+        let fragment_height = metrics.line_height();
+
+        // PHANTOM_2G6_INLINE_LINE_HEIGHT
+        let used_line_height = style.used_line_height(fragment_height);
+        let effective_line_gap = metrics
+            .line_gap()
+            .max(used_line_height - metrics.ascent() - metrics.descent());
+
+        let current_baseline_ascent = line.text_ascent.max(line.replaced_ascent);
+        let next_text_ascent = line.text_ascent.max(metrics.ascent());
+        let next_baseline_ascent = next_text_ascent.max(line.replaced_ascent);
+
+        if next_baseline_ascent > current_baseline_ascent {
+            self.shift_line_baseline_children(
+                line.id,
+                next_baseline_ascent - current_baseline_ascent,
+            )?;
+        }
+
+        let fragment_y = flow.cursor_y + next_baseline_ascent - metrics.ascent();
 
         self.push_box(BoxSpec {
             source_node: node_id,
@@ -3021,12 +3958,7 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
                 len,
                 underline,
             },
-            rect: Rect::new(
-                line.cursor_x,
-                flow.cursor_y,
-                fragment_width,
-                fragment_height,
-            ),
+            rect: Rect::new(line.cursor_x, fragment_y, fragment_width, fragment_height),
             margin: EdgeSizes::zero(),
             padding: EdgeSizes::zero(),
             border: EdgeSizes::zero(),
@@ -3035,7 +3967,15 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         if let Some(open_line) = flow.line.as_mut() {
             open_line.cursor_x += fragment_width;
             open_line.used_width += fragment_width;
-            open_line.height = open_line.height.max(fragment_height);
+            open_line.text_ascent = next_text_ascent;
+            open_line.text_descent = open_line.text_descent.max(metrics.descent());
+            open_line.text_line_gap = open_line.text_line_gap.max(effective_line_gap);
+
+            let baseline_ascent = open_line.text_ascent.max(open_line.replaced_ascent);
+            let inline_line_height =
+                baseline_ascent + open_line.text_descent + open_line.text_line_gap;
+
+            open_line.height = open_line.height.max(inline_line_height);
         }
 
         Ok(())
@@ -3061,6 +4001,10 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
             cursor_x: flow.x,
             used_width: 0.0,
             height: 0.0,
+            text_ascent: 0.0,
+            text_descent: 0.0,
+            text_line_gap: 0.0,
+            replaced_ascent: 0.0,
         });
 
         Ok(())
@@ -3097,10 +4041,64 @@ impl<'a, S: TextShaper + ?Sized> LayoutBuilder<'a, S> {
         Ok(())
     }
 
+    fn shift_line_baseline_children(
+        &mut self,
+        line_id: LayoutId,
+        delta_y: f32,
+    ) -> Result<(), LayoutError> {
+        if delta_y <= f32::EPSILON {
+            return Ok(());
+        }
+
+        let line_index =
+            usize::try_from(line_id.0).map_err(|_| LayoutError::BoxCapacityExceeded)?;
+        let mut child = self
+            .boxes
+            .get(line_index)
+            .ok_or(LayoutError::BoxCapacityExceeded)?
+            .first_child;
+
+        while let Some(child_id) = child {
+            let child_index =
+                usize::try_from(child_id.0).map_err(|_| LayoutError::BoxCapacityExceeded)?;
+
+            let (next_sibling, participates_in_baseline) = {
+                let layout_box = self
+                    .boxes
+                    .get(child_index)
+                    .ok_or(LayoutError::BoxCapacityExceeded)?;
+
+                (
+                    layout_box.next_sibling,
+                    matches!(
+                        layout_box.kind,
+                        LayoutKind::Text { .. }
+                            | LayoutKind::Image { .. }
+                            | LayoutKind::Control { .. }
+                    ),
+                )
+            };
+
+            if participates_in_baseline {
+                let layout_box = self
+                    .boxes
+                    .get_mut(child_index)
+                    .ok_or(LayoutError::BoxCapacityExceeded)?;
+
+                layout_box.rect.y += delta_y;
+            }
+
+            child = next_sibling;
+        }
+
+        Ok(())
+    }
     fn line_height_for(&self, style: &ComputedStyle) -> f32 {
-        self.shaper
-            .font_metrics(text_style_from_computed(style))
-            .line_height()
+        // PHANTOM_2G7_PRESERVED_LINE_HEIGHT
+        let metrics = self.shaper.font_metrics(text_style_from_computed(style));
+        let natural = metrics.line_height();
+
+        style.used_line_height(natural).max(natural)
     }
 
     fn push_text_string(&mut self, value: &str) -> Result<(u32, u32), LayoutError> {
@@ -3288,6 +4286,99 @@ fn min_border_height(style: &ComputedStyle) -> f32 {
 fn max_border_height(style: &ComputedStyle) -> Option<f32> {
     resolve_max_height_constraint(style.max_height())
         .map(|value| sizing_to_border_height(style, value))
+}
+
+// PHANTOM_2G2_SIBLING_MARGIN_COLLAPSING
+fn collapse_adjoining_vertical_margins(first: f32, second: f32) -> f32 {
+    let positive = first.max(0.0).max(second.max(0.0));
+    let negative = first.min(0.0).min(second.min(0.0));
+
+    positive + negative
+}
+
+fn collapsed_sibling_block_context_y(
+    cursor_y: f32,
+    previous_bottom: Option<f32>,
+    next_top: f32,
+) -> f32 {
+    let Some(previous_bottom) = previous_bottom else {
+        return cursor_y;
+    };
+
+    let collapsed = collapse_adjoining_vertical_margins(previous_bottom, next_top);
+
+    cursor_y - previous_bottom - next_top + collapsed
+}
+
+fn normal_flow_block_context_y(
+    cursor_y: f32,
+    previous_bottom: Option<f32>,
+    next_top: f32,
+    collapse_with_parent_top: bool,
+) -> f32 {
+    let context_y = collapsed_sibling_block_context_y(cursor_y, previous_bottom, next_top);
+
+    if collapse_with_parent_top && previous_bottom.is_none() {
+        context_y - next_top
+    } else {
+        context_y
+    }
+}
+
+fn normal_flow_block_outer_end_y(
+    block: &BlockLayoutResult,
+    collapse_with_parent_bottom: bool,
+) -> f32 {
+    if collapse_with_parent_bottom {
+        block.outer_end_y - block.margin.bottom()
+    } else {
+        block.outer_end_y
+    }
+}
+
+fn edge_is_zero(value: f32) -> bool {
+    value.abs() <= f32::EPSILON
+}
+
+fn allows_bottom_parent_margin_collapse(style: &ComputedStyle) -> bool {
+    if style.height() != Length::Auto {
+        return false;
+    }
+
+    match style.min_height() {
+        Length::Auto => true,
+        Length::Px(value) | Length::Percent(value) => edge_is_zero(value),
+    }
+}
+
+// PHANTOM_2G1_NORMAL_FLOW_AUTO_MARGINS
+fn resolve_normal_flow_horizontal_margins(
+    margin: EdgeSizes,
+    automatic: AutoEdges,
+    containing_width: f32,
+    border_width: f32,
+    flex_owned: bool,
+) -> EdgeSizes {
+    if flex_owned || automatic.horizontal_count() == 0 {
+        return margin;
+    }
+
+    let fixed_left = if automatic.left() { 0.0 } else { margin.left() };
+    let fixed_right = if automatic.right() {
+        0.0
+    } else {
+        margin.right()
+    };
+    let free = (containing_width - border_width - fixed_left - fixed_right).max(0.0);
+
+    let (left, right) = match (automatic.left(), automatic.right()) {
+        (true, true) => (free * 0.5, free * 0.5),
+        (true, false) => (free, margin.right()),
+        (false, true) => (margin.left(), free),
+        (false, false) => (margin.left(), margin.right()),
+    };
+
+    EdgeSizes::new(margin.top(), right, margin.bottom(), left)
 }
 
 fn resolve_gap(gap: Length, containing_size: f32) -> f32 {
@@ -3489,6 +4580,46 @@ fn distribute_column_main_axis(items: &mut [FlexItemLayout], gap: f32, content_h
     }
 }
 
+// PHANTOM_2G10_POSITIONED_LAYOUT_I
+// PHANTOM_2G12_POSITIONED_LAYOUT_III
+fn absolute_auto_border_width(style: &ComputedStyle, containing_width: f32) -> Option<f32> {
+    if style.width() != Length::Auto {
+        return None;
+    }
+
+    let (left, right) = match (style.left(), style.right()) {
+        (Length::Auto, _) | (_, Length::Auto) => return None,
+        (left, right) => (left, right),
+    };
+
+    let margin = style.margin();
+    let used = containing_width
+        - resolve_relative_offset(left, containing_width)
+        - resolve_relative_offset(right, containing_width)
+        - margin.left()
+        - margin.right();
+
+    Some(used.max(0.0))
+}
+
+fn relative_axis_delta(start: Length, end: Length, containing_size: f32) -> f32 {
+    match start {
+        Length::Auto => match end {
+            Length::Auto => 0.0,
+            _ => -resolve_relative_offset(end, containing_size),
+        },
+        _ => resolve_relative_offset(start, containing_size),
+    }
+}
+
+fn resolve_relative_offset(length: Length, containing_size: f32) -> f32 {
+    match length {
+        Length::Auto => 0.0,
+        Length::Px(value) => value,
+        Length::Percent(percent) => containing_size * percent / 100.0,
+    }
+}
+
 fn resolve_axis_length(length: Length, auto_value: f32, containing_size: f32) -> f32 {
     match length {
         Length::Auto => auto_value,
@@ -3566,6 +4697,14 @@ fn sanitize_viewport_width(viewport_width: f32) -> f32 {
     }
 }
 
+fn sanitize_viewport_height(viewport_height: f32) -> f32 {
+    if viewport_height.is_finite() {
+        viewport_height.max(1.0)
+    } else {
+        DEFAULT_LAYOUT_VIEWPORT_HEIGHT
+    }
+}
+
 fn is_image_element(document: &Document, node_id: NodeId) -> bool {
     document
         .node(node_id)
@@ -3577,14 +4716,18 @@ fn is_image_element(document: &Document, node_id: NodeId) -> bool {
         .unwrap_or(false)
 }
 
-fn is_pre_element(document: &Document, node_id: NodeId) -> bool {
-    document
-        .node(node_id)
-        .and_then(|node| match node.kind() {
-            NodeKind::Element(element) => Some(element.tag_name() == "pre"),
-            _ => None,
-        })
-        .unwrap_or(false)
+fn whitespace_mode_from_computed(style: &ComputedStyle) -> WhitespaceMode {
+    match style.white_space() {
+        CssWhiteSpace::Normal => WhitespaceMode::Normal,
+        CssWhiteSpace::NoWrap => WhitespaceMode::NoWrap,
+        CssWhiteSpace::Pre => WhitespaceMode::Pre,
+        CssWhiteSpace::PreWrap => WhitespaceMode::PreWrap,
+        CssWhiteSpace::PreLine => WhitespaceMode::PreLine,
+    }
+}
+
+fn normalize_preserved_line_breaks(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn text_style_from_computed(style: &ComputedStyle) -> TextStyle {

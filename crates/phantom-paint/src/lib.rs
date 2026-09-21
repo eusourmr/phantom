@@ -10,7 +10,9 @@
 
 #![forbid(unsafe_code)]
 
-use phantom_css::{FontFamily, FontStyle, FontWeight, ObjectFit, ObjectPosition, Rgba, StyleMap};
+use phantom_css::{
+    FontFamily, FontStyle, FontWeight, ObjectFit, ObjectPosition, Position, Rgba, StyleMap, ZIndex,
+};
 use phantom_image::ImageResourceId;
 use phantom_layout::{LayoutBox, LayoutKind, LayoutSnapshot, Rect as LayoutRect};
 use thiserror::Error;
@@ -203,6 +205,16 @@ impl From<FontStyle> for PaintFontStyle {
     }
 }
 
+// PHANTOM_2G15_STACKING_Z_INDEX_I
+/// Coordinate attachment for one paint command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaintAttachment {
+    /// Command moves with ordinary document scrolling.
+    Document,
+    /// Command is attached to the visual viewport.
+    Viewport,
+}
+
 /// One immutable, renderer-neutral paint command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintCommand {
@@ -268,6 +280,7 @@ pub enum PaintCommand {
 #[derive(Debug, Clone, Default)]
 pub struct PaintList {
     commands: Vec<PaintCommand>,
+    attachments: Vec<PaintAttachment>,
     text: String,
     viewport_width: f32,
     content_height: f32,
@@ -279,6 +292,7 @@ impl PaintList {
     pub fn empty(viewport_width: f32) -> Self {
         Self {
             commands: Vec::new(),
+            attachments: Vec::new(),
             text: String::new(),
             viewport_width: viewport_width.max(1.0),
             content_height: 0.0,
@@ -289,6 +303,12 @@ impl PaintList {
     #[must_use]
     pub fn commands(&self) -> &[PaintCommand] {
         &self.commands
+    }
+
+    /// Returns the coordinate attachment for one paint command.
+    #[must_use]
+    pub fn attachment(&self, index: usize) -> Option<PaintAttachment> {
+        self.attachments.get(index).copied()
     }
 
     /// Returns the number of paint commands.
@@ -356,39 +376,142 @@ pub fn build_paint_list(
 ) -> Result<PaintList, PaintError> {
     let mut paint = PaintList {
         commands: Vec::with_capacity(layout.len()),
+        attachments: Vec::with_capacity(layout.len()),
         text: String::with_capacity(layout.text_bytes()),
         viewport_width: layout.viewport_width(),
         content_height: layout.content_height(),
     };
 
-    for layout_box in layout.boxes() {
-        match layout_box.kind() {
-            LayoutKind::Root | LayoutKind::Line | LayoutKind::Control { .. } => {}
+    let Some(root) = layout.boxes().first() else {
+        return Ok(paint);
+    };
 
-            LayoutKind::Block | LayoutKind::Flex => {
-                push_background(&mut paint, layout_box, styles);
-
-                push_border(&mut paint, layout_box, styles);
-            }
-
-            LayoutKind::Image { resource, .. } => {
-                push_background(&mut paint, layout_box, styles);
-
-                push_border(&mut paint, layout_box, styles);
-
-                push_image(&mut paint, layout, layout_box, styles, resource)?;
-            }
-
-            LayoutKind::Text { underline, .. } => {
-                push_text(&mut paint, layout, layout_box, styles, underline)?;
-            }
-        }
-    }
+    paint_subtree(
+        &mut paint,
+        layout,
+        styles,
+        root.id(),
+        PaintAttachment::Document,
+    )?;
 
     Ok(paint)
 }
 
-fn push_background(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap) {
+fn paint_subtree(
+    paint: &mut PaintList,
+    layout: &LayoutSnapshot,
+    styles: &StyleMap,
+    id: phantom_layout::LayoutId,
+    inherited_attachment: PaintAttachment,
+) -> Result<(), PaintError> {
+    let Some(layout_box) = layout.get(id) else {
+        return Ok(());
+    };
+
+    let attachment = if inherited_attachment == PaintAttachment::Viewport
+        || styles
+            .get(layout_box.source_node())
+            .is_some_and(|style| style.position() == Position::Fixed)
+    {
+        PaintAttachment::Viewport
+    } else {
+        PaintAttachment::Document
+    };
+
+    paint_one_box(paint, layout, layout_box, styles, attachment)?;
+
+    let mut children = Vec::new();
+    let mut child = layout_box.first_child();
+    let mut source_order = 0_usize;
+
+    while let Some(child_id) = child {
+        let Some(child_box) = layout.get(child_id) else {
+            break;
+        };
+        children.push((child_id, stacking_key(child_box, styles, source_order)));
+        source_order = source_order.saturating_add(1);
+        child = child_box.next_sibling();
+    }
+
+    children.sort_by_key(|(_, key)| *key);
+
+    for (child_id, _) in children {
+        paint_subtree(paint, layout, styles, child_id, attachment)?;
+    }
+
+    Ok(())
+}
+
+fn stacking_key(
+    layout_box: &LayoutBox,
+    styles: &StyleMap,
+    source_order: usize,
+) -> (u8, i32, usize) {
+    if !matches!(
+        layout_box.kind(),
+        LayoutKind::Block
+            | LayoutKind::Flex
+            | LayoutKind::Image { .. }
+            | LayoutKind::Control { .. }
+    ) {
+        return (1, 0, source_order);
+    }
+
+    let Some(style) = styles.get(layout_box.source_node()) else {
+        return (1, 0, source_order);
+    };
+
+    if style.position() == Position::Static {
+        return (1, 0, source_order);
+    }
+
+    match style.z_index() {
+        ZIndex::Integer(value) if value < 0 => (0, value, source_order),
+        ZIndex::Integer(value) if value > 0 => (2, value, source_order),
+        ZIndex::Auto | ZIndex::Integer(_) => (1, 0, source_order),
+    }
+}
+
+fn paint_one_box(
+    paint: &mut PaintList,
+    layout: &LayoutSnapshot,
+    layout_box: &LayoutBox,
+    styles: &StyleMap,
+    attachment: PaintAttachment,
+) -> Result<(), PaintError> {
+    match layout_box.kind() {
+        LayoutKind::Root | LayoutKind::Line | LayoutKind::Control { .. } => {}
+
+        LayoutKind::Block | LayoutKind::Flex => {
+            push_background(paint, layout_box, styles, attachment);
+            push_border(paint, layout_box, styles, attachment);
+        }
+
+        LayoutKind::Image { resource, .. } => {
+            push_background(paint, layout_box, styles, attachment);
+            push_border(paint, layout_box, styles, attachment);
+            push_image(paint, layout, layout_box, styles, resource, attachment)?;
+        }
+
+        LayoutKind::Text { underline, .. } => {
+            push_text(paint, layout, layout_box, styles, underline, attachment)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn push_command(paint: &mut PaintList, attachment: PaintAttachment, command: PaintCommand) {
+    paint.commands.push(command);
+    paint.attachments.push(attachment);
+}
+
+fn push_background(
+    paint: &mut PaintList,
+    layout_box: &LayoutBox,
+    styles: &StyleMap,
+    attachment: PaintAttachment,
+) {
     let Some(style) = styles.get(layout_box.source_node()) else {
         return;
     };
@@ -407,13 +530,22 @@ fn push_background(paint: &mut PaintList, layout_box: &LayoutBox, styles: &Style
         return;
     }
 
-    paint.commands.push(PaintCommand::FillRect {
-        rect: rect.into(),
-        color: background.into(),
-    });
+    push_command(
+        paint,
+        attachment,
+        PaintCommand::FillRect {
+            rect: rect.into(),
+            color: background.into(),
+        },
+    );
 }
 
-fn push_border(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap) {
+fn push_border(
+    paint: &mut PaintList,
+    layout_box: &LayoutBox,
+    styles: &StyleMap,
+    attachment: PaintAttachment,
+) {
     let Some(style) = styles.get(layout_box.source_node()) else {
         return;
     };
@@ -432,45 +564,60 @@ fn push_border(paint: &mut PaintList, layout_box: &LayoutBox, styles: &StyleMap)
     let color = style.border_color().into();
 
     if border.top() > 0.0 {
-        paint.commands.push(PaintCommand::FillRect {
-            rect: PaintRect::new(rect.x(), rect.y(), rect.width(), border.top()),
-            color,
-        });
+        push_command(
+            paint,
+            attachment,
+            PaintCommand::FillRect {
+                rect: PaintRect::new(rect.x(), rect.y(), rect.width(), border.top()),
+                color,
+            },
+        );
     }
 
     let vertical_start = rect.y() + border.top();
-
     let vertical_height = (rect.height() - border.top() - border.bottom()).max(0.0);
 
     if border.left() > 0.0 && vertical_height > 0.0 {
-        paint.commands.push(PaintCommand::FillRect {
-            rect: PaintRect::new(rect.x(), vertical_start, border.left(), vertical_height),
-            color,
-        });
+        push_command(
+            paint,
+            attachment,
+            PaintCommand::FillRect {
+                rect: PaintRect::new(rect.x(), vertical_start, border.left(), vertical_height),
+                color,
+            },
+        );
     }
 
     if border.right() > 0.0 && vertical_height > 0.0 {
-        paint.commands.push(PaintCommand::FillRect {
-            rect: PaintRect::new(
-                rect.x() + rect.width() - border.right(),
-                vertical_start,
-                border.right(),
-                vertical_height,
-            ),
-            color,
-        });
+        push_command(
+            paint,
+            attachment,
+            PaintCommand::FillRect {
+                rect: PaintRect::new(
+                    rect.x() + rect.width() - border.right(),
+                    vertical_start,
+                    border.right(),
+                    vertical_height,
+                ),
+                color,
+            },
+        );
     }
 
     if border.bottom() > 0.0 {
-        paint.commands.push(PaintCommand::FillRect {
-            rect: PaintRect::new(
-                rect.x(),
-                rect.y() + rect.height() - border.bottom(),
-                rect.width(),
-                border.bottom(),
-            ),
-            color,
-        });
+        push_command(
+            paint,
+            attachment,
+            PaintCommand::FillRect {
+                rect: PaintRect::new(
+                    rect.x(),
+                    rect.y() + rect.height() - border.bottom(),
+                    rect.width(),
+                    border.bottom(),
+                ),
+                color,
+            },
+        );
     }
 }
 
@@ -480,18 +627,16 @@ fn push_image(
     layout_box: &LayoutBox,
     styles: &StyleMap,
     resource: ImageResourceId,
+    attachment: PaintAttachment,
 ) -> Result<(), PaintError> {
     let rect = layout_box.rect();
     let border = layout_box.border();
     let padding = layout_box.padding();
 
     let x = rect.x() + border.left() + padding.left();
-
     let y = rect.y() + border.top() + padding.top();
-
     let width =
         (rect.width() - border.left() - border.right() - padding.left() - padding.right()).max(0.0);
-
     let height =
         (rect.height() - border.top() - border.bottom() - padding.top() - padding.bottom())
             .max(0.0);
@@ -501,27 +646,28 @@ fn push_image(
     {
         let start =
             u32::try_from(paint.text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
-
         let len = u32::try_from(alt.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
-
         paint.text.push_str(alt);
-
         Some(PaintTextRange { start, len })
     } else {
         None
     };
 
-    paint.commands.push(PaintCommand::Image {
-        rect: PaintRect::new(x, y, width, height),
-        resource,
-        alt,
-        fit: styles
-            .get(layout_box.source_node())
-            .map_or(ObjectFit::Fill, |style| style.object_fit()),
-        position: styles
-            .get(layout_box.source_node())
-            .map_or_else(ObjectPosition::default, |style| style.object_position()),
-    });
+    push_command(
+        paint,
+        attachment,
+        PaintCommand::Image {
+            rect: PaintRect::new(x, y, width, height),
+            resource,
+            alt,
+            fit: styles
+                .get(layout_box.source_node())
+                .map_or(ObjectFit::Fill, |style| style.object_fit()),
+            position: styles
+                .get(layout_box.source_node())
+                .map_or_else(ObjectPosition::default, |style| style.object_position()),
+        },
+    );
 
     Ok(())
 }
@@ -532,6 +678,7 @@ fn push_text(
     layout_box: &LayoutBox,
     styles: &StyleMap,
     underline: bool,
+    attachment: PaintAttachment,
 ) -> Result<(), PaintError> {
     let Some(text) = layout.text_for(layout_box) else {
         return Ok(());
@@ -542,9 +689,7 @@ fn push_text(
     }
 
     let start = u32::try_from(paint.text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
-
     let len = u32::try_from(text.len()).map_err(|_| PaintError::TextCapacityExceeded)?;
-
     paint.text.push_str(text);
 
     let style = styles
@@ -552,16 +697,20 @@ fn push_text(
         .cloned()
         .unwrap_or_default();
 
-    paint.commands.push(PaintCommand::Text {
-        rect: layout_box.rect().into(),
-        text: PaintTextRange { start, len },
-        color: style.color().into(),
-        font_size: style.font_size(),
-        weight: style.font_weight().into(),
-        style: style.font_style().into(),
-        family: style.font_family().into(),
-        underline,
-    });
+    push_command(
+        paint,
+        attachment,
+        PaintCommand::Text {
+            rect: layout_box.rect().into(),
+            text: PaintTextRange { start, len },
+            color: style.color().into(),
+            font_size: style.font_size(),
+            weight: style.font_weight().into(),
+            style: style.font_style().into(),
+            family: style.font_family().into(),
+            underline,
+        },
+    );
 
     Ok(())
 }

@@ -22,8 +22,8 @@ use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
     Engine, FormControlId, FormControlKind, FormSubmissionError, ImageLoading, ObjectFit,
-    ObjectPosition, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle, PaintFontWeight,
-    PaintList, PaintRect, PaintTextRange, ResourcePriority,
+    ObjectPosition, PaintAttachment, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle,
+    PaintFontWeight, PaintList, PaintRect, PaintTextRange, ResourcePriority,
 };
 use phantom_image::{
     AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
@@ -48,6 +48,24 @@ const MAX_AUTO_SUBRESOURCE_BODY_BYTES_PER_DOCUMENT: u64 = 96 * 1024 * 1024;
 const MAX_TAB_RASTER_BYTES: u64 = 256 * 1024 * 1024;
 const LAZY_LOAD_MARGIN: f32 = 768.0;
 const MAX_RECENTLY_CLOSED_TABS: usize = 10;
+
+// PHANTOM_2G9_UI_ALPHA_10_TAB_STRIP_PRESSURE
+// PHANTOM_2G10_UI_ALPHA_11_TAB_GEOMETRY
+// PHANTOM_2G11_UI_ALPHA_12_TAB_IDENTITY
+const PINNED_TAB_WIDTH: f32 = 40.0;
+const REGULAR_TAB_MAX_WIDTH: f32 = 184.0;
+const REGULAR_TAB_MIN_WIDTH: f32 = 56.0;
+const REGULAR_TAB_CLOSE_MIN_WIDTH: f32 = 96.0;
+const TAB_OUTER_WIDTH_ESTIMATE: f32 = 12.0;
+const TAB_ITEM_GAP: f32 = 4.0;
+const NEW_TAB_BUTTON_WIDTH: f32 = 31.0;
+const HISTORY_BUTTON_WIDTH: f32 = 31.0;
+const WINDOW_CONTROL_WIDTH: f32 = 38.0;
+const WINDOW_CONTROLS_GAP: f32 = 2.0;
+const WINDOW_CONTROLS_LEFT_GAP: f32 = 8.0;
+const WINDOW_CONTROLS_RIGHT_PADDING: f32 = 20.0;
+const MIN_DRAG_REGION_WIDTH: f32 = 16.0;
+const TOP_CHROME_FIXED_GAP_BUDGET: f32 = 24.0;
 
 const PAGE_LOGO_BYTES: &[u8] = include_bytes!("../assets/branding/phantom-logo.png");
 
@@ -902,6 +920,13 @@ impl PhantomApp {
 
     // PHANTOM_2F7_UI_ALPHA_1
     // PHANTOM_2F_FINAL_UI_CONSOLIDATED
+    // PHANTOM_2G1_UI_ALPHA_2
+    // PHANTOM_2G2_UI_ALPHA_3
+    // PHANTOM_2G9_UI_ALPHA_10
+    // PHANTOM_2G10_UI_ALPHA_11
+    // PHANTOM_2G13_UI_ALPHA_14_TAB_SURFACE
+    // PHANTOM_2G14_UI_ALPHA_15_TAB_INTERACTION
+    // PHANTOM_2G15_UI_ALPHA_16_TAB_SURFACE
     fn top_chrome(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
         let mut activate_tab = None;
@@ -917,80 +942,89 @@ impl PhantomApp {
         let panel_fill = ui.visuals().panel_fill;
 
         egui::Panel::top("phantom-top-chrome")
-            .exact_size(50.0)
+            .exact_size(48.0)
             .frame(
                 egui::Frame::new()
                     .fill(panel_fill)
-                    .inner_margin(egui::Margin::symmetric(10, 7)),
+                    .inner_margin(egui::Margin::symmetric(8, 6)),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                let pinned_tab_count = self.tabs.iter().filter(|tab| tab.pinned).count();
+                let regular_tab_count = self.tabs.len().saturating_sub(pinned_tab_count);
+                let regular_tab_width = regular_tab_width_for(
+                    ui.available_width(),
+                    pinned_tab_count,
+                    regular_tab_count,
+                    !self.recently_closed_tabs.is_empty(),
+                );
+
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = TAB_ITEM_GAP;
+
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let is_active = index == self.active_tab;
                         let title = tab_title(tab);
-                        let width = if tab.pinned { 44.0 } else { 184.0 };
-                        let fill = if is_active {
-                            ui.visuals().extreme_bg_color
+                        // PHANTOM_2G7_PINNED_TABS_I
+                        let width = if tab.pinned {
+                            PINNED_TAB_WIDTH
                         } else {
-                            ui.visuals().faint_bg_color
+                            regular_tab_width
                         };
+                        // Alpha 16 removes the remaining filled pill treatment.
+                        // Active state is carried by typography + the bottom indicator.
+                        let fill = tab_surface_fill(panel_fill);
 
                         let tab_frame = egui::Frame::new()
                             .fill(fill)
-                            .corner_radius(10)
-                            .inner_margin(egui::Margin::symmetric(7, 4))
+                            .stroke(egui::Stroke::new(0.0, egui::Color32::TRANSPARENT))
+                            .corner_radius(7)
+                            .inner_margin(egui::Margin::symmetric(6, 3))
                             .show(ui, |ui| {
                                 ui.set_width(width);
 
-                                ui.horizontal(|ui| {
-                                    let has_site_icon = tab.site_icon.is_some();
+                                ui.horizontal_centered(|ui| {
+                                    let show_close =
+                                        !tab.pinned && width >= REGULAR_TAB_CLOSE_MIN_WIDTH;
                                     let tab_response = if tab.pinned {
-                                        if let Some(site_icon) = &tab.site_icon {
-                                            let (rect, response) = ui.allocate_exact_size(
-                                                egui::vec2(28.0, 24.0),
-                                                egui::Sense::click(),
-                                            );
-                                            let icon_rect = egui::Rect::from_center_size(
-                                                rect.center(),
-                                                egui::vec2(18.0, 18.0),
-                                            );
-                                            ui.painter().image(
-                                                site_icon.id(),
-                                                icon_rect,
-                                                unit_uv(),
-                                                egui::Color32::WHITE,
-                                            );
-                                            response
-                                        } else {
-                                            ui.add_sized(
-                                                [28.0, 24.0],
-                                                egui::Button::new(lucide_text(Icon::Pin, 14.0))
-                                                    .frame(false),
-                                            )
-                                        }
+                                        // PHANTOM_2G12_UI_ALPHA_13_TAB_IDENTITY_GEOMETRY
+                                        // Pinned and regular tabs now paint the same 16x16
+                                        // identity glyph on the same 24px vertical track.
+                                        tab_identity_slot(
+                                            ui,
+                                            tab.site_icon.as_ref(),
+                                            egui::vec2(28.0, 24.0),
+                                            egui::Sense::click(),
+                                        )
                                     } else {
-                                        if let Some(site_icon) = &tab.site_icon {
-                                            ui.image((site_icon.id(), egui::vec2(16.0, 16.0)));
-                                        }
+                                        // PHANTOM_2G11_UI_ALPHA_12_TAB_IDENTITY
+                                        // Keep a permanent icon slot so the title never jumps
+                                        // horizontally when the asynchronous favicon arrives.
+                                        let _ = tab_identity_slot(
+                                            ui,
+                                            tab.site_icon.as_ref(),
+                                            egui::vec2(TAB_IDENTITY_ICON_SIZE, 24.0),
+                                            egui::Sense::hover(),
+                                        );
 
-                                        let title_width = if has_site_icon {
-                                            (width - 56.0).max(64.0)
-                                        } else {
-                                            (width - 36.0).max(80.0)
-                                        };
+                                        let title_reserve = regular_tab_title_reserve(show_close);
+                                        let title_width = (width - title_reserve).max(18.0);
+                                        let visible_title = compact_tab_title(&title, title_width);
 
                                         let title_text = if is_active {
-                                            egui::RichText::new(title.clone()).size(13.0).strong()
+                                            egui::RichText::new(visible_title).size(13.0).strong()
                                         } else {
-                                            egui::RichText::new(title.clone()).size(13.0)
+                                            egui::RichText::new(visible_title).size(13.0)
                                         };
 
                                         ui.add_sized(
                                             [title_width, 24.0],
-                                            egui::Button::new(title_text).frame(false),
+                                            egui::Label::new(title_text)
+                                                .sense(egui::Sense::click()),
                                         )
                                     };
-                                    let close_clicked = !tab.pinned
+                                    // Pinned tabs never expose X. Under tab-strip pressure,
+                                    // regular tabs keep closing available via Ctrl+W/context menu.
+                                    let close_clicked = show_close
                                         && icon_button(ui, Icon::X, true, [25.0, 24.0], 13.0)
                                             .on_hover_text("Fechar aba · Ctrl+W")
                                             .clicked();
@@ -1000,9 +1034,21 @@ impl PhantomApp {
                                 .inner
                             });
 
+                        if is_active {
+                            let indicator = active_tab_indicator_rect(tab_frame.response.rect);
+                            ui.painter().rect_filled(
+                                indicator,
+                                1.0,
+                                ui.visuals().selection.bg_fill,
+                            );
+                        }
+
                         let (tab_response, close_clicked) = tab_frame.inner;
                         let tab_response = tab_response.on_hover_text(if tab.pinned {
-                            format!("{} · aba fixada", tab.title)
+                            format!(
+                                "{} · aba fixada · fechar com Ctrl+W ou menu de contexto",
+                                tab.title
+                            )
                         } else {
                             tab.title.clone()
                         });
@@ -1039,6 +1085,18 @@ impl PhantomApp {
                         if close_clicked {
                             close_tab = Some(index);
                         }
+
+                        // PHANTOM_2G8_PINNED_TABS_II_GROUP_BOUNDARY
+                        let ends_pinned_group = tab.pinned
+                            && self
+                                .tabs
+                                .get(index.saturating_add(1))
+                                .is_some_and(|candidate| !candidate.pinned);
+
+                        if ends_pinned_group {
+                            ui.separator();
+                            ui.add_space(2.0);
+                        }
                     }
 
                     if icon_button(ui, Icon::Plus, true, [31.0, 30.0], 16.0)
@@ -1047,11 +1105,6 @@ impl PhantomApp {
                     {
                         create_tab = true;
                     }
-
-                    const WINDOW_CONTROL_WIDTH: f32 = 38.0;
-                    const WINDOW_CONTROLS_GAP: f32 = 2.0;
-                    const WINDOW_CONTROLS_LEFT_GAP: f32 = 8.0;
-                    const WINDOW_CONTROLS_RIGHT_PADDING: f32 = 20.0;
 
                     let controls_width = WINDOW_CONTROLS_LEFT_GAP
                         + WINDOW_CONTROL_WIDTH * 3.0
@@ -1064,7 +1117,8 @@ impl PhantomApp {
                     {
                         reopen_closed_tab = true;
                     }
-                    let drag_width = (ui.available_width() - controls_width).max(16.0);
+                    let drag_width =
+                        (ui.available_width() - controls_width).max(MIN_DRAG_REGION_WIDTH);
                     let (_, drag_response) = ui.allocate_exact_size(
                         egui::vec2(drag_width, 30.0),
                         egui::Sense::click_and_drag(),
@@ -1175,26 +1229,36 @@ impl PhantomApp {
             NavigationPhase::Failed => self.document_error_page(ui, self.active_tab()),
         }
     }
+    // PHANTOM_2G3_UI_ALPHA_4_MASCOT_INTEGRATION
+    // PHANTOM_2G4_UI_ALPHA_5_TYPOGRAPHY
     fn empty_page(&self, ui: &mut egui::Ui, tab: &BrowserTab) {
-        ui.add_space(70.0);
+        ui.add_space(34.0);
 
         ui.vertical_centered(|ui| {
             if let Some(logo) = &self.page_logo {
-                ui.image((logo.id(), egui::vec2(172.0, 172.0)));
-                ui.add_space(14.0);
+                ui.image((logo.id(), egui::vec2(196.0, 196.0)));
+                ui.add_space(13.0);
             }
 
-            ui.heading("Nova aba");
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Phantom · Independent Web Browser").size(17.0));
+            // PHANTOM_2G6_UI_ALPHA_7_HIERARCHY
+            ui.label(egui::RichText::new("Nova aba").size(22.0).strong());
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("UI Alpha 1 · motor próprio em Rust")
-                    .size(11.5)
+                egui::RichText::new("Motor próprio em Rust · interface nativa")
+                    .size(12.5)
                     .weak(),
             );
-            ui.add_space(14.0);
-            ui.label(egui::RichText::new(&tab.status).small().weak());
+            ui.add_space(12.0);
+
+            // PHANTOM_2G5_UI_ALPHA_6_STATUS_REFINEMENT
+            if !tab.status.trim().is_empty() {
+                ui.label(
+                    egui::RichText::new(&tab.status)
+                        .size(10.5)
+                        .monospace()
+                        .weak(),
+                );
+            }
         });
     }
 
@@ -1288,6 +1352,27 @@ impl PhantomApp {
     fn rendered_page(&mut self, ui: &mut egui::Ui) {
         let active_index = self.active_tab;
 
+        let viewport_width = ui.available_width().max(1.0);
+        let viewport_height = ui.available_height().max(1.0);
+        {
+            let tab = &mut self.tabs[active_index];
+            let current_viewport = (
+                tab.engine.layout().viewport_width(),
+                tab.engine.layout().viewport_height(),
+            );
+            if layout_viewport_changed(
+                current_viewport.0,
+                current_viewport.1,
+                viewport_width,
+                viewport_height,
+            ) && let Err(error) = tab
+                .engine
+                .relayout_with_viewport(viewport_width, viewport_height)
+            {
+                tab.status = format!("Falha ao ajustar viewport: {error}");
+            }
+        }
+
         {
             let tab = &mut self.tabs[active_index];
 
@@ -1364,7 +1449,11 @@ impl PhantomApp {
                         (viewport.bottom() - origin.y).max(0.0),
                     );
 
-                    paint_page(ui, origin, paint, image_textures);
+                    let viewport_offset = egui::vec2(
+                        (viewport.left() - origin.x).max(0.0),
+                        (viewport.top() - origin.y).max(0.0),
+                    );
+                    paint_page(ui, origin, viewport_offset, paint, image_textures);
 
                     for control in &controls {
                         let rect = control.rect();
@@ -2844,10 +2933,16 @@ fn visible_image_resources(
     paint
         .commands()
         .iter()
-        .filter_map(|command| {
+        .enumerate()
+        .filter_map(|(index, command)| {
             let PaintCommand::Image { rect, resource, .. } = command else {
                 return None;
             };
+
+            if paint.attachment(index) == Some(PaintAttachment::Viewport) {
+                return Some(*resource);
+            }
+
             let bottom = rect.y() + rect.height();
             (bottom >= visible_top && rect.y() <= visible_bottom).then_some(*resource)
         })
@@ -3128,6 +3223,122 @@ fn pointer_in_navigation_zone(context: &egui::Context) -> bool {
         .is_some_and(|position| zone.contains(position))
 }
 
+// PHANTOM_2G15_UI_ALPHA_16_TAB_SURFACE
+const fn tab_surface_fill(panel_fill: egui::Color32) -> egui::Color32 {
+    panel_fill
+}
+
+// PHANTOM_2G13_VIEWPORT_GEOMETRY_FOUNDATION
+fn layout_viewport_changed(
+    current_width: f32,
+    current_height: f32,
+    requested_width: f32,
+    requested_height: f32,
+) -> bool {
+    (current_width - requested_width).abs() > 0.5 || (current_height - requested_height).abs() > 0.5
+}
+
+// PHANTOM_2G13_UI_ALPHA_14_TAB_SURFACE
+const TAB_ACTIVE_INDICATOR_HEIGHT: f32 = 2.0;
+const TAB_ACTIVE_INDICATOR_INSET: f32 = 6.0;
+
+fn active_tab_indicator_rect(tab_rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(
+            tab_rect.left() + TAB_ACTIVE_INDICATOR_INSET,
+            tab_rect.bottom() - TAB_ACTIVE_INDICATOR_HEIGHT,
+        ),
+        egui::pos2(
+            (tab_rect.right() - TAB_ACTIVE_INDICATOR_INSET)
+                .max(tab_rect.left() + TAB_ACTIVE_INDICATOR_INSET),
+            tab_rect.bottom(),
+        ),
+    )
+}
+
+// PHANTOM_2G12_UI_ALPHA_13_TAB_IDENTITY_GEOMETRY
+const TAB_IDENTITY_ICON_SIZE: f32 = 16.0;
+
+fn tab_identity_slot(
+    ui: &mut egui::Ui,
+    site_icon: Option<&egui::TextureHandle>,
+    slot_size: egui::Vec2,
+    sense: egui::Sense,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(slot_size, sense);
+    let icon_rect = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(TAB_IDENTITY_ICON_SIZE, TAB_IDENTITY_ICON_SIZE),
+    );
+
+    if let Some(site_icon) = site_icon {
+        ui.painter()
+            .image(site_icon.id(), icon_rect, unit_uv(), egui::Color32::WHITE);
+    } else {
+        ui.painter().circle_stroke(
+            icon_rect.center(),
+            3.0,
+            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+        );
+    }
+
+    response
+}
+
+fn regular_tab_width_for(
+    available_width: f32,
+    pinned_count: usize,
+    regular_count: usize,
+    has_recently_closed: bool,
+) -> f32 {
+    if regular_count == 0 {
+        return REGULAR_TAB_MAX_WIDTH;
+    }
+
+    let available_width = if available_width.is_finite() {
+        available_width.max(0.0)
+    } else {
+        1280.0
+    };
+    let controls_width = WINDOW_CONTROLS_LEFT_GAP
+        + WINDOW_CONTROL_WIDTH * 3.0
+        + WINDOW_CONTROLS_GAP * 2.0
+        + WINDOW_CONTROLS_RIGHT_PADDING;
+    let history_width = if has_recently_closed {
+        HISTORY_BUTTON_WIDTH + TAB_OUTER_WIDTH_ESTIMATE
+    } else {
+        0.0
+    };
+    let pinned_width = pinned_count as f32 * (PINNED_TAB_WIDTH + TAB_OUTER_WIDTH_ESTIMATE);
+    let pinned_boundary = if pinned_count > 0 { 10.0 } else { 0.0 };
+    let reserved_width = controls_width
+        + MIN_DRAG_REGION_WIDTH
+        + NEW_TAB_BUTTON_WIDTH
+        + history_width
+        + pinned_width
+        + pinned_boundary
+        + TOP_CHROME_FIXED_GAP_BUDGET;
+    let per_tab_width = ((available_width - reserved_width).max(0.0) / regular_count as f32
+        - TAB_OUTER_WIDTH_ESTIMATE)
+        .clamp(REGULAR_TAB_MIN_WIDTH, REGULAR_TAB_MAX_WIDTH);
+    let count_based_width = (REGULAR_TAB_MAX_WIDTH - regular_count.saturating_sub(3) as f32 * 12.0)
+        .clamp(112.0, REGULAR_TAB_MAX_WIDTH);
+
+    per_tab_width.min(count_based_width)
+}
+
+// PHANTOM_2G11_UI_ALPHA_12_TAB_IDENTITY
+const fn regular_tab_title_reserve(show_close: bool) -> f32 {
+    if show_close { 56.0 } else { 28.0 }
+}
+
+fn compact_tab_title(title: &str, available_width: f32) -> String {
+    let estimated_characters = (available_width.max(0.0) / 7.2).floor() as usize;
+    let maximum_characters = estimated_characters.clamp(1, 19);
+
+    truncate_text(title, maximum_characters)
+}
+
 fn tab_title(tab: &BrowserTab) -> String {
     let title = truncate_text(&tab.title, 19);
 
@@ -3167,18 +3378,37 @@ fn truncate_text(text: &str, maximum_characters: usize) -> String {
     truncated
 }
 
+// PHANTOM_2G15_FIXED_COMPOSITION_I
+fn paint_command_origin(
+    document_origin: egui::Pos2,
+    viewport_offset: egui::Vec2,
+    attachment: PaintAttachment,
+) -> egui::Pos2 {
+    match attachment {
+        PaintAttachment::Document => document_origin,
+        PaintAttachment::Viewport => document_origin + viewport_offset,
+    }
+}
+
 fn paint_page(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
+    viewport_offset: egui::Vec2,
     paint: &PaintList,
     image_textures: &BTreeMap<ImageResourceId, ImageTextureBinding>,
 ) {
     let now = Instant::now();
 
-    for command in paint.commands() {
+    for (index, command) in paint.commands().iter().enumerate() {
+        let command_origin = paint_command_origin(
+            origin,
+            viewport_offset,
+            paint.attachment(index).unwrap_or(PaintAttachment::Document),
+        );
+
         match command {
             PaintCommand::FillRect { rect, color } => {
-                let target = egui_rect(origin, *rect);
+                let target = egui_rect(command_origin, *rect);
 
                 ui.painter().rect_filled(target, 0.0, egui_color(*color));
             }
@@ -3190,7 +3420,7 @@ fn paint_page(
                 fit,
                 position,
             } => {
-                let target = egui_rect(origin, *rect);
+                let target = egui_rect(command_origin, *rect);
 
                 if let Some(texture) = image_textures
                     .get(resource)
@@ -3236,7 +3466,10 @@ fn paint_page(
                     rich_text = rich_text.underline();
                 }
 
-                ui.put(egui_rect(origin, *rect), egui::Label::new(rich_text).wrap());
+                ui.put(
+                    egui_rect(command_origin, *rect),
+                    egui::Label::new(rich_text).wrap(),
+                );
             }
         }
     }
@@ -3482,6 +3715,94 @@ mod navigation_compatibility;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpha10_tab_width_keeps_full_size_when_space_is_available() {
+        let width = regular_tab_width_for(1600.0, 0, 3, false);
+
+        assert!((width - REGULAR_TAB_MAX_WIDTH).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn alpha10_tab_width_responds_to_strip_pressure() {
+        let roomy = regular_tab_width_for(1200.0, 0, 5, false);
+        let pressured = regular_tab_width_for(800.0, 0, 5, false);
+        let pinned_pressure = regular_tab_width_for(800.0, 2, 5, false);
+
+        assert!(pressured < roomy);
+        assert!(pinned_pressure < pressured);
+        assert!(pinned_pressure >= REGULAR_TAB_MIN_WIDTH);
+    }
+
+    #[test]
+    fn alpha10_recently_closed_control_is_reserved_in_tab_budget() {
+        let without_history = regular_tab_width_for(800.0, 0, 5, false);
+        let with_history = regular_tab_width_for(800.0, 0, 5, true);
+
+        assert!(with_history < without_history);
+    }
+
+    #[test]
+    fn alpha10_compact_title_remains_unicode_safe() {
+        let title = compact_tab_title("Navegação segura", 30.0);
+
+        assert!(title.ends_with('…'));
+        assert!(title.starts_with("Nave"));
+    }
+
+    #[test]
+    fn alpha12_regular_tab_keeps_icon_slot_without_close_button() {
+        assert!((regular_tab_title_reserve(false) - 28.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn alpha12_regular_tab_reserves_close_button_without_moving_icon_slot() {
+        assert!((regular_tab_title_reserve(true) - 56.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn alpha14_active_indicator_is_inset_inside_tab_surface() {
+        let tab = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(120.0, 30.0));
+        let indicator = active_tab_indicator_rect(tab);
+
+        assert!((indicator.left() - 16.0).abs() < f32::EPSILON);
+        assert!((indicator.right() - 124.0).abs() < f32::EPSILON);
+        assert!((indicator.height() - TAB_ACTIVE_INDICATOR_HEIGHT).abs() < f32::EPSILON);
+        assert_eq!(indicator.bottom(), tab.bottom());
+    }
+
+    #[test]
+    fn alpha16_tab_surface_uses_chrome_fill_without_button_pill() {
+        let panel = egui::Color32::from_rgb(21, 22, 24);
+        assert_eq!(tab_surface_fill(panel), panel);
+    }
+
+    #[test]
+    fn fixed_paint_origin_tracks_viewport_offset_only_for_viewport_attachment() {
+        let origin = egui::pos2(20.0, 30.0);
+        let offset = egui::vec2(40.0, 120.0);
+
+        assert_eq!(
+            paint_command_origin(origin, offset, PaintAttachment::Document),
+            origin
+        );
+        assert_eq!(
+            paint_command_origin(origin, offset, PaintAttachment::Viewport),
+            egui::pos2(60.0, 150.0)
+        );
+    }
+
+    #[test]
+    fn viewport_relayout_threshold_ignores_subpixel_noise() {
+        assert!(!layout_viewport_changed(800.0, 600.0, 800.25, 599.75));
+        assert!(layout_viewport_changed(800.0, 600.0, 801.0, 600.0));
+        assert!(layout_viewport_changed(800.0, 600.0, 800.0, 601.0));
+    }
+
+    #[test]
+    fn alpha13_pinned_and_regular_tabs_share_identity_visual_size() {
+        assert!((TAB_IDENTITY_ICON_SIZE - 16.0).abs() <= f32::EPSILON);
+    }
 
     #[test]
     fn image_batch_drop_signals_cancellation() {

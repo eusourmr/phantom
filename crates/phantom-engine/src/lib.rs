@@ -14,7 +14,7 @@ use phantom_html::{HtmlError, tree_builder::TreeBuildReport};
 pub use phantom_css::{
     AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing, ComputedStyle, Display,
     EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, JustifyContent, Length,
-    ObjectFit, ObjectPosition, Rgba, StyleMap,
+    ObjectFit, ObjectPosition, Rgba, StyleMap, ZIndex,
 };
 pub use phantom_image::{
     DecodedImage, ImageCatalog, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat,
@@ -22,17 +22,22 @@ pub use phantom_image::{
 };
 pub use phantom_layout::{
     ControlKind, LayoutBox, LayoutError, LayoutId, LayoutKind, LayoutSnapshot, Rect,
-    build_layout_snapshot, build_layout_snapshot_with_images, build_layout_snapshot_with_shaper,
+    build_layout_snapshot, build_layout_snapshot_with_images,
+    build_layout_snapshot_with_images_and_viewport, build_layout_snapshot_with_shaper,
     build_layout_snapshot_with_shaper_and_images,
+    build_layout_snapshot_with_shaper_and_images_and_viewport, build_layout_snapshot_with_viewport,
 };
 pub use phantom_paint::{
-    PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle, PaintFontWeight,
-    PaintList, PaintRect, PaintTextRange, build_paint_list,
+    PaintAttachment, PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle,
+    PaintFontWeight, PaintList, PaintRect, PaintTextRange, build_paint_list,
 };
 
 use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
+const DEFAULT_LAYOUT_VIEWPORT_HEIGHT: f32 = 768.0;
+
+// PHANTOM_2G13_VIEWPORT_GEOMETRY_FOUNDATION
 
 // PHANTOM_2C14_FRAGMENT_TARGET
 /// One visible same-document fragment target resolved from the active snapshot.
@@ -404,7 +409,10 @@ impl Engine {
             html_build_report: None,
             styles: StyleMap::default(),
             images: ImageCatalog::default(),
-            layout: LayoutSnapshot::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
+            layout: LayoutSnapshot::empty_with_viewport(
+                DEFAULT_LAYOUT_VIEWPORT_WIDTH,
+                DEFAULT_LAYOUT_VIEWPORT_HEIGHT,
+            ),
             paint: PaintList::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             links: Vec::new(),
             state: EngineState::Idle,
@@ -793,7 +801,11 @@ impl Engine {
     ///
     /// Returns [`EngineError`] if parsing, layout, or paint generation fails.
     pub fn load_html(&mut self, source: &str) -> Result<(), EngineError> {
-        self.load_html_with_viewport(source, DEFAULT_LAYOUT_VIEWPORT_WIDTH)
+        self.load_html_with_viewport_size(
+            source,
+            DEFAULT_LAYOUT_VIEWPORT_WIDTH,
+            DEFAULT_LAYOUT_VIEWPORT_HEIGHT,
+        )
     }
 
     /// Parses HTML using an explicit layout viewport width.
@@ -806,11 +818,30 @@ impl Engine {
         source: &str,
         viewport_width: f32,
     ) -> Result<(), EngineError> {
+        self.load_html_with_viewport_size(source, viewport_width, DEFAULT_LAYOUT_VIEWPORT_HEIGHT)
+    }
+
+    /// Parses HTML using explicit two-dimensional layout viewport geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if parsing, layout, or paint generation fails.
+    pub fn load_html_with_viewport_size(
+        &mut self,
+        source: &str,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Result<(), EngineError> {
         let (document, html_build_report) = phantom_html::parse_with_report(source)?;
         let styles = phantom_css::compute_styles(&document);
         let images = ImageCatalog::default();
-        let layout =
-            build_layout_snapshot_with_images(&document, &styles, viewport_width, &images)?;
+        let layout = build_layout_snapshot_with_images_and_viewport(
+            &document,
+            &styles,
+            viewport_width,
+            viewport_height,
+            &images,
+        )?;
         let paint = build_paint_list(&layout, &styles)?;
         let links = build_link_regions(&document, &layout);
 
@@ -844,7 +875,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.images.insert(resource, metadata);
 
-        self.relayout(viewport_width)
+        self.relayout_with_viewport(viewport_width, self.layout.viewport_height().max(1.0))
     }
 
     /// Recalculates geometry and paint commands for a changed viewport width.
@@ -855,10 +886,26 @@ impl Engine {
     ///
     /// Returns [`EngineError`] if layout or paint generation fails.
     pub fn relayout(&mut self, viewport_width: f32) -> Result<(), EngineError> {
-        let layout = build_layout_snapshot_with_images(
+        self.relayout_with_viewport(viewport_width, self.layout.viewport_height().max(1.0))
+    }
+
+    /// Recalculates geometry and paint commands for a changed two-dimensional viewport.
+    ///
+    /// DOM parsing and CSS cascade are deliberately not repeated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if layout or paint generation fails.
+    pub fn relayout_with_viewport(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Result<(), EngineError> {
+        let layout = build_layout_snapshot_with_images_and_viewport(
             &self.document,
             &self.styles,
             viewport_width,
+            viewport_height,
             &self.images,
         )?;
 

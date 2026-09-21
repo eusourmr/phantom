@@ -94,6 +94,37 @@ pub enum Display {
     Flex,
 }
 
+// PHANTOM_2G10_POSITIONED_LAYOUT_I
+// PHANTOM_2G11_POSITIONED_LAYOUT_II
+// PHANTOM_2G12_POSITIONED_LAYOUT_III
+// PHANTOM_2G14_FIXED_POSITIONING_I
+/// CSS positioning mode supported by the current computed-style layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Position {
+    /// Ordinary normal-flow positioning.
+    Static,
+
+    /// Normal-flow placement followed by a visual relative offset.
+    Relative,
+
+    /// Out-of-flow positioning against the nearest positioned containing block.
+    Absolute,
+
+    /// Out-of-flow positioning against the initial viewport containing block.
+    Fixed,
+}
+
+// PHANTOM_2G15_STACKING_Z_INDEX_I
+/// Coarse computed z-index used by the first Phantom stacking model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ZIndex {
+    /// Preserve source-order stacking without an explicit integer level.
+    Auto,
+
+    /// Explicit bounded integer stacking level.
+    Integer(i32),
+}
+
 /// Font weight used by a computed style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FontWeight {
@@ -122,6 +153,41 @@ pub enum FontFamily {
 
     /// Monospace family.
     Monospace,
+}
+
+// PHANTOM_2G6_LINE_HEIGHT_FOUNDATION
+/// Computed CSS `line-height` behavior.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineHeight {
+    /// Use the text backend's natural line height.
+    Normal,
+
+    /// Unitless multiplier resolved against the element's own font size.
+    Number(f32),
+
+    /// Absolute computed line height in logical pixels.
+    Px(f32),
+}
+
+// PHANTOM_2G7_WHITE_SPACE_FOUNDATION
+// PHANTOM_2G9_WHITE_SPACE_II
+/// Computed CSS `white-space` behavior supported by Phantom inline layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WhiteSpace {
+    /// Collapse consecutive whitespace and wrap at collapsible spaces.
+    Normal,
+
+    /// Collapse consecutive whitespace but suppress automatic line wrapping.
+    NoWrap,
+
+    /// Preserve spaces, tabs, and explicit line breaks without automatic wrap.
+    Pre,
+
+    /// Preserve spaces, tabs, and explicit line breaks while allowing wrapping.
+    PreWrap,
+
+    /// Collapse spaces while preserving explicit line breaks and allowing wrap.
+    PreLine,
 }
 
 /// CSS length supported by the current computed-style layer.
@@ -428,12 +494,20 @@ impl AutoEdges {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     display: Display,
+    position: Position,
+    z_index: ZIndex,
+    top: Length,
+    right: Length,
+    bottom: Length,
+    left: Length,
     color: Rgba,
     background_color: Option<Rgba>,
     font_size: f32,
     font_weight: FontWeight,
     font_style: FontStyle,
     font_family: FontFamily,
+    line_height: LineHeight,
+    white_space: WhiteSpace,
     underline: bool,
     margin: EdgeSizes,
     margin_auto: AutoEdges,
@@ -466,12 +540,20 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: Display::Inline,
+            position: Position::Static,
+            z_index: ZIndex::Auto,
+            top: Length::Auto,
+            right: Length::Auto,
+            bottom: Length::Auto,
+            left: Length::Auto,
             color: Rgba::new(0, 0, 0, 255),
             background_color: None,
             font_size: ROOT_FONT_SIZE_PX,
             font_weight: FontWeight::Normal,
             font_style: FontStyle::Normal,
             font_family: FontFamily::SansSerif,
+            line_height: LineHeight::Normal,
+            white_space: WhiteSpace::Normal,
             underline: false,
             margin: EdgeSizes::zero(),
             margin_auto: AutoEdges::none(),
@@ -509,6 +591,42 @@ impl ComputedStyle {
         self.display
     }
 
+    /// Returns the computed positioning mode.
+    #[must_use]
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+
+    /// Returns the computed z-index value.
+    #[must_use]
+    pub const fn z_index(&self) -> ZIndex {
+        self.z_index
+    }
+
+    /// Returns the computed physical top inset.
+    #[must_use]
+    pub const fn top(&self) -> Length {
+        self.top
+    }
+
+    /// Returns the computed physical right inset.
+    #[must_use]
+    pub const fn right(&self) -> Length {
+        self.right
+    }
+
+    /// Returns the computed physical bottom inset.
+    #[must_use]
+    pub const fn bottom(&self) -> Length {
+        self.bottom
+    }
+
+    /// Returns the computed physical left inset.
+    #[must_use]
+    pub const fn left(&self) -> Length {
+        self.left
+    }
+
     /// Returns the computed foreground color.
     #[must_use]
     pub const fn color(&self) -> Rgba {
@@ -543,6 +661,40 @@ impl ComputedStyle {
     #[must_use]
     pub const fn font_family(&self) -> FontFamily {
         self.font_family
+    }
+
+    /// Returns the computed line-height behavior.
+    #[must_use]
+    pub const fn line_height(&self) -> LineHeight {
+        self.line_height
+    }
+
+    /// Returns the computed whitespace behavior.
+    #[must_use]
+    pub const fn white_space(&self) -> WhiteSpace {
+        self.white_space
+    }
+
+    /// Resolves line height for the current font size.
+    ///
+    /// Phantom 2G-6 conservatively allows `line-height` to expand the line
+    /// box while preserving the natural text metrics as a lower bound.
+    #[must_use]
+    pub fn used_line_height(&self, normal: f32) -> f32 {
+        let normal = if normal.is_finite() && normal >= 0.0 {
+            normal.min(MAX_NUMERIC_MAGNITUDE)
+        } else {
+            self.font_size.max(0.0)
+        };
+
+        match self.line_height {
+            LineHeight::Normal => normal,
+            LineHeight::Number(multiplier) => {
+                bounded_computed(self.font_size * multiplier).unwrap_or(normal)
+            }
+            LineHeight::Px(value) if value.is_finite() => value.clamp(0.0, MAX_NUMERIC_MAGNITUDE),
+            LineHeight::Px(_) => normal,
+        }
     }
 
     /// Returns whether text should be underlined.
@@ -1018,10 +1170,18 @@ enum Property {
     FlexGrow,
     FlexShrink,
     FlexBasis,
+    LineHeight,
+    WhiteSpace,
+    Position,
+    Top,
+    Right,
+    Bottom,
+    Left,
+    ZIndex,
 }
 
 impl Property {
-    const COUNT: usize = 41;
+    const COUNT: usize = 49;
 
     const fn index(self) -> usize {
         match self {
@@ -1066,13 +1226,27 @@ impl Property {
             Self::FlexGrow => 38,
             Self::FlexShrink => 39,
             Self::FlexBasis => 40,
+            Self::LineHeight => 41,
+            Self::WhiteSpace => 42,
+            Self::Position => 43,
+            Self::Top => 44,
+            Self::Right => 45,
+            Self::Bottom => 46,
+            Self::Left => 47,
+            Self::ZIndex => 48,
         }
     }
 
     const fn is_inherited(self) -> bool {
         matches!(
             self,
-            Self::Color | Self::FontSize | Self::FontWeight | Self::FontStyle | Self::FontFamily
+            Self::Color
+                | Self::FontSize
+                | Self::FontWeight
+                | Self::FontStyle
+                | Self::FontFamily
+                | Self::LineHeight
+                | Self::WhiteSpace
         )
     }
 }
@@ -1091,6 +1265,11 @@ enum SpecifiedValue {
     Color(Rgba),
     BackgroundColor(Option<Rgba>),
     FontSize(SpecifiedLength),
+    LineHeight(SpecifiedLineHeight),
+    WhiteSpace(WhiteSpace),
+    Position(Position),
+    ZIndex(ZIndex),
+    OffsetLength(SpecifiedLength),
     FontWeight(FontWeight),
     FontStyle(FontStyle),
     FontFamily(FontFamily),
@@ -1110,6 +1289,14 @@ enum SpecifiedValue {
     AlignContent(AlignContent),
     AlignSelf(AlignSelf),
     Number(f32),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SpecifiedLineHeight {
+    Normal,
+    Number(f32),
+    Length(SpecifiedLength),
+    Percent(f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1196,10 +1383,16 @@ enum Combinator {
     Child,
 }
 
+// PHANTOM_2G8_ATTRIBUTE_SELECTOR_OPERATORS
 #[derive(Debug, Clone)]
 enum AttributeSelector {
     Exists(String),
     Equals { name: String, value: String },
+    Includes { name: String, value: String },
+    DashMatch { name: String, value: String },
+    Prefix { name: String, value: String },
+    Suffix { name: String, value: String },
+    Substring { name: String, value: String },
 }
 
 impl AttributeSelector {
@@ -1207,6 +1400,27 @@ impl AttributeSelector {
         match self {
             Self::Exists(name) => element.attribute(name).is_some(),
             Self::Equals { name, value } => element.attribute(name) == Some(value.as_str()),
+            Self::Includes { name, value } => element.attribute(name).is_some_and(|candidate| {
+                !value.is_empty()
+                    && candidate
+                        .split_ascii_whitespace()
+                        .any(|token| token == value)
+            }),
+            Self::DashMatch { name, value } => element.attribute(name).is_some_and(|candidate| {
+                candidate == value
+                    || candidate
+                        .strip_prefix(value)
+                        .is_some_and(|suffix| suffix.starts_with('-'))
+            }),
+            Self::Prefix { name, value } => element
+                .attribute(name)
+                .is_some_and(|candidate| !value.is_empty() && candidate.starts_with(value)),
+            Self::Suffix { name, value } => element
+                .attribute(name)
+                .is_some_and(|candidate| !value.is_empty() && candidate.ends_with(value)),
+            Self::Substring { name, value } => element
+                .attribute(name)
+                .is_some_and(|candidate| !value.is_empty() && candidate.contains(value)),
         }
     }
 }
@@ -1741,10 +1955,47 @@ fn parse_attribute_selector(source: &str, cursor: &mut usize) -> Option<Attribut
         return Some(AttributeSelector::Exists(name));
     }
 
-    if bytes.get(*cursor) != Some(&b'=') {
-        return None;
+    #[derive(Clone, Copy)]
+    enum Operator {
+        Equals,
+        Includes,
+        DashMatch,
+        Prefix,
+        Suffix,
+        Substring,
     }
-    *cursor += 1;
+
+    let operator = match (
+        bytes.get(*cursor).copied(),
+        bytes.get(cursor.saturating_add(1)).copied(),
+    ) {
+        (Some(b'='), _) => {
+            *cursor += 1;
+            Operator::Equals
+        }
+        (Some(b'~'), Some(b'=')) => {
+            *cursor += 2;
+            Operator::Includes
+        }
+        (Some(b'|'), Some(b'=')) => {
+            *cursor += 2;
+            Operator::DashMatch
+        }
+        (Some(b'^'), Some(b'=')) => {
+            *cursor += 2;
+            Operator::Prefix
+        }
+        (Some(b'$'), Some(b'=')) => {
+            *cursor += 2;
+            Operator::Suffix
+        }
+        (Some(b'*'), Some(b'=')) => {
+            *cursor += 2;
+            Operator::Substring
+        }
+        _ => return None,
+    };
+
     skip_selector_whitespace(bytes, cursor);
 
     let value = match bytes.get(*cursor).copied() {
@@ -1753,13 +2004,24 @@ fn parse_attribute_selector(source: &str, cursor: &mut usize) -> Option<Attribut
         None => return None,
     };
 
+    if matches!(operator, Operator::Includes) && value.split_ascii_whitespace().count() != 1 {
+        return None;
+    }
+
     skip_selector_whitespace(bytes, cursor);
     if bytes.get(*cursor) != Some(&b']') {
         return None;
     }
     *cursor += 1;
 
-    Some(AttributeSelector::Equals { name, value })
+    Some(match operator {
+        Operator::Equals => AttributeSelector::Equals { name, value },
+        Operator::Includes => AttributeSelector::Includes { name, value },
+        Operator::DashMatch => AttributeSelector::DashMatch { name, value },
+        Operator::Prefix => AttributeSelector::Prefix { name, value },
+        Operator::Suffix => AttributeSelector::Suffix { name, value },
+        Operator::Substring => AttributeSelector::Substring { name, value },
+    })
 }
 
 fn parse_quoted_selector_value(source: &str, cursor: &mut usize) -> Option<String> {
@@ -1801,7 +2063,10 @@ fn parse_unquoted_selector_value(source: &str, cursor: &mut usize) -> Option<Str
             break;
         }
 
-        if matches!(byte, b'\'' | b'"' | b'=' | b'[' | b'(' | b')' | b'\\') {
+        if matches!(
+            byte,
+            b'\'' | b'"' | b'=' | b'~' | b'|' | b'^' | b'$' | b'*' | b'[' | b'(' | b')' | b'\\'
+        ) {
             return None;
         }
 
@@ -2011,6 +2276,8 @@ fn apply_winners(
         Property::Color,
         Property::BackgroundColor,
         Property::FontSize,
+        Property::LineHeight,
+        Property::WhiteSpace,
         Property::FontWeight,
         Property::FontStyle,
         Property::FontFamily,
@@ -2048,6 +2315,12 @@ fn apply_winners(
         Property::FlexGrow,
         Property::FlexShrink,
         Property::FlexBasis,
+        Property::Position,
+        Property::ZIndex,
+        Property::Top,
+        Property::Right,
+        Property::Bottom,
+        Property::Left,
     ] {
         let Some(value) = winner_for(winners, property) else {
             continue;
@@ -2090,9 +2363,17 @@ fn apply_css_wide_keyword(
 fn copy_computed_property(target: &mut ComputedStyle, source: &ComputedStyle, property: Property) {
     match property {
         Property::Display => target.display = source.display,
+        Property::Position => target.position = source.position,
+        Property::ZIndex => target.z_index = source.z_index,
+        Property::Top => target.top = source.top,
+        Property::Right => target.right = source.right,
+        Property::Bottom => target.bottom = source.bottom,
+        Property::Left => target.left = source.left,
         Property::Color => target.color = source.color,
         Property::BackgroundColor => target.background_color = source.background_color,
         Property::FontSize => target.font_size = source.font_size,
+        Property::LineHeight => target.line_height = source.line_height,
+        Property::WhiteSpace => target.white_space = source.white_space,
         Property::FontWeight => target.font_weight = source.font_weight,
         Property::FontStyle => target.font_style = source.font_style,
         Property::FontFamily => target.font_family = source.font_family,
@@ -2180,6 +2461,40 @@ fn apply_value(
             if let Some(size) = resolve_font_size(*length, inherited_size) {
                 style.font_size = size.max(1.0);
             }
+        }
+
+        (Property::LineHeight, SpecifiedValue::LineHeight(line_height)) => {
+            if let Some(line_height) = resolve_line_height(*line_height, style.font_size) {
+                style.line_height = line_height;
+            }
+        }
+
+        (Property::WhiteSpace, SpecifiedValue::WhiteSpace(white_space)) => {
+            style.white_space = *white_space;
+        }
+
+        (Property::Position, SpecifiedValue::Position(position)) => {
+            style.position = *position;
+        }
+
+        (Property::ZIndex, SpecifiedValue::ZIndex(z_index)) => {
+            style.z_index = *z_index;
+        }
+
+        (Property::Top, SpecifiedValue::OffsetLength(length)) => {
+            style.top = resolve_offset_length(*length, style.font_size);
+        }
+
+        (Property::Right, SpecifiedValue::OffsetLength(length)) => {
+            style.right = resolve_offset_length(*length, style.font_size);
+        }
+
+        (Property::Bottom, SpecifiedValue::OffsetLength(length)) => {
+            style.bottom = resolve_offset_length(*length, style.font_size);
+        }
+
+        (Property::Left, SpecifiedValue::OffsetLength(length)) => {
+            style.left = resolve_offset_length(*length, style.font_size);
         }
 
         (Property::FontWeight, SpecifiedValue::FontWeight(weight)) => {
@@ -2403,6 +2718,8 @@ fn initial_style(node: &Node, parent: Option<&ComputedStyle>) -> ComputedStyle {
         style.font_weight = parent_style.font_weight;
         style.font_style = parent_style.font_style;
         style.font_family = parent_style.font_family;
+        style.line_height = parent_style.line_height;
+        style.white_space = parent_style.white_space;
     }
 
     let NodeKind::Element(element) = node.kind() else {
@@ -2453,8 +2770,13 @@ fn initial_style(node: &Node, parent: Option<&ComputedStyle>) -> ComputedStyle {
             style.font_style = FontStyle::Italic;
         }
 
-        "code" | "pre" => {
+        "code" => {
             style.font_family = FontFamily::Monospace;
+        }
+
+        "pre" => {
+            style.font_family = FontFamily::Monospace;
+            style.white_space = WhiteSpace::Pre;
         }
 
         "a" => {
@@ -2759,9 +3081,17 @@ fn parse_css_wide_keyword(value: &str) -> Option<CssWideKeyword> {
 fn css_wide_properties(property: &str) -> Option<Vec<Property>> {
     let properties = match property {
         "display" => vec![Property::Display],
+        "position" => vec![Property::Position],
+        "z-index" => vec![Property::ZIndex],
+        "top" => vec![Property::Top],
+        "right" => vec![Property::Right],
+        "bottom" => vec![Property::Bottom],
+        "left" => vec![Property::Left],
         "color" => vec![Property::Color],
         "background" | "background-color" => vec![Property::BackgroundColor],
         "font-size" => vec![Property::FontSize],
+        "line-height" => vec![Property::LineHeight],
+        "white-space" => vec![Property::WhiteSpace],
         "font-weight" => vec![Property::FontWeight],
         "font-style" => vec![Property::FontStyle],
         "font-family" => vec![Property::FontFamily],
@@ -2859,6 +3189,19 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .map(|display| vec![(Property::Display, SpecifiedValue::Display(display))])
             .unwrap_or_default(),
 
+        "position" => parse_position(value)
+            .map(|position| vec![(Property::Position, SpecifiedValue::Position(position))])
+            .unwrap_or_default(),
+
+        "z-index" => parse_z_index(value)
+            .map(|z_index| vec![(Property::ZIndex, SpecifiedValue::ZIndex(z_index))])
+            .unwrap_or_default(),
+
+        "top" => parse_offset_property(Property::Top, value),
+        "right" => parse_offset_property(Property::Right, value),
+        "bottom" => parse_offset_property(Property::Bottom, value),
+        "left" => parse_offset_property(Property::Left, value),
+
         "color" => parse_color(value)
             .map(|color| vec![(Property::Color, SpecifiedValue::Color(color))])
             .unwrap_or_default(),
@@ -2876,6 +3219,24 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
 
         "font-size" => parse_font_size_length(value)
             .map(|length| vec![(Property::FontSize, SpecifiedValue::FontSize(length))])
+            .unwrap_or_default(),
+
+        "line-height" => parse_line_height(value)
+            .map(|line_height| {
+                vec![(
+                    Property::LineHeight,
+                    SpecifiedValue::LineHeight(line_height),
+                )]
+            })
+            .unwrap_or_default(),
+
+        "white-space" => parse_white_space(value)
+            .map(|white_space| {
+                vec![(
+                    Property::WhiteSpace,
+                    SpecifiedValue::WhiteSpace(white_space),
+                )]
+            })
             .unwrap_or_default(),
 
         "font-weight" => parse_font_weight(value)
@@ -3570,6 +3931,86 @@ fn parse_display(value: &str) -> Option<Display> {
     }
 }
 
+fn parse_position(value: &str) -> Option<Position> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "static" => Some(Position::Static),
+        "relative" => Some(Position::Relative),
+        "absolute" => Some(Position::Absolute),
+        "fixed" => Some(Position::Fixed),
+        _ => None,
+    }
+}
+
+fn parse_z_index(value: &str) -> Option<ZIndex> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Some(ZIndex::Auto);
+    }
+
+    let integer = trimmed.parse::<i32>().ok()?;
+    if (integer as f32).abs() > MAX_NUMERIC_MAGNITUDE {
+        return None;
+    }
+
+    Some(ZIndex::Integer(integer))
+}
+
+fn parse_offset_property(property: Property, value: &str) -> Vec<(Property, SpecifiedValue)> {
+    parse_specified_length(value, true)
+        .map(|length| vec![(property, SpecifiedValue::OffsetLength(length))])
+        .unwrap_or_default()
+}
+
+fn parse_white_space(value: &str) -> Option<WhiteSpace> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(WhiteSpace::Normal),
+        "nowrap" => Some(WhiteSpace::NoWrap),
+        "pre" => Some(WhiteSpace::Pre),
+        "pre-wrap" => Some(WhiteSpace::PreWrap),
+        "pre-line" => Some(WhiteSpace::PreLine),
+        _ => None,
+    }
+}
+
+fn parse_line_height(value: &str) -> Option<SpecifiedLineHeight> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if normalized == "normal" {
+        return Some(SpecifiedLineHeight::Normal);
+    }
+
+    if let Some(percent) = normalized.strip_suffix('%') {
+        return parse_non_negative_float(percent).map(SpecifiedLineHeight::Percent);
+    }
+
+    if let Some(length) = parse_specified_length(&normalized, false)
+        && specified_length_is_non_negative(length)
+    {
+        return Some(SpecifiedLineHeight::Length(length));
+    }
+
+    parse_non_negative_float(&normalized).map(SpecifiedLineHeight::Number)
+}
+
+fn resolve_line_height(line_height: SpecifiedLineHeight, font_size: f32) -> Option<LineHeight> {
+    match line_height {
+        SpecifiedLineHeight::Normal => Some(LineHeight::Normal),
+        SpecifiedLineHeight::Number(multiplier) => Some(LineHeight::Number(multiplier)),
+        SpecifiedLineHeight::Length(SpecifiedLength::Px(value)) => {
+            Some(LineHeight::Px(value.max(0.0)))
+        }
+        SpecifiedLineHeight::Length(SpecifiedLength::Em(value)) => {
+            bounded_computed(value * font_size).map(|value| LineHeight::Px(value.max(0.0)))
+        }
+        SpecifiedLineHeight::Length(SpecifiedLength::Rem(value)) => {
+            bounded_computed(value * ROOT_FONT_SIZE_PX).map(|value| LineHeight::Px(value.max(0.0)))
+        }
+        SpecifiedLineHeight::Percent(percent) => bounded_computed(font_size * percent / 100.0)
+            .map(|value| LineHeight::Px(value.max(0.0))),
+        SpecifiedLineHeight::Length(SpecifiedLength::Auto | SpecifiedLength::Percent(_)) => None,
+    }
+}
+
 fn parse_font_weight(value: &str) -> Option<FontWeight> {
     match value.trim().to_ascii_lowercase().as_str() {
         "normal" | "400" | "500" => Some(FontWeight::Normal),
@@ -3682,6 +4123,20 @@ fn resolve_edge_length(length: SpecifiedLength, font_size: f32) -> Option<f32> {
         SpecifiedLength::Em(value) => bounded_computed(value * font_size),
         SpecifiedLength::Rem(value) => bounded_computed(value * ROOT_FONT_SIZE_PX),
         SpecifiedLength::Auto | SpecifiedLength::Percent(_) => None,
+    }
+}
+
+fn resolve_offset_length(length: SpecifiedLength, font_size: f32) -> Length {
+    match length {
+        SpecifiedLength::Auto => Length::Auto,
+        SpecifiedLength::Px(value) => Length::Px(value),
+        SpecifiedLength::Em(value) => {
+            Length::Px(bounded_computed(value * font_size).unwrap_or_default())
+        }
+        SpecifiedLength::Rem(value) => {
+            Length::Px(bounded_computed(value * ROOT_FONT_SIZE_PX).unwrap_or_default())
+        }
+        SpecifiedLength::Percent(value) => Length::Percent(value),
     }
 }
 
@@ -3964,9 +4419,17 @@ fn remove_comments(source: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct StyleKey {
     display: Display,
+    position: Position,
+    z_index: ZIndex,
+    top: LengthKey,
+    right: LengthKey,
+    bottom: LengthKey,
+    left: LengthKey,
     color: Rgba,
     background_color: Option<Rgba>,
     font_size: u32,
+    line_height: LineHeightKey,
+    white_space: WhiteSpace,
     font_weight: FontWeight,
     font_style: FontStyle,
     font_family: FontFamily,
@@ -4003,9 +4466,17 @@ impl From<&ComputedStyle> for StyleKey {
     fn from(style: &ComputedStyle) -> Self {
         Self {
             display: style.display,
+            position: style.position,
+            z_index: style.z_index,
+            top: LengthKey::from(style.top),
+            right: LengthKey::from(style.right),
+            bottom: LengthKey::from(style.bottom),
+            left: LengthKey::from(style.left),
             color: style.color,
             background_color: style.background_color,
             font_size: style.font_size.to_bits(),
+            line_height: LineHeightKey::from(style.line_height),
+            white_space: style.white_space,
             font_weight: style.font_weight,
             font_style: style.font_style,
             font_family: style.font_family,
@@ -4036,6 +4507,23 @@ impl From<&ComputedStyle> for StyleKey {
             flex_grow: style.flex_grow.to_bits(),
             flex_shrink: style.flex_shrink.to_bits(),
             flex_basis: LengthKey::from(style.flex_basis),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LineHeightKey {
+    Normal,
+    Number(u32),
+    Px(u32),
+}
+
+impl From<LineHeight> for LineHeightKey {
+    fn from(line_height: LineHeight) -> Self {
+        match line_height {
+            LineHeight::Normal => Self::Normal,
+            LineHeight::Number(value) => Self::Number(value.to_bits()),
+            LineHeight::Px(value) => Self::Px(value.to_bits()),
         }
     }
 }
