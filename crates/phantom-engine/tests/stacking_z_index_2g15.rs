@@ -9,7 +9,7 @@ fn fill_colors(engine: &Engine) -> Vec<PaintColor> {
         .iter()
         .filter_map(|command| match command {
             PaintCommand::FillRect { color, .. } => Some(*color),
-            PaintCommand::Image { .. } | PaintCommand::Text { .. } => None,
+            _ => None,
         })
         .collect()
 }

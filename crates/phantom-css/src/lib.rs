@@ -31,6 +31,12 @@ const MAX_PSEUDO_CLASSES_PER_COMPOUND: usize = 32;
 const MAX_INLINE_STYLE_BYTES: usize = 64 * 1024;
 const MAX_CASCADE_RULE_EVALUATIONS: usize = 2_000_000;
 const MAX_NUMERIC_MAGNITUDE: f32 = 1_000_000.0;
+const DEFAULT_MEDIA_VIEWPORT_WIDTH: f32 = 1024.0;
+const DEFAULT_MEDIA_VIEWPORT_HEIGHT: f32 = 768.0;
+const MAX_MEDIA_NESTING: usize = 8;
+const MAX_MEDIA_QUERIES_PER_LIST: usize = 32;
+
+// PHANTOM_2H4_RESPONSIVE_VIEWPORT_I
 
 /// RGBA color represented with eight-bit channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -270,6 +276,17 @@ pub enum BorderStyle {
 
     /// Solid border.
     Solid,
+}
+
+// PHANTOM_2H2_BOX_VISUAL_FIDELITY_I
+/// Overflow painting behavior supported by the first Phantom clipping model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Overflow {
+    /// Descendant paint may extend outside the padding box.
+    Visible,
+
+    /// Descendant paint is clipped to the padding box.
+    Hidden,
 }
 
 /// Main-axis direction used by the first Phantom Flexbox core.
@@ -515,6 +532,9 @@ pub struct ComputedStyle {
     border_width: EdgeSizes,
     border_color: Option<Rgba>,
     border_style: BorderStyle,
+    border_radius: Length,
+    overflow: Overflow,
+    opacity: f32,
     box_sizing: BoxSizing,
     object_fit: ObjectFit,
     object_position: ObjectPosition,
@@ -561,6 +581,9 @@ impl Default for ComputedStyle {
             border_width: EdgeSizes::new(3.0, 3.0, 3.0, 3.0),
             border_color: None,
             border_style: BorderStyle::None,
+            border_radius: Length::Px(0.0),
+            overflow: Overflow::Visible,
+            opacity: 1.0,
             box_sizing: BoxSizing::ContentBox,
             object_fit: ObjectFit::Fill,
             object_position: ObjectPosition::default(),
@@ -749,6 +772,26 @@ impl ComputedStyle {
     #[must_use]
     pub const fn border_style(&self) -> BorderStyle {
         self.border_style
+    }
+
+    /// Returns the computed uniform border radius.
+    ///
+    /// Percentages are retained for paint-time resolution against the box.
+    #[must_use]
+    pub const fn border_radius(&self) -> Length {
+        self.border_radius
+    }
+
+    /// Returns the computed overflow painting mode.
+    #[must_use]
+    pub const fn overflow(&self) -> Overflow {
+        self.overflow
+    }
+
+    /// Returns the computed element opacity in the inclusive range `0..=1`.
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
     }
 
     /// Returns the box-sizing model used by layout.
@@ -956,52 +999,46 @@ pub struct Stylesheet {
 impl Stylesheet {
     /// Parses CSS using Phantom's own tolerant subset parser.
     ///
-    /// Unsupported at-rules, selectors, properties, and values are ignored.
-    /// Syntax errors in one rule do not invalidate the entire stylesheet.
+    /// This compatibility entry point uses Phantom's default desktop viewport.
+    /// Call [`Stylesheet::parse_for_viewport`] when media queries must reflect
+    /// an explicit browsing viewport.
     #[must_use]
     pub fn parse(source: &str) -> Self {
+        Self::parse_for_viewport(
+            source,
+            DEFAULT_MEDIA_VIEWPORT_WIDTH,
+            DEFAULT_MEDIA_VIEWPORT_HEIGHT,
+        )
+    }
+
+    /// Parses CSS for an explicit viewport and activates the supported
+    /// `@media` subset before selector/cascade evaluation.
+    ///
+    /// Supported media features in 2H-4 are `width`, `min-width`,
+    /// `max-width`, `height`, `min-height`, `max-height`, and `orientation`.
+    /// Media types `all` and `screen`, `only`, `not`, comma-separated OR, and
+    /// `and` conjunction are handled. Lengths are bounded CSS `px`, `em`, or
+    /// `rem` values; `em`/`rem` use the initial 16px root size in media queries.
+    #[must_use]
+    pub fn parse_for_viewport(source: &str, viewport_width: f32, viewport_height: f32) -> Self {
         if source.len() > MAX_CSS_SOURCE_BYTES {
             return Self::default();
         }
 
         let cleaned = remove_comments(source);
-        let blocks = scan_rule_blocks(&cleaned);
+        let viewport = MediaViewport::new(viewport_width, viewport_height);
         let mut rules = Vec::new();
         let mut source_order = 0_u32;
+        let mut scanned_blocks = 0_usize;
 
-        'blocks: for block in blocks {
-            if block.selector.trim_start().starts_with('@') {
-                source_order = source_order.saturating_add(1);
-                continue;
-            }
-
-            let Some(selectors) = parse_selector_list(block.selector) else {
-                source_order = source_order.saturating_add(1);
-                continue;
-            };
-
-            let declarations = parse_declarations(block.body);
-
-            if declarations.is_empty() {
-                source_order = source_order.saturating_add(1);
-                continue;
-            }
-
-            for selector in selectors {
-                if rules.len() >= MAX_ACCEPTED_RULES {
-                    break 'blocks;
-                }
-
-                rules.push(StyleRule {
-                    specificity: selector.specificity(),
-                    selector,
-                    declarations: declarations.clone(),
-                    source_order,
-                });
-            }
-
-            source_order = source_order.saturating_add(1);
-        }
+        append_rule_source(
+            &cleaned,
+            viewport,
+            0,
+            &mut scanned_blocks,
+            &mut source_order,
+            &mut rules,
+        );
 
         Self { rules }
     }
@@ -1020,10 +1057,30 @@ impl Stylesheet {
 }
 
 /// Computes an immutable, interned style snapshot for the document.
+///
+/// This compatibility entry point uses Phantom's default desktop viewport.
 #[must_use]
 pub fn compute_styles(document: &Document) -> StyleMap {
+    compute_styles_with_viewport(
+        document,
+        DEFAULT_MEDIA_VIEWPORT_WIDTH,
+        DEFAULT_MEDIA_VIEWPORT_HEIGHT,
+    )
+}
+
+/// Computes styles for an explicit two-dimensional viewport.
+///
+/// The DOM is not mutated. Viewport-dependent `@media` rules are resolved
+/// before cascade evaluation so a later viewport change can safely recascade
+/// the existing document without reparsing HTML.
+#[must_use]
+pub fn compute_styles_with_viewport(
+    document: &Document,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> StyleMap {
     let author_css = collect_author_css(document);
-    let stylesheet = Stylesheet::parse(&author_css);
+    let stylesheet = Stylesheet::parse_for_viewport(&author_css, viewport_width, viewport_height);
 
     let selector_context = SelectorMatchContext::build(document);
     let mut style_map = StyleMap::default();
@@ -1063,6 +1120,325 @@ pub fn compute_styles(document: &Document) -> StyleMap {
     }
 
     style_map
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MediaViewport {
+    width: f32,
+    height: f32,
+}
+
+impl MediaViewport {
+    fn new(width: f32, height: f32) -> Self {
+        Self {
+            width: sanitize_media_dimension(width),
+            height: sanitize_media_dimension(height),
+        }
+    }
+}
+
+fn sanitize_media_dimension(value: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value.min(MAX_NUMERIC_MAGNITUDE)
+    } else {
+        1.0
+    }
+}
+
+fn append_rule_source(
+    source: &str,
+    viewport: MediaViewport,
+    depth: usize,
+    scanned_blocks: &mut usize,
+    source_order: &mut u32,
+    rules: &mut Vec<StyleRule>,
+) {
+    if depth > MAX_MEDIA_NESTING
+        || *scanned_blocks >= MAX_SCANNED_RULE_BLOCKS
+        || rules.len() >= MAX_ACCEPTED_RULES
+    {
+        return;
+    }
+
+    for block in scan_rule_blocks(source) {
+        if *scanned_blocks >= MAX_SCANNED_RULE_BLOCKS || rules.len() >= MAX_ACCEPTED_RULES {
+            break;
+        }
+        *scanned_blocks = (*scanned_blocks).saturating_add(1);
+
+        let prelude = block.selector.trim();
+        let lower = prelude.to_ascii_lowercase();
+        let media_tail = lower
+            .starts_with("@media")
+            .then(|| prelude.get(6..).unwrap_or_default());
+
+        if let Some(media_tail) = media_tail
+            && (media_tail.is_empty()
+                || media_tail
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_whitespace() || character == '('))
+        {
+            if depth < MAX_MEDIA_NESTING {
+                let condition = media_tail.trim();
+                if media_query_list_matches(condition, viewport) {
+                    append_rule_source(
+                        block.body,
+                        viewport,
+                        depth.saturating_add(1),
+                        scanned_blocks,
+                        source_order,
+                        rules,
+                    );
+                }
+            }
+            continue;
+        }
+
+        if prelude.starts_with('@') {
+            continue;
+        }
+
+        let Some(selectors) = parse_selector_list(prelude) else {
+            *source_order = (*source_order).saturating_add(1);
+            continue;
+        };
+
+        let declarations = parse_declarations(block.body);
+        if declarations.is_empty() {
+            *source_order = (*source_order).saturating_add(1);
+            continue;
+        }
+
+        for selector in selectors {
+            if rules.len() >= MAX_ACCEPTED_RULES {
+                break;
+            }
+            rules.push(StyleRule {
+                specificity: selector.specificity(),
+                selector,
+                declarations: declarations.clone(),
+                source_order: *source_order,
+            });
+        }
+
+        *source_order = (*source_order).saturating_add(1);
+    }
+}
+
+fn media_query_list_matches(source: &str, viewport: MediaViewport) -> bool {
+    split_media_query_list(source)
+        .into_iter()
+        .any(|query| media_query_matches(query, viewport))
+}
+
+fn split_media_query_list(source: &str) -> Vec<&str> {
+    let bytes = source.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    let mut cursor = 0_usize;
+    let mut depth = 0_u32;
+    let mut quote = None;
+    let mut escaped = false;
+
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'(' => depth = depth.saturating_add(1),
+                b')' => depth = depth.saturating_sub(1),
+                b',' if depth == 0 => {
+                    if parts.len() >= MAX_MEDIA_QUERIES_PER_LIST {
+                        return parts;
+                    }
+                    let part = source[start..cursor].trim();
+                    if !part.is_empty() {
+                        parts.push(part);
+                    }
+                    start = cursor.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        cursor = cursor.saturating_add(1);
+    }
+
+    if parts.len() < MAX_MEDIA_QUERIES_PER_LIST {
+        let tail = source[start..].trim();
+        if !tail.is_empty() {
+            parts.push(tail);
+        }
+    }
+    parts
+}
+
+fn media_query_matches(source: &str, viewport: MediaViewport) -> bool {
+    let mut query = source.trim();
+    if query.is_empty() {
+        return false;
+    }
+
+    let lower = query.to_ascii_lowercase();
+    if lower.starts_with("only ") {
+        query = query.get(5..).unwrap_or_default().trim_start();
+    }
+
+    let lower = query.to_ascii_lowercase();
+    let (negated, query) = if lower.starts_with("not ") {
+        (true, query.get(4..).unwrap_or_default().trim_start())
+    } else {
+        (false, query)
+    };
+
+    let first_condition = query.find('(');
+    let (media_type, mut conditions) = match first_condition {
+        Some(index) => {
+            let mut prefix = query[..index].trim();
+            if let Some(without_and) = strip_trailing_media_and(prefix) {
+                prefix = without_and;
+            }
+            (prefix, &query[index..])
+        }
+        None => (query.trim(), ""),
+    };
+
+    let type_matches = match media_type.to_ascii_lowercase().as_str() {
+        "" | "all" | "screen" => true,
+        "print" | "speech" => false,
+        _ => false,
+    };
+
+    let mut matches = type_matches;
+    while matches && !conditions.trim().is_empty() {
+        conditions = conditions.trim_start();
+        if !conditions.starts_with('(') {
+            matches = false;
+            break;
+        }
+
+        let Some(close) = find_media_condition_close(conditions) else {
+            matches = false;
+            break;
+        };
+        let condition = &conditions[1..close];
+        matches = media_condition_matches(condition, viewport);
+        conditions = conditions[close.saturating_add(1)..].trim_start();
+
+        if matches && !conditions.is_empty() {
+            let lower_tail = conditions.to_ascii_lowercase();
+            if lower_tail == "and" {
+                matches = false;
+                break;
+            }
+            if lower_tail.starts_with("and ") {
+                conditions = conditions.get(3..).unwrap_or_default().trim_start();
+            } else {
+                matches = false;
+            }
+        }
+    }
+
+    if negated { !matches } else { matches }
+}
+
+fn strip_trailing_media_and(source: &str) -> Option<&str> {
+    let trimmed = source.trim_end();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.ends_with("and") || trimmed.len() < 3 {
+        return None;
+    }
+
+    let prefix = &trimmed[..trimmed.len().saturating_sub(3)];
+    if prefix.is_empty()
+        || prefix
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        Some(prefix.trim_end())
+    } else {
+        None
+    }
+}
+
+fn find_media_condition_close(source: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0_u32;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        match byte {
+            b'(' => depth = depth.saturating_add(1),
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn media_condition_matches(source: &str, viewport: MediaViewport) -> bool {
+    let Some((name, value)) = source.split_once(':') else {
+        return false;
+    };
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim();
+
+    match name.as_str() {
+        "width" => parse_media_length(value).is_some_and(|length| media_eq(viewport.width, length)),
+        "min-width" => parse_media_length(value).is_some_and(|length| viewport.width >= length),
+        "max-width" => parse_media_length(value).is_some_and(|length| viewport.width <= length),
+        "height" => {
+            parse_media_length(value).is_some_and(|length| media_eq(viewport.height, length))
+        }
+        "min-height" => parse_media_length(value).is_some_and(|length| viewport.height >= length),
+        "max-height" => parse_media_length(value).is_some_and(|length| viewport.height <= length),
+        "orientation" => match value.to_ascii_lowercase().as_str() {
+            "portrait" => viewport.height >= viewport.width,
+            "landscape" => viewport.width > viewport.height,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn media_eq(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 0.01
+}
+
+fn parse_media_length(source: &str) -> Option<f32> {
+    let value = source.trim().to_ascii_lowercase();
+    if value == "0" {
+        return Some(0.0);
+    }
+
+    let (number, scale) = if let Some(number) = value.strip_suffix("px") {
+        (number, 1.0)
+    } else if let Some(number) = value.strip_suffix("rem") {
+        (number, ROOT_FONT_SIZE_PX)
+    } else if let Some(number) = value.strip_suffix("em") {
+        (number, ROOT_FONT_SIZE_PX)
+    } else {
+        return None;
+    };
+
+    let number = number.trim().parse::<f32>().ok()?;
+    let result = number * scale;
+    (result.is_finite() && (0.0..=MAX_NUMERIC_MAGNITUDE).contains(&result)).then_some(result)
 }
 
 #[derive(Debug, Clone)]
@@ -1178,10 +1554,13 @@ enum Property {
     Bottom,
     Left,
     ZIndex,
+    BorderRadius,
+    Overflow,
+    Opacity,
 }
 
 impl Property {
-    const COUNT: usize = 49;
+    const COUNT: usize = 52;
 
     const fn index(self) -> usize {
         match self {
@@ -1234,6 +1613,9 @@ impl Property {
             Self::Bottom => 46,
             Self::Left => 47,
             Self::ZIndex => 48,
+            Self::BorderRadius => 49,
+            Self::Overflow => 50,
+            Self::Opacity => 51,
         }
     }
 
@@ -1278,6 +1660,9 @@ enum SpecifiedValue {
     EdgeLength(SpecifiedLength),
     BorderColor(Option<Rgba>),
     BorderStyle(BorderStyle),
+    BorderRadius(SpecifiedLength),
+    Overflow(Overflow),
+    Opacity(f32),
     BoxSizing(BoxSizing),
     ObjectFit(ObjectFit),
     ObjectPosition(ObjectPosition),
@@ -1308,61 +1693,88 @@ enum SpecifiedLength {
     Percent(f32),
 }
 
+// PHANTOM_2H3_CSS_COMPATIBILITY_I
 #[derive(Debug, Clone, Default)]
 struct SelectorMatchContext {
     sibling_positions: Vec<(u32, u32)>,
+    type_sibling_positions: Vec<(u32, u32)>,
 }
 
 impl SelectorMatchContext {
     fn build(document: &Document) -> Self {
         let mut sibling_positions = vec![(0, 0); document.len()];
+        let mut type_sibling_positions = vec![(0, 0); document.len()];
 
         for parent in document.nodes() {
-            let total = parent
+            let element_children = parent
                 .children()
                 .iter()
-                .filter(|child_id| {
-                    document
-                        .node(**child_id)
-                        .is_some_and(|child| matches!(child.kind(), NodeKind::Element(_)))
+                .filter_map(|child_id| {
+                    let child = document.node(*child_id)?;
+                    let NodeKind::Element(element) = child.kind() else {
+                        return None;
+                    };
+
+                    Some((*child_id, element.tag_name()))
                 })
-                .count();
-            let Ok(total) = u32::try_from(total) else {
+                .collect::<Vec<_>>();
+
+            let Ok(total) = u32::try_from(element_children.len()) else {
                 continue;
             };
 
-            let mut index = 0_u32;
-            for child_id in parent.children() {
-                let Some(child) = document.node(*child_id) else {
-                    continue;
-                };
-                if !matches!(child.kind(), NodeKind::Element(_)) {
-                    continue;
-                }
+            let mut type_totals = BTreeMap::<&str, u32>::new();
+            for (_, tag_name) in &element_children {
+                let entry = type_totals.entry(*tag_name).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
 
-                index = index.saturating_add(1);
+            let mut type_seen = BTreeMap::<&str, u32>::new();
+
+            for (offset, (child_id, tag_name)) in element_children.into_iter().enumerate() {
                 let Ok(node_index) = usize::try_from(child_id.as_u64()) else {
                     continue;
                 };
                 if sibling_positions.len() <= node_index {
                     sibling_positions.resize(node_index.saturating_add(1), (0, 0));
+                    type_sibling_positions.resize(node_index.saturating_add(1), (0, 0));
                 }
+
+                let Ok(index) = u32::try_from(offset.saturating_add(1)) else {
+                    continue;
+                };
                 sibling_positions[node_index] = (index, total);
+
+                let type_index = type_seen.entry(tag_name).or_insert(0);
+                *type_index = type_index.saturating_add(1);
+                let type_total = type_totals.get(tag_name).copied().unwrap_or(0);
+                type_sibling_positions[node_index] = (*type_index, type_total);
             }
         }
 
-        Self { sibling_positions }
+        Self {
+            sibling_positions,
+            type_sibling_positions,
+        }
     }
 
     fn sibling_position(&self, node_id: NodeId) -> Option<(u32, u32)> {
-        let node_index = usize::try_from(node_id.as_u64()).ok()?;
-        let position = *self.sibling_positions.get(node_index)?;
+        position_for(&self.sibling_positions, node_id)
+    }
 
-        if position.0 == 0 {
-            None
-        } else {
-            Some(position)
-        }
+    fn type_sibling_position(&self, node_id: NodeId) -> Option<(u32, u32)> {
+        position_for(&self.type_sibling_positions, node_id)
+    }
+}
+
+fn position_for(positions: &[(u32, u32)], node_id: NodeId) -> Option<(u32, u32)> {
+    let node_index = usize::try_from(node_id.as_u64()).ok()?;
+    let position = *positions.get(node_index)?;
+
+    if position.0 == 0 {
+        None
+    } else {
+        Some(position)
     }
 }
 
@@ -1381,6 +1793,7 @@ struct SelectorPart {
 enum Combinator {
     Descendant,
     Child,
+    AdjacentSibling,
 }
 
 // PHANTOM_2G8_ATTRIBUTE_SELECTOR_OPERATORS
@@ -1427,21 +1840,47 @@ impl AttributeSelector {
 
 #[derive(Debug, Clone, Copy)]
 enum StructuralPseudoClass {
+    Root,
+    Empty,
     First,
     Last,
+    Only,
     Nth(u32),
+    FirstOfType,
+    LastOfType,
+    OnlyOfType,
+    NthOfType(u32),
 }
 
 impl StructuralPseudoClass {
-    fn matches(self, context: &SelectorMatchContext, node_id: NodeId) -> bool {
-        let Some((index, total)) = context.sibling_position(node_id) else {
-            return false;
-        };
-
+    fn matches(self, document: &Document, context: &SelectorMatchContext, node_id: NodeId) -> bool {
         match self {
-            Self::First => index == 1,
-            Self::Last => index == total,
-            Self::Nth(expected) => index == expected,
+            Self::Root => parent_element(document, node_id).is_none(),
+            Self::Empty => element_is_empty(document, node_id),
+            Self::First => context
+                .sibling_position(node_id)
+                .is_some_and(|(index, _)| index == 1),
+            Self::Last => context
+                .sibling_position(node_id)
+                .is_some_and(|(index, total)| index == total),
+            Self::Only => context
+                .sibling_position(node_id)
+                .is_some_and(|(_, total)| total == 1),
+            Self::Nth(expected) => context
+                .sibling_position(node_id)
+                .is_some_and(|(index, _)| index == expected),
+            Self::FirstOfType => context
+                .type_sibling_position(node_id)
+                .is_some_and(|(index, _)| index == 1),
+            Self::LastOfType => context
+                .type_sibling_position(node_id)
+                .is_some_and(|(index, total)| index == total),
+            Self::OnlyOfType => context
+                .type_sibling_position(node_id)
+                .is_some_and(|(_, total)| total == 1),
+            Self::NthOfType(expected) => context
+                .type_sibling_position(node_id)
+                .is_some_and(|(index, _)| index == expected),
         }
     }
 }
@@ -1527,6 +1966,18 @@ impl Selector {
                     };
 
                     current = ancestor;
+                }
+
+                Combinator::AdjacentSibling => {
+                    let Some(sibling) = previous_element_sibling(document, current) else {
+                        return false;
+                    };
+
+                    if !left.compound.matches_node(document, sibling, context) {
+                        return false;
+                    }
+
+                    current = sibling;
                 }
             }
         }
@@ -1651,7 +2102,7 @@ impl CompoundSelector {
 
         self.pseudo_classes
             .iter()
-            .all(|pseudo| pseudo.matches(context, node_id))
+            .all(|pseudo| pseudo.matches(document, context, node_id))
     }
 
     fn matches_element(&self, element: &ElementData) -> bool {
@@ -1852,7 +2303,26 @@ fn parse_selector_parts(source: &str) -> Option<Vec<SelectorPart>> {
                 pending = Some(Combinator::Child);
             }
 
-            '+' | '~' if brackets == 0 && parentheses == 0 => {
+            '+' if brackets == 0 && parentheses == 0 => {
+                if !flush_selector_part(&mut parts, &mut buffer, &mut pending) {
+                    invalid = true;
+                    break;
+                }
+
+                if parts.is_empty()
+                    || matches!(
+                        pending,
+                        Some(Combinator::Child | Combinator::AdjacentSibling)
+                    )
+                {
+                    invalid = true;
+                    break;
+                }
+
+                pending = Some(Combinator::AdjacentSibling);
+            }
+
+            '~' if brackets == 0 && parentheses == 0 => {
                 invalid = true;
                 break;
             }
@@ -2094,40 +2564,50 @@ fn parse_structural_pseudo_class(
     let name = parse_selector_identifier(source, cursor)?.to_ascii_lowercase();
 
     match name.as_str() {
+        "root" => Some(StructuralPseudoClass::Root),
+        "empty" => Some(StructuralPseudoClass::Empty),
         "first-child" => Some(StructuralPseudoClass::First),
         "last-child" => Some(StructuralPseudoClass::Last),
-        "nth-child" => {
-            if bytes.get(*cursor) != Some(&b'(') {
-                return None;
-            }
-            *cursor += 1;
-            let argument_start = *cursor;
-
-            while *cursor < bytes.len() && bytes[*cursor] != b')' {
-                *cursor += 1;
-            }
-
-            if bytes.get(*cursor) != Some(&b')') {
-                return None;
-            }
-
-            let argument = source[argument_start..*cursor].trim();
-            *cursor += 1;
-
-            if argument.is_empty() || !argument.bytes().all(|byte| byte.is_ascii_digit()) {
-                return None;
-            }
-
-            let index = argument.parse::<usize>().ok()?;
-            if index == 0 || index > MAX_DOM_NODES {
-                return None;
-            }
-            let index = u32::try_from(index).ok()?;
-
-            Some(StructuralPseudoClass::Nth(index))
-        }
+        "only-child" => Some(StructuralPseudoClass::Only),
+        "first-of-type" => Some(StructuralPseudoClass::FirstOfType),
+        "last-of-type" => Some(StructuralPseudoClass::LastOfType),
+        "only-of-type" => Some(StructuralPseudoClass::OnlyOfType),
+        "nth-child" => parse_nth_index(source, cursor).map(StructuralPseudoClass::Nth),
+        "nth-of-type" => parse_nth_index(source, cursor).map(StructuralPseudoClass::NthOfType),
         _ => None,
     }
+}
+
+fn parse_nth_index(source: &str, cursor: &mut usize) -> Option<u32> {
+    let bytes = source.as_bytes();
+
+    if bytes.get(*cursor) != Some(&b'(') {
+        return None;
+    }
+    *cursor += 1;
+    let argument_start = *cursor;
+
+    while *cursor < bytes.len() && bytes[*cursor] != b')' {
+        *cursor += 1;
+    }
+
+    if bytes.get(*cursor) != Some(&b')') {
+        return None;
+    }
+
+    let argument = source[argument_start..*cursor].trim();
+    *cursor += 1;
+
+    if argument.is_empty() || !argument.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let index = argument.parse::<usize>().ok()?;
+    if index == 0 || index > MAX_DOM_NODES {
+        return None;
+    }
+
+    u32::try_from(index).ok()
 }
 
 fn skip_selector_whitespace(bytes: &[u8], cursor: &mut usize) {
@@ -2169,6 +2649,43 @@ fn matching_ancestor(
     }
 
     None
+}
+
+fn previous_element_sibling(document: &Document, node_id: NodeId) -> Option<NodeId> {
+    let parent_id = document.node(node_id)?.parent()?;
+    let parent = document.node(parent_id)?;
+    let mut previous = None;
+
+    for child_id in parent.children() {
+        if *child_id == node_id {
+            return previous;
+        }
+
+        if document
+            .node(*child_id)
+            .is_some_and(|child| matches!(child.kind(), NodeKind::Element(_)))
+        {
+            previous = Some(*child_id);
+        }
+    }
+
+    None
+}
+
+fn element_is_empty(document: &Document, node_id: NodeId) -> bool {
+    let Some(node) = document.node(node_id) else {
+        return false;
+    };
+
+    node.children().iter().all(|child_id| {
+        document
+            .node(*child_id)
+            .is_none_or(|child| match child.kind() {
+                NodeKind::Element(_) => false,
+                NodeKind::Text(text) => text.is_empty(),
+                _ => true,
+            })
+    })
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
@@ -2296,6 +2813,9 @@ fn apply_winners(
         Property::BorderLeftWidth,
         Property::BorderColor,
         Property::BorderStyle,
+        Property::BorderRadius,
+        Property::Overflow,
+        Property::Opacity,
         Property::BoxSizing,
         Property::ObjectFit,
         Property::ObjectPosition,
@@ -2407,6 +2927,9 @@ fn copy_computed_property(target: &mut ComputedStyle, source: &ComputedStyle, pr
         Property::BorderLeftWidth => target.border_width.left = source.border_width.left,
         Property::BorderColor => target.border_color = source.border_color,
         Property::BorderStyle => target.border_style = source.border_style,
+        Property::BorderRadius => target.border_radius = source.border_radius,
+        Property::Overflow => target.overflow = source.overflow,
+        Property::Opacity => target.opacity = source.opacity,
         Property::BoxSizing => target.box_sizing = source.box_sizing,
         Property::ObjectFit => target.object_fit = source.object_fit,
         Property::ObjectPosition => target.object_position = source.object_position,
@@ -2595,6 +3118,18 @@ fn apply_value(
 
         (Property::BorderStyle, SpecifiedValue::BorderStyle(border_style)) => {
             style.border_style = *border_style;
+        }
+
+        (Property::BorderRadius, SpecifiedValue::BorderRadius(length)) => {
+            style.border_radius = resolve_size_length(*length, style.font_size);
+        }
+
+        (Property::Overflow, SpecifiedValue::Overflow(overflow)) => {
+            style.overflow = *overflow;
+        }
+
+        (Property::Opacity, SpecifiedValue::Opacity(opacity)) => {
+            style.opacity = sanitize_opacity(*opacity);
         }
 
         (Property::BoxSizing, SpecifiedValue::BoxSizing(box_sizing)) => {
@@ -3131,6 +3666,9 @@ fn css_wide_properties(property: &str) -> Option<Vec<Property>> {
         "border-left-width" => vec![Property::BorderLeftWidth],
         "border-color" => vec![Property::BorderColor],
         "border-style" => vec![Property::BorderStyle],
+        "border-radius" => vec![Property::BorderRadius],
+        "overflow" => vec![Property::Overflow],
+        "opacity" => vec![Property::Opacity],
         "border" => vec![
             Property::BorderTopWidth,
             Property::BorderRightWidth,
@@ -3331,6 +3869,18 @@ fn parse_property(property: &str, value: &str) -> Vec<(Property, SpecifiedValue)
             .unwrap_or_default(),
 
         "border" => parse_border_shorthand(value),
+
+        "border-radius" => parse_border_radius(value)
+            .map(|radius| vec![(Property::BorderRadius, SpecifiedValue::BorderRadius(radius))])
+            .unwrap_or_default(),
+
+        "overflow" => parse_overflow(value)
+            .map(|overflow| vec![(Property::Overflow, SpecifiedValue::Overflow(overflow))])
+            .unwrap_or_default(),
+
+        "opacity" => parse_opacity(value)
+            .map(|opacity| vec![(Property::Opacity, SpecifiedValue::Opacity(opacity))])
+            .unwrap_or_default(),
 
         "box-sizing" => parse_box_sizing(value)
             .map(|box_sizing| vec![(Property::BoxSizing, SpecifiedValue::BoxSizing(box_sizing))])
@@ -3726,6 +4276,34 @@ fn parse_border_style(value: &str) -> Option<BorderStyle> {
     }
 }
 
+fn parse_border_radius(value: &str) -> Option<SpecifiedLength> {
+    let radius = parse_specified_length(value, true)?;
+
+    if matches!(radius, SpecifiedLength::Auto) || !specified_length_is_non_negative(radius) {
+        None
+    } else {
+        Some(radius)
+    }
+}
+
+fn parse_overflow(value: &str) -> Option<Overflow> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "visible" => Some(Overflow::Visible),
+        "hidden" | "clip" => Some(Overflow::Hidden),
+        _ => None,
+    }
+}
+
+fn parse_opacity(value: &str) -> Option<f32> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if let Some(percent) = normalized.strip_suffix('%') {
+        return parse_number(percent).map(|number| sanitize_opacity(number / 100.0));
+    }
+
+    parse_number(&normalized).map(sanitize_opacity)
+}
+
 fn parse_box_sizing(value: &str) -> Option<BoxSizing> {
     match value.trim().to_ascii_lowercase().as_str() {
         "content-box" => Some(BoxSizing::ContentBox),
@@ -3876,48 +4454,124 @@ fn parse_object_fit(value: &str) -> Option<ObjectFit> {
     }
 }
 
+// PHANTOM_2H5_IMAGE_TEXT_COMPOSITION_I
 fn parse_object_position(value: &str) -> Option<ObjectPosition> {
-    let mut tokens = value.split_ascii_whitespace();
-    let first = tokens.next()?;
-    let second = tokens.next();
-    if tokens.next().is_some() {
-        return None;
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+
+    match tokens.as_slice() {
+        [single] => parse_object_position_single(single),
+        [first, second] => parse_object_position_pair(first, second),
+        [first, second, third] => parse_object_position_three(first, second, third),
+        [first, second, third, fourth] => {
+            let first = parse_object_position_edge_offset(first, second)?;
+            let second = parse_object_position_edge_offset(third, fourth)?;
+            object_position_from_axes(first, second)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectPositionAxis {
+    Horizontal,
+    Vertical,
+}
+
+fn parse_object_position_percentage(token: &str) -> Option<f32> {
+    token
+        .strip_suffix('%')
+        .and_then(parse_number)
+        .map(|percent| (percent / 100.0).clamp(0.0, 1.0))
+}
+
+fn parse_object_position_keyword(token: &str) -> Option<(ObjectPositionAxis, f32)> {
+    match token.to_ascii_lowercase().as_str() {
+        "left" => Some((ObjectPositionAxis::Horizontal, 0.0)),
+        "right" => Some((ObjectPositionAxis::Horizontal, 1.0)),
+        "top" => Some((ObjectPositionAxis::Vertical, 0.0)),
+        "bottom" => Some((ObjectPositionAxis::Vertical, 1.0)),
+        _ => None,
+    }
+}
+
+fn parse_object_position_component(token: &str, horizontal: bool) -> Option<f32> {
+    let lower = token.to_ascii_lowercase();
+    match lower.as_str() {
+        "left" if horizontal => Some(0.0),
+        "right" if horizontal => Some(1.0),
+        "top" if !horizontal => Some(0.0),
+        "bottom" if !horizontal => Some(1.0),
+        "center" => Some(0.5),
+        _ => parse_object_position_percentage(&lower),
+    }
+}
+
+fn parse_object_position_single(token: &str) -> Option<ObjectPosition> {
+    let lower = token.to_ascii_lowercase();
+    if lower == "top" || lower == "bottom" {
+        Some(ObjectPosition::new(
+            0.5,
+            parse_object_position_component(token, false)?,
+        ))
+    } else {
+        Some(ObjectPosition::new(
+            parse_object_position_component(token, true)?,
+            0.5,
+        ))
+    }
+}
+
+fn parse_object_position_pair(first: &str, second: &str) -> Option<ObjectPosition> {
+    if let (Some(x), Some(y)) = (
+        parse_object_position_component(first, true),
+        parse_object_position_component(second, false),
+    ) {
+        return Some(ObjectPosition::new(x, y));
     }
 
-    fn component(token: &str, horizontal: bool) -> Option<f32> {
-        let lower = token.to_ascii_lowercase();
-        match lower.as_str() {
-            "left" if horizontal => Some(0.0),
-            "right" if horizontal => Some(1.0),
-            "top" if !horizontal => Some(0.0),
-            "bottom" if !horizontal => Some(1.0),
-            "center" => Some(0.5),
-            _ => lower
-                .strip_suffix('%')
-                .and_then(parse_number)
-                .map(|percent| (percent / 100.0).clamp(0.0, 1.0)),
-        }
+    Some(ObjectPosition::new(
+        parse_object_position_component(second, true)?,
+        parse_object_position_component(first, false)?,
+    ))
+}
+
+fn parse_object_position_edge_offset(
+    edge: &str,
+    offset: &str,
+) -> Option<(ObjectPositionAxis, f32)> {
+    let (axis, anchor) = parse_object_position_keyword(edge)?;
+    let offset = parse_object_position_percentage(offset)?;
+    let value = if anchor <= f32::EPSILON {
+        offset
+    } else {
+        1.0 - offset
+    };
+
+    Some((axis, value.clamp(0.0, 1.0)))
+}
+
+fn parse_object_position_three(first: &str, second: &str, third: &str) -> Option<ObjectPosition> {
+    if let Some(pair) = parse_object_position_edge_offset(first, second)
+        && let Some(single) = parse_object_position_keyword(third)
+    {
+        return object_position_from_axes(pair, single);
     }
 
-    match second {
-        Some(second) => {
-            if let (Some(x), Some(y)) = (component(first, true), component(second, false)) {
-                return Some(ObjectPosition::new(x, y));
-            }
+    let single = parse_object_position_keyword(first)?;
+    let pair = parse_object_position_edge_offset(second, third)?;
+    object_position_from_axes(single, pair)
+}
 
-            Some(ObjectPosition::new(
-                component(second, true)?,
-                component(first, false)?,
-            ))
+fn object_position_from_axes(
+    first: (ObjectPositionAxis, f32),
+    second: (ObjectPositionAxis, f32),
+) -> Option<ObjectPosition> {
+    match (first, second) {
+        ((ObjectPositionAxis::Horizontal, x), (ObjectPositionAxis::Vertical, y))
+        | ((ObjectPositionAxis::Vertical, y), (ObjectPositionAxis::Horizontal, x)) => {
+            Some(ObjectPosition::new(x, y))
         }
-        None => {
-            let lower = first.to_ascii_lowercase();
-            if lower == "top" || lower == "bottom" {
-                Some(ObjectPosition::new(0.5, component(first, false)?))
-            } else {
-                Some(ObjectPosition::new(component(first, true)?, 0.5))
-            }
-        }
+        _ => None,
     }
 }
 
@@ -4182,6 +4836,14 @@ fn sanitize_unit_interval(value: f32) -> f32 {
     }
 }
 
+fn sanitize_opacity(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 fn parse_background_shorthand(value: &str) -> Vec<(Property, SpecifiedValue)> {
     let normalized = value.trim();
 
@@ -4440,6 +5102,9 @@ struct StyleKey {
     border_width: EdgeKey,
     border_color: Option<Rgba>,
     border_style: BorderStyle,
+    border_radius: LengthKey,
+    overflow: Overflow,
+    opacity: u32,
     box_sizing: BoxSizing,
     object_fit: ObjectFit,
     object_position_x: u32,
@@ -4487,6 +5152,9 @@ impl From<&ComputedStyle> for StyleKey {
             border_width: EdgeKey::from(style.border_width),
             border_color: style.border_color,
             border_style: style.border_style,
+            border_radius: LengthKey::from(style.border_radius),
+            overflow: style.overflow,
+            opacity: style.opacity.to_bits(),
             box_sizing: style.box_sizing,
             object_fit: style.object_fit,
             object_position_x: style.object_position.x.to_bits(),
@@ -4803,6 +5471,38 @@ mod tests {
             computed.map(|style| style.max_width()),
             Some(super::Length::Px(240.0))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn box_visual_properties_are_computed_and_bounded() -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            "style".to_owned(),
+            "border-radius: 25%; overflow: hidden; opacity: 150%".to_owned(),
+        );
+
+        let element = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("div", attributes)),
+        )?;
+
+        let styles = compute_styles(&document);
+        let computed = styles.get(element);
+
+        assert_eq!(
+            computed.map(|style| style.border_radius()),
+            Some(super::Length::Percent(25.0))
+        );
+        assert_eq!(
+            computed.map(|style| style.overflow()),
+            Some(super::Overflow::Hidden)
+        );
+        assert_eq!(computed.map(|style| style.opacity()), Some(1.0));
 
         Ok(())
     }

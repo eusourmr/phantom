@@ -30,7 +30,6 @@ ureq = { version = "=3.4.0", features = [
     "rustls-webpki-roots",
     "gzip",
     "brotli",
-    "charset",
 ] }
 url = "=2.5.7"
 

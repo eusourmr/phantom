@@ -11,10 +11,11 @@ use std::collections::BTreeMap;
 use phantom_dom::{Document, ElementData, NodeId, NodeKind};
 use phantom_html::{HtmlError, tree_builder::TreeBuildReport};
 
+// PHANTOM_2H2_BOX_VISUAL_FIDELITY_I
 pub use phantom_css::{
     AlignContent, AlignItems, AlignSelf, AutoEdges, BorderStyle, BoxSizing, ComputedStyle, Display,
     EdgeSizes, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, JustifyContent, Length,
-    ObjectFit, ObjectPosition, Rgba, StyleMap, ZIndex,
+    ObjectFit, ObjectPosition, Overflow, Rgba, StyleMap, ZIndex,
 };
 pub use phantom_image::{
     DecodedImage, ImageCatalog, ImageDecodeLimits, ImageDecoder, ImageError, ImageFormat,
@@ -36,6 +37,8 @@ use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 const DEFAULT_LAYOUT_VIEWPORT_HEIGHT: f32 = 768.0;
+
+// PHANTOM_2H4_RESPONSIVE_VIEWPORT_I
 
 // PHANTOM_2G13_VIEWPORT_GEOMETRY_FOUNDATION
 
@@ -833,7 +836,8 @@ impl Engine {
         viewport_height: f32,
     ) -> Result<(), EngineError> {
         let (document, html_build_report) = phantom_html::parse_with_report(source)?;
-        let styles = phantom_css::compute_styles(&document);
+        let styles =
+            phantom_css::compute_styles_with_viewport(&document, viewport_width, viewport_height);
         let images = ImageCatalog::default();
         let layout = build_layout_snapshot_with_images_and_viewport(
             &document,
@@ -878,9 +882,10 @@ impl Engine {
         self.relayout_with_viewport(viewport_width, self.layout.viewport_height().max(1.0))
     }
 
-    /// Recalculates geometry and paint commands for a changed viewport width.
+    /// Recalculates computed styles, geometry, and paint commands for a changed viewport width.
     ///
-    /// DOM parsing and CSS cascade are deliberately not repeated.
+    /// DOM parsing is deliberately not repeated. The CSS cascade is recomputed because
+    /// viewport-dependent `@media` rules may activate or deactivate.
     ///
     /// # Errors
     ///
@@ -889,9 +894,10 @@ impl Engine {
         self.relayout_with_viewport(viewport_width, self.layout.viewport_height().max(1.0))
     }
 
-    /// Recalculates geometry and paint commands for a changed two-dimensional viewport.
+    /// Recalculates computed styles, geometry, and paint commands for a changed two-dimensional viewport.
     ///
-    /// DOM parsing and CSS cascade are deliberately not repeated.
+    /// DOM parsing is deliberately not repeated. The CSS cascade is recomputed against
+    /// the new viewport before layout so responsive rules remain synchronized.
     ///
     /// # Errors
     ///
@@ -901,17 +907,23 @@ impl Engine {
         viewport_width: f32,
         viewport_height: f32,
     ) -> Result<(), EngineError> {
+        let styles = phantom_css::compute_styles_with_viewport(
+            &self.document,
+            viewport_width,
+            viewport_height,
+        );
         let layout = build_layout_snapshot_with_images_and_viewport(
             &self.document,
-            &self.styles,
+            &styles,
             viewport_width,
             viewport_height,
             &self.images,
         )?;
 
-        let paint = build_paint_list(&layout, &self.styles)?;
+        let paint = build_paint_list(&layout, &styles)?;
         let links = build_link_regions(&self.document, &layout);
 
+        self.styles = styles;
         self.layout = layout;
         self.paint = paint;
         self.links = links;

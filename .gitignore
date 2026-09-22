@@ -6,3 +6,5 @@
 .vscode/
 coverage/
 *.profraw
+
+**/target/

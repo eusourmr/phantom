@@ -129,14 +129,17 @@ fn invalid_selector_and_declaration_do_not_poison_following_rule()
 #[test]
 fn unsupported_at_rule_is_skipped_without_losing_following_rule()
 -> Result<(), phantom_dom::DomError> {
-    let stylesheet =
-        Stylesheet::parse("@media screen { .inside { color: red; } } .target { color: blue; }");
+    // `@media` became supported in 2H-4. Preserve this historical regression
+    // with an at-rule that is still intentionally unsupported in this slice.
+    let stylesheet = Stylesheet::parse(
+        "@supports (display: grid) { .inside { color: red; } } .target { color: blue; }",
+    );
     assert_eq!(stylesheet.len(), 1);
 
     let mut document = Document::new();
     append_style(
         &mut document,
-        "@media screen { .inside { color: red; } } .target { color: blue; }",
+        "@supports (display: grid) { .inside { color: red; } } .target { color: blue; }",
     )?;
 
     let root = document.root();

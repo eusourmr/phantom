@@ -3390,6 +3390,16 @@ fn paint_command_origin(
     }
 }
 
+// PHANTOM_2H1_UI_ALPHA_17_LAYOUT_OWNED_TEXT
+fn web_text_wrap_mode() -> egui::TextWrapMode {
+    // Inline layout already owns line breaking. Re-wrapping the same fragment
+    // inside egui can split words vertically when fallback font metrics differ
+    // from the native renderer. Extend keeps the renderer faithful to the
+    // geometry produced by Phantom's layout engine.
+    egui::TextWrapMode::Extend
+}
+
+// PHANTOM_2H2_BOX_VISUAL_FIDELITY_I
 fn paint_page(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
@@ -3398,6 +3408,9 @@ fn paint_page(
     image_textures: &BTreeMap<ImageResourceId, ImageTextureBinding>,
 ) {
     let now = Instant::now();
+    let pixels_per_point = sanitized_pixels_per_point(ui.ctx().pixels_per_point());
+    let original_clip = ui.clip_rect();
+    let mut clip_stack = vec![original_clip];
 
     for (index, command) in paint.commands().iter().enumerate() {
         let command_origin = paint_command_origin(
@@ -3407,10 +3420,48 @@ fn paint_page(
         );
 
         match command {
-            PaintCommand::FillRect { rect, color } => {
+            PaintCommand::FillRect {
+                rect,
+                radius,
+                color,
+            } => {
                 let target = egui_rect(command_origin, *rect);
+                ui.painter()
+                    .rect_filled(target, *radius, egui_color(*color));
+            }
 
-                ui.painter().rect_filled(target, 0.0, egui_color(*color));
+            PaintCommand::StrokeRect {
+                rect,
+                radius,
+                width,
+                color,
+            } => {
+                if *width <= 0.0 {
+                    continue;
+                }
+
+                let target = egui_rect(command_origin, *rect);
+                ui.painter().rect_stroke(
+                    target,
+                    *radius,
+                    egui::Stroke::new(*width, egui_color(*color)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+
+            PaintCommand::PushClipRect { rect } => {
+                let target = egui_rect(command_origin, *rect);
+                let parent_clip = clip_stack.last().copied().unwrap_or(original_clip);
+                let clip = parent_clip.intersect(target);
+                clip_stack.push(clip);
+                ui.set_clip_rect(clip);
+            }
+
+            PaintCommand::PopClipRect => {
+                if clip_stack.len() > 1 {
+                    clip_stack.pop();
+                }
+                ui.set_clip_rect(clip_stack.last().copied().unwrap_or(original_clip));
             }
 
             PaintCommand::Image {
@@ -3419,6 +3470,7 @@ fn paint_page(
                 alt,
                 fit,
                 position,
+                opacity,
             } => {
                 let target = egui_rect(command_origin, *rect);
 
@@ -3426,9 +3478,17 @@ fn paint_page(
                     .get(resource)
                     .and_then(|binding| binding.texture_at(now))
                 {
-                    paint_fitted_image(ui, texture, target, *fit, *position);
+                    paint_fitted_image(
+                        ui,
+                        texture,
+                        target,
+                        *fit,
+                        *position,
+                        *opacity,
+                        pixels_per_point,
+                    );
                 } else {
-                    paint_image_placeholder(ui, target, paint, *alt);
+                    paint_image_placeholder(ui, target, paint, *alt, *opacity, pixels_per_point);
                 }
             }
 
@@ -3468,19 +3528,24 @@ fn paint_page(
 
                 ui.put(
                     egui_rect(command_origin, *rect),
-                    egui::Label::new(rich_text).wrap(),
+                    egui::Label::new(rich_text).wrap_mode(web_text_wrap_mode()),
                 );
             }
         }
     }
+
+    ui.set_clip_rect(original_clip);
 }
 
+// PHANTOM_2H5_IMAGE_TEXT_COMPOSITION_I
 fn paint_fitted_image(
     ui: &egui::Ui,
     texture: &egui::TextureHandle,
     target: egui::Rect,
     fit: ObjectFit,
     position: ObjectPosition,
+    opacity: f32,
+    pixels_per_point: f32,
 ) {
     let [width, height] = texture.size();
     let source = egui::vec2(width as f32, height as f32);
@@ -3489,9 +3554,12 @@ fn paint_fitted_image(
         return;
     }
 
+    let target = snap_rect_to_device_pixels(target, pixels_per_point);
     let (draw_rect, uv) = object_geometry(target, source, fit, position);
-    ui.painter()
-        .image(texture.id(), draw_rect, uv, egui::Color32::WHITE);
+    let draw_rect = snap_rect_to_device_pixels(draw_rect, pixels_per_point);
+    let alpha = opacity_alpha(opacity);
+    let tint = egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
+    ui.painter().image(texture.id(), draw_rect, uv, tint);
 }
 
 fn object_geometry(
@@ -3581,9 +3649,16 @@ fn paint_image_placeholder(
     target: egui::Rect,
     paint: &PaintList,
     alt: Option<PaintTextRange>,
+    opacity: f32,
+    pixels_per_point: f32,
 ) {
-    ui.painter()
-        .rect_filled(target, 0.0, egui::Color32::from_gray(36));
+    let target = snap_rect_to_device_pixels(target, pixels_per_point);
+    let alpha = opacity_alpha(opacity);
+    ui.painter().rect_filled(
+        target,
+        0.0,
+        egui::Color32::from_rgba_unmultiplied(36, 36, 36, alpha),
+    );
 
     if let Some(alt_range) = alt
         && let Some(content) = paint.text(alt_range)
@@ -3594,11 +3669,47 @@ fn paint_image_placeholder(
             egui::Label::new(
                 egui::RichText::new(content)
                     .size(13.0)
-                    .color(egui::Color32::from_gray(190)),
+                    .color(egui::Color32::from_rgba_unmultiplied(190, 190, 190, alpha)),
             )
             .wrap(),
         );
     }
+}
+
+fn sanitized_pixels_per_point(pixels_per_point: f32) -> f32 {
+    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        pixels_per_point
+    } else {
+        1.0
+    }
+}
+
+fn snap_rect_to_device_pixels(rect: egui::Rect, pixels_per_point: f32) -> egui::Rect {
+    let scale = sanitized_pixels_per_point(pixels_per_point);
+    let snap = |value: f32| (value * scale).round() / scale;
+
+    let min = egui::pos2(snap(rect.min.x), snap(rect.min.y));
+    let mut max = egui::pos2(snap(rect.max.x), snap(rect.max.y));
+    let minimum_step = 1.0 / scale;
+
+    if max.x <= min.x {
+        max.x = min.x + minimum_step;
+    }
+    if max.y <= min.y {
+        max.y = min.y + minimum_step;
+    }
+
+    egui::Rect::from_min_max(min, max)
+}
+
+fn opacity_alpha(opacity: f32) -> u8 {
+    let opacity = if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+
+    (255.0 * opacity).round().clamp(0.0, 255.0) as u8
 }
 
 fn egui_rect(origin: egui::Pos2, rect: PaintRect) -> egui::Rect {
@@ -3775,6 +3886,30 @@ mod tests {
     fn alpha16_tab_surface_uses_chrome_fill_without_button_pill() {
         let panel = egui::Color32::from_rgb(21, 22, 24);
         assert_eq!(tab_surface_fill(panel), panel);
+    }
+
+    #[test]
+    fn alpha17_web_text_fragments_are_not_rewrapped_by_native_ui() {
+        assert_eq!(web_text_wrap_mode(), egui::TextWrapMode::Extend);
+    }
+
+    #[test]
+    fn image_composition_snaps_fractional_geometry_to_device_pixels() {
+        let rect = egui::Rect::from_min_max(egui::pos2(10.24, 20.26), egui::pos2(110.26, 70.74));
+        let snapped = snap_rect_to_device_pixels(rect, 2.0);
+
+        assert_eq!(snapped.min, egui::pos2(10.0, 20.5));
+        assert_eq!(snapped.max, egui::pos2(110.5, 70.5));
+    }
+
+    #[test]
+    fn image_composition_sanitizes_invalid_device_scale() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.4, 0.4), egui::pos2(20.6, 10.6));
+
+        assert_eq!(
+            snap_rect_to_device_pixels(rect, f32::NAN),
+            snap_rect_to_device_pixels(rect, 1.0)
+        );
     }
 
     #[test]

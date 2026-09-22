@@ -11,11 +11,15 @@
 #![forbid(unsafe_code)]
 
 use phantom_css::{
-    FontFamily, FontStyle, FontWeight, ObjectFit, ObjectPosition, Position, Rgba, StyleMap, ZIndex,
+    FontFamily, FontStyle, FontWeight, Length, ObjectFit, ObjectPosition, Overflow, Position, Rgba,
+    StyleMap, ZIndex,
 };
 use phantom_image::ImageResourceId;
 use phantom_layout::{LayoutBox, LayoutKind, LayoutSnapshot, Rect as LayoutRect};
 use thiserror::Error;
+
+// PHANTOM_2H2_BOX_VISUAL_FIDELITY_I
+const MAX_PAINT_RADIUS: f32 = 255.0;
 
 /// Renderer-neutral RGBA color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +64,19 @@ impl PaintColor {
     #[must_use]
     pub const fn alpha(self) -> u8 {
         self.alpha
+    }
+
+    /// Returns this color with alpha multiplied by a bounded opacity.
+    #[must_use]
+    pub fn with_opacity(self, opacity: f32) -> Self {
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let alpha = (f32::from(self.alpha) * opacity).round().clamp(0.0, 255.0) as u8;
+
+        Self::new(self.red, self.green, self.blue, alpha)
     }
 }
 
@@ -218,14 +235,41 @@ pub enum PaintAttachment {
 /// One immutable, renderer-neutral paint command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintCommand {
-    /// Fills one rectangular background.
+    /// Fills one box background, optionally with a uniform corner radius.
     FillRect {
         /// Rectangle to fill.
         rect: PaintRect,
 
+        /// Uniform corner radius in logical pixels.
+        radius: f32,
+
         /// Fill color.
         color: PaintColor,
     },
+
+    /// Strokes one solid uniform border inside its border box.
+    StrokeRect {
+        /// Border-box rectangle.
+        rect: PaintRect,
+
+        /// Uniform corner radius in logical pixels.
+        radius: f32,
+
+        /// Uniform border width in logical pixels.
+        width: f32,
+
+        /// Stroke color.
+        color: PaintColor,
+    },
+
+    /// Pushes one rectangular descendant clip.
+    PushClipRect {
+        /// Clip rectangle in the command's coordinate space.
+        rect: PaintRect,
+    },
+
+    /// Restores the previous descendant clip.
+    PopClipRect,
 
     /// Paints one replaced image resource inside its content box.
     Image {
@@ -243,6 +287,9 @@ pub enum PaintCommand {
 
         /// CSS object-position value resolved by the style system.
         position: ObjectPosition,
+
+        /// Effective element opacity after ancestor composition.
+        opacity: f32,
     },
 
     /// Paints one laid-out UTF-8 text fragment.
@@ -392,6 +439,7 @@ pub fn build_paint_list(
         styles,
         root.id(),
         PaintAttachment::Document,
+        1.0,
     )?;
 
     Ok(paint)
@@ -403,22 +451,47 @@ fn paint_subtree(
     styles: &StyleMap,
     id: phantom_layout::LayoutId,
     inherited_attachment: PaintAttachment,
+    inherited_opacity: f32,
 ) -> Result<(), PaintError> {
     let Some(layout_box) = layout.get(id) else {
         return Ok(());
     };
 
+    let style = styles.get(layout_box.source_node());
     let attachment = if inherited_attachment == PaintAttachment::Viewport
-        || styles
-            .get(layout_box.source_node())
-            .is_some_and(|style| style.position() == Position::Fixed)
+        || style.is_some_and(|style| style.position() == Position::Fixed)
     {
         PaintAttachment::Viewport
     } else {
         PaintAttachment::Document
     };
 
-    paint_one_box(paint, layout, layout_box, styles, attachment)?;
+    // Line boxes are synthetic layout containers that reuse the originating
+    // element's NodeId. Applying opacity again here would double-count the
+    // element while descending toward its text fragments.
+    let local_opacity = if layout_box.kind() == LayoutKind::Line {
+        1.0
+    } else {
+        style.map_or(1.0, |style| style.opacity())
+    };
+    let effective_opacity = (inherited_opacity * local_opacity).clamp(0.0, 1.0);
+
+    paint_one_box(
+        paint,
+        layout,
+        layout_box,
+        styles,
+        attachment,
+        effective_opacity,
+    )?;
+
+    let clip = style
+        .filter(|style| style.overflow() == Overflow::Hidden)
+        .and_then(|_| overflow_clip_rect(layout_box));
+
+    if let Some(rect) = clip {
+        push_command(paint, attachment, PaintCommand::PushClipRect { rect });
+    }
 
     let mut children = Vec::new();
     let mut child = layout_box.first_child();
@@ -436,7 +509,18 @@ fn paint_subtree(
     children.sort_by_key(|(_, key)| *key);
 
     for (child_id, _) in children {
-        paint_subtree(paint, layout, styles, child_id, attachment)?;
+        paint_subtree(
+            paint,
+            layout,
+            styles,
+            child_id,
+            attachment,
+            effective_opacity,
+        )?;
+    }
+
+    if clip.is_some() {
+        push_command(paint, attachment, PaintCommand::PopClipRect);
     }
 
     Ok(())
@@ -478,27 +562,68 @@ fn paint_one_box(
     layout_box: &LayoutBox,
     styles: &StyleMap,
     attachment: PaintAttachment,
+    opacity: f32,
 ) -> Result<(), PaintError> {
     match layout_box.kind() {
         LayoutKind::Root | LayoutKind::Line | LayoutKind::Control { .. } => {}
 
         LayoutKind::Block | LayoutKind::Flex => {
-            push_background(paint, layout_box, styles, attachment);
-            push_border(paint, layout_box, styles, attachment);
+            push_background(paint, layout_box, styles, attachment, opacity);
+            push_border(paint, layout_box, styles, attachment, opacity);
         }
 
         LayoutKind::Image { resource, .. } => {
-            push_background(paint, layout_box, styles, attachment);
-            push_border(paint, layout_box, styles, attachment);
-            push_image(paint, layout, layout_box, styles, resource, attachment)?;
+            push_background(paint, layout_box, styles, attachment, opacity);
+            push_border(paint, layout_box, styles, attachment, opacity);
+            push_image(
+                paint, layout, layout_box, styles, resource, attachment, opacity,
+            )?;
         }
 
         LayoutKind::Text { underline, .. } => {
-            push_text(paint, layout, layout_box, styles, underline, attachment)?;
+            push_text(
+                paint, layout, layout_box, styles, underline, attachment, opacity,
+            )?;
         }
     }
 
     Ok(())
+}
+
+fn used_border_radius(radius: Length, rect: LayoutRect) -> f32 {
+    let maximum = (rect.width().min(rect.height()).max(0.0) / 2.0).min(MAX_PAINT_RADIUS);
+
+    let value = match radius {
+        Length::Px(value) => value,
+        Length::Percent(percent) => rect.width().min(rect.height()).max(0.0) * percent / 100.0,
+        Length::Auto => 0.0,
+    };
+
+    if value.is_finite() {
+        value.clamp(0.0, maximum)
+    } else {
+        0.0
+    }
+}
+
+fn overflow_clip_rect(layout_box: &LayoutBox) -> Option<PaintRect> {
+    if !matches!(layout_box.kind(), LayoutKind::Block | LayoutKind::Flex) {
+        return None;
+    }
+
+    let rect = layout_box.rect();
+    let border = layout_box.border();
+    let width = (rect.width() - border.left() - border.right()).max(0.0);
+    let height = (rect.height() - border.top() - border.bottom()).max(0.0);
+
+    (width > 0.0 && height > 0.0).then(|| {
+        PaintRect::new(
+            rect.x() + border.left(),
+            rect.y() + border.top(),
+            width,
+            height,
+        )
+    })
 }
 
 fn push_command(paint: &mut PaintList, attachment: PaintAttachment, command: PaintCommand) {
@@ -511,6 +636,7 @@ fn push_background(
     layout_box: &LayoutBox,
     styles: &StyleMap,
     attachment: PaintAttachment,
+    opacity: f32,
 ) {
     let Some(style) = styles.get(layout_box.source_node()) else {
         return;
@@ -535,7 +661,8 @@ fn push_background(
         attachment,
         PaintCommand::FillRect {
             rect: rect.into(),
-            color: background.into(),
+            radius: used_border_radius(style.border_radius(), rect),
+            color: PaintColor::from(background).with_opacity(opacity),
         },
     );
 }
@@ -545,6 +672,7 @@ fn push_border(
     layout_box: &LayoutBox,
     styles: &StyleMap,
     attachment: PaintAttachment,
+    opacity: f32,
 ) {
     let Some(style) = styles.get(layout_box.source_node()) else {
         return;
@@ -561,7 +689,27 @@ fn push_border(
     }
 
     let rect = layout_box.rect();
-    let color = style.border_color().into();
+    let color = PaintColor::from(style.border_color()).with_opacity(opacity);
+    let radius = used_border_radius(style.border_radius(), rect);
+
+    if radius > 0.0
+        && border.top() > 0.0
+        && border.top().to_bits() == border.right().to_bits()
+        && border.top().to_bits() == border.bottom().to_bits()
+        && border.top().to_bits() == border.left().to_bits()
+    {
+        push_command(
+            paint,
+            attachment,
+            PaintCommand::StrokeRect {
+                rect: rect.into(),
+                radius,
+                width: border.top(),
+                color,
+            },
+        );
+        return;
+    }
 
     if border.top() > 0.0 {
         push_command(
@@ -569,6 +717,7 @@ fn push_border(
             attachment,
             PaintCommand::FillRect {
                 rect: PaintRect::new(rect.x(), rect.y(), rect.width(), border.top()),
+                radius: 0.0,
                 color,
             },
         );
@@ -583,6 +732,7 @@ fn push_border(
             attachment,
             PaintCommand::FillRect {
                 rect: PaintRect::new(rect.x(), vertical_start, border.left(), vertical_height),
+                radius: 0.0,
                 color,
             },
         );
@@ -599,6 +749,7 @@ fn push_border(
                     border.right(),
                     vertical_height,
                 ),
+                radius: 0.0,
                 color,
             },
         );
@@ -615,12 +766,14 @@ fn push_border(
                     rect.width(),
                     border.bottom(),
                 ),
+                radius: 0.0,
                 color,
             },
         );
     }
 }
 
+// PHANTOM_2H5_IMAGE_TEXT_COMPOSITION_I
 fn push_image(
     paint: &mut PaintList,
     layout: &LayoutSnapshot,
@@ -628,6 +781,7 @@ fn push_image(
     styles: &StyleMap,
     resource: ImageResourceId,
     attachment: PaintAttachment,
+    opacity: f32,
 ) -> Result<(), PaintError> {
     let rect = layout_box.rect();
     let border = layout_box.border();
@@ -653,11 +807,21 @@ fn push_image(
         None
     };
 
+    let content_rect = PaintRect::new(x, y, width, height);
+
+    // Replaced image content owns a content-box clip independent of ancestor
+    // overflow. This keeps object-fit/object-position bounded to the element
+    // and composes safely with surrounding inline text and stacking.
+    push_command(
+        paint,
+        attachment,
+        PaintCommand::PushClipRect { rect: content_rect },
+    );
     push_command(
         paint,
         attachment,
         PaintCommand::Image {
-            rect: PaintRect::new(x, y, width, height),
+            rect: content_rect,
             resource,
             alt,
             fit: styles
@@ -666,8 +830,10 @@ fn push_image(
             position: styles
                 .get(layout_box.source_node())
                 .map_or_else(ObjectPosition::default, |style| style.object_position()),
+            opacity,
         },
     );
+    push_command(paint, attachment, PaintCommand::PopClipRect);
 
     Ok(())
 }
@@ -679,6 +845,7 @@ fn push_text(
     styles: &StyleMap,
     underline: bool,
     attachment: PaintAttachment,
+    opacity: f32,
 ) -> Result<(), PaintError> {
     let Some(text) = layout.text_for(layout_box) else {
         return Ok(());
@@ -703,7 +870,7 @@ fn push_text(
         PaintCommand::Text {
             rect: layout_box.rect().into(),
             text: PaintTextRange { start, len },
-            color: style.color().into(),
+            color: PaintColor::from(style.color()).with_opacity(opacity),
             font_size: style.font_size(),
             weight: style.font_weight().into(),
             style: style.font_style().into(),
@@ -729,6 +896,13 @@ mod tests {
         assert_eq!(color.green(), 52);
         assert_eq!(color.blue(), 86);
         assert_eq!(color.alpha(), 200);
+    }
+
+    #[test]
+    fn opacity_multiplies_color_alpha_deterministically() {
+        let color = PaintColor::new(10, 20, 30, 200).with_opacity(0.5);
+
+        assert_eq!(color.alpha(), 100);
     }
 
     #[test]

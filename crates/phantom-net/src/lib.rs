@@ -2025,6 +2025,54 @@ fn declared_charset(content_type: Option<&str>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+// PHANTOM_2H1_DOCUMENT_ENCODING_I
+fn is_windows_1252_label(label: &str) -> bool {
+    matches!(
+        label,
+        "windows-1252" | "cp1252" | "x-cp1252" | "iso-8859-1" | "latin1" | "latin-1"
+    )
+}
+
+fn decode_windows_1252(payload: &[u8]) -> Arc<str> {
+    let mut decoded = String::with_capacity(payload.len());
+
+    for &byte in payload {
+        let character = match byte {
+            0x80 => '\u{20AC}',
+            0x82 => '\u{201A}',
+            0x83 => '\u{0192}',
+            0x84 => '\u{201E}',
+            0x85 => '\u{2026}',
+            0x86 => '\u{2020}',
+            0x87 => '\u{2021}',
+            0x88 => '\u{02C6}',
+            0x89 => '\u{2030}',
+            0x8A => '\u{0160}',
+            0x8B => '\u{2039}',
+            0x8C => '\u{0152}',
+            0x8E => '\u{017D}',
+            0x91 => '\u{2018}',
+            0x92 => '\u{2019}',
+            0x93 => '\u{201C}',
+            0x94 => '\u{201D}',
+            0x95 => '\u{2022}',
+            0x96 => '\u{2013}',
+            0x97 => '\u{2014}',
+            0x98 => '\u{02DC}',
+            0x99 => '\u{2122}',
+            0x9A => '\u{0161}',
+            0x9B => '\u{203A}',
+            0x9C => '\u{0153}',
+            0x9E => '\u{017E}',
+            0x9F => '\u{0178}',
+            _ => char::from(byte),
+        };
+        decoded.push(character);
+    }
+
+    Arc::<str>::from(decoded)
+}
+
 fn decode_text_body(bytes: &[u8], content_type: Option<&str>) -> Result<Arc<str>, NetworkError> {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return Err(NetworkError::UnsupportedCharset("utf-16le".to_owned()));
@@ -2050,6 +2098,10 @@ fn decode_text_body(bytes: &[u8], content_type: Option<&str>) -> Result<Arc<str>
             if payload.iter().any(|byte| !byte.is_ascii()) {
                 return Err(NetworkError::InvalidTextEncoding);
             }
+        }
+
+        Some(label) if is_windows_1252_label(label) => {
+            return Ok(decode_windows_1252(payload));
         }
 
         Some(other) => {
