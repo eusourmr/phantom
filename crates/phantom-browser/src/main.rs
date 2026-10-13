@@ -2917,6 +2917,58 @@ fn reset_committed_document_resources(tab: &mut BrowserTab) {
     tab.reset_subresource_budget();
 }
 
+// PHANTOM_2O5_BROWSER_RENDER_DIAGNOSTICS
+// Read-only snapshot: no network activity, CSS parsing or DOM mutation.
+fn browser_render_diagnostics_status(
+    engine: &Engine,
+    status_code: u16,
+    body_bytes: usize,
+    stylesheet_loaded: usize,
+    stylesheet_failed: usize,
+) -> String {
+    let snapshot = engine.render_diagnostics();
+    format!(
+        "HTTP {status_code} · {body_bytes} bytes · CSS {}/{} instaladas · {} falhas · {} recursos CSS ok · {} nós · {} caixas · {} comandos",
+        snapshot.external_css_installed,
+        snapshot.external_css_discovered,
+        stylesheet_failed,
+        stylesheet_loaded,
+        snapshot.dom_nodes,
+        snapshot.layout_boxes,
+        snapshot.paint_commands,
+    )
+}
+
+#[cfg(test)]
+mod browser_render_diagnostics_2o5_tests {
+    use super::*;
+
+    #[test]
+    fn browser_status_distinguishes_discovered_installed_and_failed_css()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut engine = Engine::new();
+        engine
+            .load_html(r#"<link rel="stylesheet" href="/one.css"><link rel="stylesheet" href="/two.css"><p>OK</p>"#)
+            ?;
+        let first = browser_render_diagnostics_status(&engine, 200, 512, 0, 1);
+        assert!(first.contains("CSS 0/2 instaladas"));
+        assert!(first.contains("1 falhas"));
+        assert!(first.contains("HTTP 200"));
+
+        let request = engine.external_stylesheet_requests();
+        engine.install_external_stylesheet(request[0].node_id(), "p { color: red; }")?;
+        let second = browser_render_diagnostics_status(&engine, 200, 512, 1, 1);
+        assert!(second.contains("CSS 1/2 instaladas"));
+        assert!(second.contains("1 recursos CSS ok"));
+
+        engine.load_html("<p>Other page</p>")?;
+        let next = browser_render_diagnostics_status(&engine, 200, 16, 0, 0);
+        assert!(next.contains("CSS 0/0 instaladas"));
+        assert!(next.contains("0 falhas"));
+        Ok(())
+    }
+}
+
 fn finish_committed_document(
     network: &NetworkClient,
     tab: &mut BrowserTab,
@@ -2935,21 +2987,14 @@ fn finish_committed_document(
     tab.mark_navigation_ready();
     tab.javascript_last_tick = Some(Instant::now());
 
-    tab.status = if stylesheet_loaded == 0 && stylesheet_failed == 0 {
-        format!(
-            "HTTP {status_code} · {body_bytes} bytes · {} nós · {} caixas · {} comandos",
-            tab.engine.document().len(),
-            tab.engine.layout().len(),
-            tab.engine.paint_list().len()
-        )
-    } else {
-        format!(
-            "HTTP {status_code} · {body_bytes} bytes · CSS externo {stylesheet_loaded} ok / {stylesheet_failed} falha · {} nós · {} caixas · {} comandos",
-            tab.engine.document().len(),
-            tab.engine.layout().len(),
-            tab.engine.paint_list().len()
-        )
-    };
+    // PHANTOM_2O5_BROWSER_RENDER_DIAGNOSTICS
+    tab.status = browser_render_diagnostics_status(
+        &tab.engine,
+        status_code,
+        body_bytes,
+        stylesheet_loaded,
+        stylesheet_failed,
+    );
 
     if let Err(error) = script_result {
         // A script failure does not replace a successfully loaded page.
@@ -12624,7 +12669,9 @@ mod tests {
                 "pass={pass}: {painted:?}"
             );
             assert!(
-                tab.status.contains("CSS externo 27 ok / 5 falha"),
+                tab.status.contains("CSS 2/2 instaladas")
+                    && tab.status.contains("5 falhas")
+                    && tab.status.contains("27 recursos CSS ok"),
                 "pass={pass}: {}",
                 tab.status
             );
