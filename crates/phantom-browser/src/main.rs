@@ -527,6 +527,8 @@ struct BrowserTab {
     title: String,
     pinned: bool,
     status: String,
+    css_resources_loaded: usize,
+    css_resources_failed: usize,
     navigation: NavigationState,
     pending_images: Option<PendingImageBatch>,
     pending_site_icon: Option<PendingSiteIcon>,
@@ -570,6 +572,8 @@ impl BrowserTab {
             title: "Nova aba".to_owned(),
             pinned: false,
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
+            css_resources_loaded: 0,
+            css_resources_failed: 0,
             navigation: NavigationState::Empty,
             pending_images: None,
             pending_site_icon: None,
@@ -656,6 +660,8 @@ impl BrowserTab {
         self.script_fetch_count = 0;
         self.pending_page_scripts = None;
         self.pending_external_stylesheets = None;
+        self.css_resources_loaded = 0;
+        self.css_resources_failed = 0;
     }
 
     fn is_loading_images(&self) -> bool {
@@ -735,6 +741,7 @@ struct PhantomApp {
     focus_address_next_frame: bool,
     window_maximized: bool,
     recently_closed_tabs: Vec<ClosedTabSnapshot>,
+    diagnostics_open: bool,
 }
 
 impl PhantomApp {
@@ -751,6 +758,7 @@ impl PhantomApp {
             focus_address_next_frame: true,
             window_maximized: false,
             recently_closed_tabs: Vec::new(),
+            diagnostics_open: false,
         }
     }
 
@@ -891,6 +899,9 @@ impl PhantomApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
+        if context.input(|input| input.key_pressed(egui::Key::F12)) {
+            self.diagnostics_open = !self.diagnostics_open;
+        }
         let (focus_location, new_tab, reopen_closed, close_tab, reload) = context.input(|input| {
             let command = input.modifiers.command;
             let shift = input.modifiers.shift;
@@ -1990,6 +2001,28 @@ impl PhantomApp {
         }
     }
 
+    // PHANTOM_2O6_F12_DIAGNOSTICS
+    // Native-only overlay. No DOM mutation, network requests or page scripts.
+    fn diagnostic_window(&mut self, context: &egui::Context) {
+        if !self.diagnostics_open {
+            return;
+        }
+        let report = browser_debug_report(self.active_tab());
+        egui::Window::new("Diagnóstico Phantom · F12")
+            .open(&mut self.diagnostics_open)
+            .default_width(470.0)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label("Relatório da aba ativa");
+                ui.separator();
+                ui.label(egui::RichText::new(&report).monospace().size(12.0));
+                ui.add_space(6.0);
+                if ui.button("Copiar relatório").clicked() {
+                    ui.ctx().copy_text(report.clone());
+                }
+            });
+    }
+
     fn update_window_title(&self, context: &egui::Context) {
         let title = if self.active_tab().title == "Nova aba" {
             format!("{APP_NAME} {APP_VERSION}")
@@ -2041,6 +2074,56 @@ impl eframe::App for PhantomApp {
             });
 
         self.floating_navigation(ui.ctx());
+        self.diagnostic_window(ui.ctx());
+    }
+}
+
+// PHANTOM_2O6_F12_DIAGNOSTICS
+fn browser_debug_report(tab: &BrowserTab) -> String {
+    let snapshot = tab.engine.render_diagnostics();
+    format!(
+        "URL: {}\nFase: {:?}\nGeração: {}\nCSS externo: {}/{} instaladas\nRecursos CSS: {} carregados · {} falhas\nDOM: {} nós\nLayout: {} caixas\nPintura: {} comandos\nImagens: {} carregadas · {} falhas · {} adiadas\nPreloads: {} carregados · {} falhas\nEstado: {}",
+        tab.address,
+        tab.navigation_phase(),
+        tab.document_generation,
+        snapshot.external_css_installed,
+        snapshot.external_css_discovered,
+        tab.css_resources_loaded,
+        tab.css_resources_failed,
+        snapshot.dom_nodes,
+        snapshot.layout_boxes,
+        snapshot.paint_commands,
+        tab.loaded_images,
+        tab.failed_images,
+        tab.deferred_images.len(),
+        tab.preloaded_resources,
+        tab.failed_preloads,
+        tab.status,
+    )
+}
+
+#[cfg(test)]
+mod browser_diagnostics_2o6_tests {
+    use super::*;
+
+    #[test]
+    fn report_is_generation_scoped_and_read_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html(r#"<link rel="stylesheet" href="/site.css"><p>Hello</p>"#)?;
+        tab.css_resources_failed = 1;
+        let before = tab.engine.render_diagnostics();
+        let report = browser_debug_report(&tab);
+        assert!(report.contains("CSS externo: 0/1 instaladas"));
+        assert!(report.contains("1 falhas"));
+        assert_eq!(tab.engine.render_diagnostics(), before);
+
+        tab.clear_navigation_state();
+        tab.engine.load_html("<p>Next page</p>")?;
+        let next = browser_debug_report(&tab);
+        assert!(next.contains("CSS externo: 0/0 instaladas"));
+        assert!(next.contains("0 falhas"));
+        Ok(())
     }
 }
 
@@ -2978,6 +3061,8 @@ fn finish_committed_document(
     stylesheet_failed: usize,
     device_pixel_ratio: f32,
 ) {
+    tab.css_resources_loaded = stylesheet_loaded;
+    tab.css_resources_failed = stylesheet_failed;
     let final_url = tab.address.clone();
     let script_result = start_page_scripts(tab, &final_url, device_pixel_ratio);
     tab.title = tab
