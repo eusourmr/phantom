@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOM Tree Navigation</title>
+<style>
+#tree-status.active { color: #00695c; font-weight: 700; }
+#final-status.ready { color: #2e7d32; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="root">
+  <section id="left"><span id="a">A</span><span id="b">B</span></section>
+  <section id="right"><span id="c">C</span></section>
+</div>
+<p id="tree-status">Tree pending</p>
+<p id="mutation-status">Mutation pending</p>
+<p id="final-status">DOM tree pending</p>
+<script src="/dom-tree.js"></script>
+</body>
+</html>

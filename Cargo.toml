@@ -16,6 +16,12 @@ members = [
     "crates/phantom-text",
 ]
 
+# PHANTOM_2J2_R1_INDEPENDENT_JS_WORKSPACE
+# phantom-js intentionally remains its own zero-dependency Cargo workspace.
+# It is now a path dependency of phantom-engine, so Cargo must be told not to
+# auto-enroll it into this outer workspace.
+exclude = ["crates/phantom-js"]
+
 [workspace.package]
 version = "0.0.1"
 edition = "2024"

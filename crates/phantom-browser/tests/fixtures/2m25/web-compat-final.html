@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Phantom 2M Final</title>
+<style>
+#status.ready { color: #2e7d32; }
+#style-target { color: #1565c0; }
+#event-status.native { color: #5e35b1; }
+#blocked-status.blocked { color: #c62828; }
+</style>
+</head>
+<body>
+<main id="app" data-phase="boot">
+<section id="panel" class="card" data-state="initial">
+<h1>Web compatibility 2M final gate</h1>
+<p id="status">Boot</p>
+<p id="style-target">Style pending</p>
+<ul id="list">
+<li class="item" data-role="item">one</li>
+<li class="item" data-role="item">two</li>
+</ul>
+<div id="mutation-zone"><span id="replace-me">replace</span></div>
+<input id="field" name="q" value="alpha">
+<button id="synthetic-button" type="button">Synthetic</button>
+<section id="native-panel">
+<a id="continue-link" href="/wrong-target.html">Continue</a>
+<a id="blocked-link" href="/blocked-target.html">Blocked</a>
+<p id="event-status">Native pending</p>
+<p id="blocked-status">Blocked pending</p>
+</section>
+</section>
+<script src="/web-compat-final.js"></script>
+</main>
+</body>
+</html>

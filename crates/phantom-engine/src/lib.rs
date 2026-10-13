@@ -6,9 +6,10 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use phantom_dom::{Document, ElementData, NodeId, NodeKind};
+pub use phantom_dom::NodeKind;
+use phantom_dom::{Document, DomError, ElementData, NodeId};
 use phantom_html::{HtmlError, tree_builder::TreeBuildReport};
 
 // PHANTOM_2H2_BOX_VISUAL_FIDELITY_I
@@ -32,11 +33,19 @@ pub use phantom_paint::{
     PaintAttachment, PaintColor, PaintCommand, PaintError, PaintFontFamily, PaintFontStyle,
     PaintFontWeight, PaintList, PaintRect, PaintTextRange, build_paint_list,
 };
+// PHANTOM_2J2_LIVE_DOM_BRIDGE_I
+pub use phantom_js::{
+    BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, FetchCredentialsMode, FetchHostRequest,
+    RuntimeError as JavaScriptError, Value as JavaScriptValue,
+};
 
 use thiserror::Error;
 
 const DEFAULT_LAYOUT_VIEWPORT_WIDTH: f32 = 1024.0;
 const DEFAULT_LAYOUT_VIEWPORT_HEIGHT: f32 = 768.0;
+// PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+const MAX_EXTERNAL_STYLESHEETS_PER_DOCUMENT: usize = 32;
+const MAX_EXTERNAL_STYLESHEET_SOURCE_BYTES: usize = 1024 * 1024;
 
 // PHANTOM_2H4_RESPONSIVE_VIEWPORT_I
 
@@ -209,12 +218,20 @@ pub enum FormSubmissionError {
 /// committed document URL through `phantom-net`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkRegion {
+    node_id: u64,
     href: String,
     rect: Rect,
     opens_new_context: bool,
 }
 
 impl LinkRegion {
+    // PHANTOM_2M24_NATIVE_INTERACTION_JAVASCRIPT_EVENTS_I
+    /// Returns the owning anchor's stable document-generation-local node id.
+    #[must_use]
+    pub const fn node_id(&self) -> u64 {
+        self.node_id
+    }
+
     /// Returns the raw `href` value declared by the nearest ancestor anchor.
     #[must_use]
     pub fn href(&self) -> &str {
@@ -379,6 +396,103 @@ pub enum EngineError {
     /// Renderer-neutral paint-list generation failed.
     #[error("paint processing failed: {0}")]
     Paint(#[from] PaintError),
+
+    /// A bounded live-DOM mutation failed.
+    #[error("DOM mutation failed: {0}")]
+    Dom(#[from] DomError),
+
+    /// An external stylesheet exceeded the bounded author-source budget.
+    #[error("external stylesheet exceeds configured limit ({limit} bytes)")]
+    ExternalStylesheetTooLarge {
+        /// Maximum stylesheet source bytes accepted by this engine slice.
+        limit: usize,
+    },
+
+    /// The browser attempted to install CSS for a node that is not an eligible stylesheet link.
+    #[error("external stylesheet target is not eligible: node {0}")]
+    ExternalStylesheetTargetInvalid(u64),
+
+    /// JavaScript runtime or browser-host execution failed.
+    #[error("JavaScript execution failed: {0}")]
+    JavaScript(#[from] JavaScriptError),
+}
+
+// PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+fn stylesheet_link_is_eligible(element: &ElementData) -> bool {
+    if element.tag_name() != "link" || element.attribute("disabled").is_some() {
+        return false;
+    }
+
+    if !rel_has_token(element.attribute("rel"), "stylesheet")
+        || rel_has_token(element.attribute("rel"), "alternate")
+    {
+        return false;
+    }
+
+    if !element
+        .attribute("type")
+        .is_none_or(|value| value.trim().is_empty() || value.trim().eq_ignore_ascii_case("text/css"))
+    {
+        return false;
+    }
+
+    if !element.attribute("media").is_none_or(|value| {
+        let value = value.trim();
+        value.is_empty()
+            || value.eq_ignore_ascii_case("all")
+            || value.eq_ignore_ascii_case("screen")
+    }) {
+        return false;
+    }
+
+    element
+        .attribute("href")
+        .is_some_and(|href| !href.trim().is_empty())
+}
+
+// PHANTOM_2N1_REAL_WEB_NETWORK_I
+fn is_supported_classic_script_type(kind: Option<&str>) -> bool {
+    kind.is_none_or(|kind| {
+        let kind = kind.trim();
+        kind.is_empty()
+            || kind.eq_ignore_ascii_case("text/javascript")
+            || kind.eq_ignore_ascii_case("application/javascript")
+            || kind.eq_ignore_ascii_case("text/ecmascript")
+            || kind.eq_ignore_ascii_case("application/ecmascript")
+            || kind.eq_ignore_ascii_case("application/x-javascript")
+    })
+}
+
+// PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+/// One external author stylesheet discovered in parsed document order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalStylesheetRequest {
+    node_id: u64,
+    source: String,
+}
+
+impl ExternalStylesheetRequest {
+    /// Stable document-generation-local DOM node id of the owning `<link>`.
+    #[must_use]
+    pub const fn node_id(&self) -> u64 {
+        self.node_id
+    }
+
+    /// Raw stylesheet URL reference declared by `href`.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+// PHANTOM_2L5_ORDERED_PAGE_SCRIPTS_I
+/// One eligible classic script captured from the parsed document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PageScriptTask {
+    /// Inline JavaScript source.
+    Inline(String),
+    /// External JavaScript URL reference, resolved by the browser host.
+    External(String),
 }
 
 /// High-level Phantom engine orchestration shell.
@@ -390,10 +504,12 @@ pub struct Engine {
     document: Document,
     html_build_report: Option<TreeBuildReport>,
     styles: StyleMap,
+    external_stylesheets: BTreeMap<NodeId, String>,
     images: ImageCatalog,
     layout: LayoutSnapshot,
     paint: PaintList,
     links: Vec<LinkRegion>,
+    javascript: phantom_js::Runtime,
     state: EngineState,
 }
 
@@ -411,6 +527,7 @@ impl Engine {
             document: Document::new(),
             html_build_report: None,
             styles: StyleMap::default(),
+            external_stylesheets: BTreeMap::new(),
             images: ImageCatalog::default(),
             layout: LayoutSnapshot::empty_with_viewport(
                 DEFAULT_LAYOUT_VIEWPORT_WIDTH,
@@ -418,6 +535,7 @@ impl Engine {
             ),
             paint: PaintList::empty(DEFAULT_LAYOUT_VIEWPORT_WIDTH),
             links: Vec::new(),
+            javascript: phantom_js::Runtime::new(),
             state: EngineState::Idle,
         }
     }
@@ -667,6 +785,34 @@ impl Engine {
             .rev()
             .find(|region| rect_contains(region.rect(), x, y))
     }
+
+    // PHANTOM_2M24_NATIVE_INTERACTION_JAVASCRIPT_EVENTS_I
+    /// Returns the current visible link fragment for one anchor node id.
+    ///
+    /// This is intentionally consulted after JavaScript click dispatch so
+    /// listener mutations to `href`/`target` affect the native default action.
+    #[must_use]
+    pub fn link_for_node(&self, node_id: u64) -> Option<&LinkRegion> {
+        self.links.iter().find(|region| region.node_id() == node_id)
+    }
+
+    /// Hit-tests the active layout and resolves the nearest DOM element.
+    ///
+    /// Later layout fragments win. Text fragments are promoted to their
+    /// nearest element ancestor so native pointer input never exposes text
+    /// node internals to the browser shell.
+    #[must_use]
+    pub fn dom_element_at(&self, x: f32, y: f32) -> Option<u64> {
+        self.layout
+            .boxes()
+            .iter()
+            .rev()
+            .find(|layout_box| rect_contains(layout_box.rect(), x, y))
+            .and_then(|layout_box| {
+                nearest_element_node(&self.document, layout_box.source_node())
+            })
+            .map(NodeId::as_u64)
+    }
     /// Returns responsive image subresources for a default device-pixel ratio.
     ///
     /// This keeps URL fetching outside the engine while making HTML candidate
@@ -852,12 +998,495 @@ impl Engine {
         self.document = document;
         self.html_build_report = Some(html_build_report);
         self.styles = styles;
+        self.external_stylesheets.clear();
         self.images = images;
         self.layout = layout;
         self.paint = paint;
         self.links = links;
+        self.javascript = phantom_js::Runtime::new();
         self.state = EngineState::Ready;
 
+        Ok(())
+    }
+
+    // PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+    /// Returns eligible external author stylesheets in parsed document order.
+    ///
+    /// This slice supports ordinary non-alternate screen stylesheets. Dynamic
+    /// stylesheet discovery after JavaScript mutation remains outside 2N-2.
+    #[must_use]
+    pub fn external_stylesheet_requests(&self) -> Vec<ExternalStylesheetRequest> {
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+                if !stylesheet_link_is_eligible(element) {
+                    return None;
+                }
+                let source = element.attribute("href")?.trim();
+                Some(ExternalStylesheetRequest {
+                    node_id: node.id().as_u64(),
+                    source: source.to_owned(),
+                })
+            })
+            .take(MAX_EXTERNAL_STYLESHEETS_PER_DOCUMENT)
+            .collect()
+    }
+
+    /// Installs one bounded external author stylesheet and rebuilds style,
+    /// layout, paint and link snapshots without reparsing HTML.
+    ///
+    /// The stylesheet remains associated with the owning `<link>` NodeId so
+    /// `phantom-css` can preserve source order against inline `<style>` blocks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the source is oversized, the target link
+    /// is no longer eligible, or downstream layout/paint rebuilding fails.
+    pub fn install_external_stylesheet(
+        &mut self,
+        node_id: u64,
+        source: &str,
+    ) -> Result<(), EngineError> {
+        if source.len() > MAX_EXTERNAL_STYLESHEET_SOURCE_BYTES {
+            return Err(EngineError::ExternalStylesheetTooLarge {
+                limit: MAX_EXTERNAL_STYLESHEET_SOURCE_BYTES,
+            });
+        }
+
+        let Some(node_id) = self
+            .document
+            .nodes()
+            .find(|node| node.id().as_u64() == node_id)
+            .map(|node| node.id())
+        else {
+            return Err(EngineError::ExternalStylesheetTargetInvalid(node_id));
+        };
+        let eligible = self
+            .document
+            .node(node_id)
+            .is_some_and(|node| match node.kind() {
+                NodeKind::Element(element) => stylesheet_link_is_eligible(element),
+                _ => false,
+            });
+        if !eligible {
+            return Err(EngineError::ExternalStylesheetTargetInvalid(node_id.as_u64()));
+        }
+
+        let mut external_stylesheets = self.external_stylesheets.clone();
+        external_stylesheets.insert(node_id, source.to_owned());
+
+        let viewport_width = self.layout.viewport_width().max(1.0);
+        let viewport_height = self.layout.viewport_height().max(1.0);
+        let styles = phantom_css::compute_styles_with_external_author_css_with_viewport(
+            &self.document,
+            &external_stylesheets,
+            viewport_width,
+            viewport_height,
+        );
+        let layout = build_layout_snapshot_with_images_and_viewport(
+            &self.document,
+            &styles,
+            viewport_width,
+            viewport_height,
+            &self.images,
+        )?;
+        let paint = build_paint_list(&layout, &styles)?;
+        let links = build_link_regions(&self.document, &layout);
+
+        self.external_stylesheets = external_stylesheets;
+        self.styles = styles;
+        self.layout = layout;
+        self.paint = paint;
+        self.links = links;
+        Ok(())
+    }
+
+    /// Executes bounded JavaScript against the current DOM snapshot and applies
+    /// supported DOM mutations back into the real Phantom document.
+    ///
+    /// Browser Host Foundation II currently exposes `document.getElementById`,
+    /// a simple `document.querySelector` subset, element `textContent`, and
+    /// attribute read/write/remove methods. After mutations, CSS/layout/paint
+    /// are rebuilt without reparsing the original HTML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for JavaScript, DOM mutation, layout, or paint
+    /// failures.
+    pub fn execute_javascript(
+        &mut self,
+        source: &str,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<JavaScriptValue, EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        let value = self.javascript.execute(source)?;
+        let mutations = self.javascript.drain_dom_mutations();
+
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            self.javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+            self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        }
+
+        Ok(value)
+    }
+
+    // PHANTOM_2M24_NATIVE_INTERACTION_JAVASCRIPT_EVENTS_I
+    /// Dispatches a native-originated trusted click into JavaScript before
+    /// the browser shell performs any default action.
+    ///
+    /// Listener DOM mutations are committed through the normal engine
+    /// mutation boundary and CSS/layout/paint are rebuilt before returning.
+    /// The boolean result is `false` when the click was canceled with
+    /// `preventDefault()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for JavaScript, DOM mutation, layout, or
+    /// paint failures. Runtime state is not committed when engine mutation
+    /// application fails.
+    pub fn dispatch_native_click(
+        &mut self,
+        node_id: u64,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<bool, EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+
+        let mut javascript = self.javascript.clone();
+        let default_allowed = javascript.dispatch_trusted_click(node_id)?;
+        let mutations = javascript.drain_dom_mutations();
+
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+        }
+
+        self.javascript = javascript;
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        Ok(default_allowed)
+    }
+
+    // PHANTOM_2L5_ORDERED_PAGE_SCRIPTS_I
+    /// Returns at most 64 eligible classic scripts in document order.
+    /// Script contents are captured before execution mutates the DOM.
+    #[must_use]
+    pub fn page_script_tasks(&self) -> Vec<PageScriptTask> {
+        self.document.nodes().filter_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+            if element.tag_name() != "script"
+                || element.attribute("async").is_some()
+                || !is_supported_classic_script_type(element.attribute("type"))
+            {
+                return None;
+            }
+            if let Some(src) = element.attribute("src") {
+                return (!src.trim().is_empty()).then(|| PageScriptTask::External(src.to_owned()));
+            }
+            let source = descendant_text_content(&self.document, node.id());
+            (!source.trim().is_empty()).then_some(PageScriptTask::Inline(source))
+        }).take(64).collect()
+    }
+
+    // PHANTOM_2L1_PAGE_SCRIPT_EXECUTION_I
+    /// Executes eligible inline classic scripts in document order after HTML loading.
+    /// Classic `defer` is admitted by the bounded post-parse model used by Phantom.
+    /// External scripts are sequenced by the browser host; module and async scripts
+    /// remain outside this compatibility slice. Each script is a separate job with
+    /// its own microtask checkpoint. Invoke once
+    /// per navigation; a second invocation would execute the scripts again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if a script or resulting DOM update fails.
+    pub fn execute_inline_page_scripts(
+        &mut self,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<usize, EngineError> {
+        let scripts: Vec<String> = self.document.nodes().filter_map(|node| {
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+            if element.tag_name() != "script"
+                || element.attribute("src").is_some()
+                || element.attribute("async").is_some()
+                || !is_supported_classic_script_type(element.attribute("type"))
+            {
+                return None;
+            }
+            Some(descendant_text_content(&self.document, node.id()))
+        }).filter(|source| !source.trim().is_empty()).collect();
+
+        let mut executed = 0;
+        for source in scripts {
+            self.execute_javascript(&source, document_url, device_pixel_ratio)?;
+            executed += 1;
+        }
+        Ok(executed)
+    }
+
+    // PHANTOM_2L3_BROWSER_TIMER_PUMP_I
+    /// Number of active JavaScript timers in the current document generation.
+    #[must_use]
+    pub fn pending_javascript_timer_count(&self) -> usize {
+        self.javascript.pending_timer_count()
+    }
+
+    /// Advances the JavaScript virtual timer clock and executes ready tasks.
+    ///
+    /// The browser shell supplies elapsed monotonic milliseconds. Timers do not
+    /// read wall-clock time directly. JavaScript runtime state is staged until
+    /// all callbacks and any resulting DOM mutation batch succeed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for JavaScript timer failures, DOM mutation
+    /// failures, layout failures, or paint failures.
+    pub fn advance_javascript_time(
+        &mut self,
+        elapsed_ms: u64,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<usize, EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+
+        let mut javascript = self.javascript.clone();
+        let fired = javascript.advance_time(elapsed_ms)?;
+        let mutations = javascript.drain_dom_mutations();
+
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+        }
+
+        self.javascript = javascript;
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        Ok(fired)
+    }
+
+    /// Drains bounded structured JavaScript fetch requests for the Browser Host.
+    ///
+    /// URL resolution and transport security policy remain outside the engine.
+    pub fn drain_javascript_fetch_host_requests(&mut self) -> Vec<FetchHostRequest> {
+        self.javascript.drain_fetch_host_requests()
+    }
+
+    /// Drains JavaScript fetch requests for the browser/network layer.
+    ///
+    /// Each entry is `(request_id, raw_url)`. The engine deliberately does not
+    /// perform URL resolution or network I/O here.
+    pub fn drain_javascript_fetch_requests(&mut self) -> Vec<(u64, String)> {
+        self.javascript.drain_fetch_requests()
+    }
+
+    /// Completes one JavaScript fetch request with a successful bounded response.
+    ///
+    /// Promise reactions and their microtasks execute before this method
+    /// returns. Any DOM mutations produced by those reactions are applied
+    /// transactionally and trigger CSS/layout/paint rebuild.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for JavaScript completion, DOM, layout, or paint
+    /// failures.
+    pub fn complete_javascript_fetch_success(
+        &mut self,
+        request_id: u64,
+        status: u16,
+        response_url: &str,
+        body: &str,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<(), EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+
+        let mut javascript = self.javascript.clone();
+        javascript.complete_fetch_success(request_id, status, response_url, body)?;
+        let mutations = javascript.drain_dom_mutations();
+
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+        }
+
+        self.javascript = javascript;
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        Ok(())
+    }
+
+    // PHANTOM_2N18_RESPONSE_HEADERS_EXPOSURE_I
+    /// Completes a JavaScript fetch with network-admitted response headers.
+    ///
+    /// Header safety is checked again inside phantom-js, independently of the
+    /// network response representation. DOM commits remain transactional.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] on invalid headers, JavaScript or DOM failure.
+    pub fn complete_javascript_fetch_success_with_headers(
+        &mut self,
+        request_id: u64,
+        status: u16,
+        response_url: &str,
+        response_body_and_headers: (&str, &[(String, String)]),
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<(), EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        let mut javascript = self.javascript.clone();
+        let (body, headers) = response_body_and_headers;
+        javascript.complete_fetch_success_with_headers(
+            request_id, status, response_url, body, headers,
+        )?;
+        let mutations = javascript.drain_dom_mutations();
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+        }
+        self.javascript = javascript;
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        Ok(())
+    }
+
+    /// Completes one JavaScript fetch request as a bounded network failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for JavaScript rejection, DOM, layout, or paint
+    /// failures.
+    pub fn complete_javascript_fetch_failure(
+        &mut self,
+        request_id: u64,
+        reason: &str,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<(), EngineError> {
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+
+        let mut javascript = self.javascript.clone();
+        javascript.complete_fetch_failure(request_id, reason)?;
+        let mutations = javascript.drain_dom_mutations();
+
+        if !mutations.is_empty() {
+            let mappings = self.apply_javascript_dom_mutations(mutations)?;
+            javascript.remap_dom_node_ids(&mappings);
+            self.rebuild_after_dom_mutation()?;
+        }
+
+        self.javascript = javascript;
+        self.refresh_javascript_host(document_url, device_pixel_ratio)?;
+        Ok(())
+    }
+
+    fn refresh_javascript_host(
+        &mut self,
+        document_url: &str,
+        device_pixel_ratio: f64,
+    ) -> Result<(), EngineError> {
+        let title = self.document_title().unwrap_or_default();
+        let elements = javascript_dom_element_snapshots(&self.document)?;
+
+        let snapshot = BrowserHostSnapshot::new(
+            document_url,
+            title,
+            f64::from(self.layout.viewport_width()),
+            f64::from(self.layout.viewport_height()),
+            device_pixel_ratio,
+        )?
+        .with_dom_elements(elements)?;
+
+        self.javascript.install_browser_host(&snapshot)?;
+        Ok(())
+    }
+
+    fn apply_javascript_dom_mutations(
+        &mut self,
+        mutations: Vec<BrowserDomMutation>,
+    ) -> Result<Vec<(u64, u64)>, EngineError> {
+        let mut document = self.document.clone();
+        let mut remap = BTreeMap::<u64, NodeId>::new();
+
+        for mutation in mutations {
+            match mutation {
+                BrowserDomMutation::CreateElement { node_id, tag_name } => {
+                    let committed = document.create_detached_element(tag_name)?;
+                    remap.insert(node_id, committed);
+                }
+                BrowserDomMutation::AppendChild {
+                    parent_id,
+                    child_id,
+                } => {
+                    let parent = resolve_javascript_node_id(&document, &remap, parent_id)?;
+                    let child = resolve_javascript_node_id(&document, &remap, child_id)?;
+                    document.append_existing_child(parent, child)?;
+                }
+                BrowserDomMutation::DetachNode { node_id } => {
+                    let node = resolve_javascript_node_id(&document, &remap, node_id)?;
+                    document.detach_node(node)?;
+                }
+                BrowserDomMutation::SetTextContent { node_id, value } => {
+                    let node = resolve_javascript_node_id(&document, &remap, node_id)?;
+                    document.set_text_content(node, &value)?;
+                }
+                BrowserDomMutation::SetAttribute {
+                    node_id,
+                    name,
+                    value,
+                } => {
+                    let node = resolve_javascript_node_id(&document, &remap, node_id)?;
+                    document.set_element_attribute(node, name, value)?;
+                }
+                BrowserDomMutation::RemoveAttribute { node_id, name } => {
+                    let node = resolve_javascript_node_id(&document, &remap, node_id)?;
+                    document.remove_element_attribute(node, &name)?;
+                }
+            }
+        }
+
+        let mappings = remap
+            .into_iter()
+            .map(|(temporary, committed)| (temporary, committed.as_u64()))
+            .collect::<Vec<_>>();
+        self.document = document;
+        Ok(mappings)
+    }
+
+    fn rebuild_after_dom_mutation(&mut self) -> Result<(), EngineError> {
+        let viewport_width = self.layout.viewport_width().max(1.0);
+        let viewport_height = self.layout.viewport_height().max(1.0);
+
+        let styles = phantom_css::compute_styles_with_external_author_css_with_viewport(
+            &self.document,
+            &self.external_stylesheets,
+            viewport_width,
+            viewport_height,
+        );
+        let layout = build_layout_snapshot_with_images_and_viewport(
+            &self.document,
+            &styles,
+            viewport_width,
+            viewport_height,
+            &self.images,
+        )?;
+        let paint = build_paint_list(&layout, &styles)?;
+        let links = build_link_regions(&self.document, &layout);
+
+        self.styles = styles;
+        self.layout = layout;
+        self.paint = paint;
+        self.links = links;
         Ok(())
     }
 
@@ -907,8 +1536,9 @@ impl Engine {
         viewport_width: f32,
         viewport_height: f32,
     ) -> Result<(), EngineError> {
-        let styles = phantom_css::compute_styles_with_viewport(
+        let styles = phantom_css::compute_styles_with_external_author_css_with_viewport(
             &self.document,
+            &self.external_stylesheets,
             viewport_width,
             viewport_height,
         );
@@ -930,6 +1560,100 @@ impl Engine {
 
         Ok(())
     }
+}
+
+// PHANTOM_2J4_DOM_COLLECTIONS_HARDENING_I
+fn javascript_dom_element_snapshots(
+    document: &Document,
+) -> Result<Vec<BrowserDomElementSnapshot>, JavaScriptError> {
+    let mut roots = vec![document.root()];
+    roots.extend(
+        document
+            .nodes()
+            .filter(|node| node.id() != document.root() && node.parent().is_none())
+            .map(|node| node.id()),
+    );
+
+    let mut seen = BTreeSet::new();
+    let mut order = Vec::with_capacity(document.len());
+    for root in roots {
+        let mut stack = vec![root];
+        while let Some(node_id) = stack.pop() {
+            if !seen.insert(node_id) {
+                continue;
+            }
+            order.push(node_id);
+            if let Some(node) = document.node(node_id) {
+                stack.extend(node.children().iter().rev().copied());
+            }
+        }
+    }
+
+    for node in document.nodes() {
+        if seen.insert(node.id()) {
+            order.push(node.id());
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|node_id| {
+            let node = document.node(node_id)?;
+            let NodeKind::Element(element) = node.kind() else {
+                return None;
+            };
+            Some(
+                BrowserDomElementSnapshot::new(
+                    node.id().as_u64(),
+                    element.tag_name(),
+                    element.attributes().clone(),
+                    descendant_text_content(document, node.id()),
+                )
+                .map(|snapshot| {
+                    snapshot
+                        .with_parent_node_id(node.parent().map(NodeId::as_u64))
+                        .with_connected(node_is_connected(document, node.id()))
+                }),
+            )
+        })
+        .collect()
+}
+
+fn resolve_javascript_node_id(
+    document: &Document,
+    remap: &BTreeMap<u64, NodeId>,
+    raw_id: u64,
+) -> Result<NodeId, DomError> {
+    if let Some(node_id) = remap.get(&raw_id).copied() {
+        return Ok(node_id);
+    }
+
+    find_node_by_raw_id(document, raw_id).ok_or(DomError::NodeNotFound(document.root()))
+}
+
+fn node_is_connected(document: &Document, node_id: NodeId) -> bool {
+    let mut current = Some(node_id);
+    let mut visited = 0usize;
+
+    while let Some(current_id) = current {
+        if current_id == document.root() {
+            return true;
+        }
+        if visited >= phantom_dom::MAX_DOM_NODES {
+            return false;
+        }
+        visited = visited.saturating_add(1);
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+
+    false
+}
+
+fn find_node_by_raw_id(document: &Document, raw_id: u64) -> Option<NodeId> {
+    document
+        .nodes()
+        .find(|node| node.id().as_u64() == raw_id)
+        .map(|node| node.id())
 }
 
 fn node_is_descendant_or_self(document: &Document, node_id: NodeId, ancestor: NodeId) -> bool {
@@ -1044,7 +1768,8 @@ fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkR
                 return None;
             }
 
-            let anchor = link_element_for_node(document, layout_box.source_node())?;
+            let (anchor_node, anchor) =
+                link_element_for_node(document, layout_box.source_node())?;
             let href = anchor.attribute("href")?.to_owned();
             let rect = layout_box.rect();
 
@@ -1053,6 +1778,7 @@ fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkR
             }
 
             Some(LinkRegion {
+                node_id: anchor_node.as_u64(),
                 href,
                 rect,
                 opens_new_context: anchor
@@ -1063,7 +1789,10 @@ fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkR
         .collect()
 }
 
-fn link_element_for_node(document: &Document, node_id: NodeId) -> Option<&ElementData> {
+fn link_element_for_node(
+    document: &Document,
+    node_id: NodeId,
+) -> Option<(NodeId, &ElementData)> {
     let mut current = Some(node_id);
 
     while let Some(current_id) = current {
@@ -1073,9 +1802,23 @@ fn link_element_for_node(document: &Document, node_id: NodeId) -> Option<&Elemen
             && element.tag_name() == "a"
             && element.attribute("href").is_some()
         {
-            return Some(element);
+            return Some((current_id, element));
         }
 
+        current = node.parent();
+    }
+
+    None
+}
+
+fn nearest_element_node(document: &Document, node_id: NodeId) -> Option<NodeId> {
+    let mut current = Some(node_id);
+
+    while let Some(current_id) = current {
+        let node = document.node(current_id)?;
+        if matches!(node.kind(), NodeKind::Element(_)) {
+            return Some(current_id);
+        }
         current = node.parent();
     }
 
@@ -1442,7 +2185,9 @@ fn parse_css_px(value: &str) -> Option<f32> {
 mod tests {
     use phantom_dom::NodeKind;
 
-    use super::{Engine, EngineError, EngineState, ImageLoading, LayoutKind, PaintCommand, Rgba};
+    use super::{
+        Engine, EngineError, EngineState, ImageLoading, LayoutKind, PageScriptTask, PaintCommand, Rgba,
+    };
 
     #[test]
     fn new_engine_is_idle() {
@@ -1616,4 +2361,127 @@ mod tests {
 
         Ok(())
     }
+
+    // PHANTOM_2N1_REAL_WEB_NETWORK_I
+    #[test]
+    fn defer_and_legacy_classic_script_types_are_exposed_as_page_tasks()
+    -> Result<(), EngineError> {
+        let mut engine = Engine::new();
+
+        engine.load_html(
+            r#"
+            <script defer src="/deferred.js" type="application/ecmascript"></script>
+            <script defer type="text/ecmascript">window.inlineDefer = 1;</script>
+            <script async src="/async.js"></script>
+            <script type="module" src="/module.js"></script>
+            "#,
+        )?;
+
+        let tasks = engine.page_script_tasks();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(
+            tasks.first(),
+            Some(&PageScriptTask::External("/deferred.js".to_owned()))
+        );
+        assert!(matches!(
+            tasks.get(1),
+            Some(PageScriptTask::Inline(source)) if source.contains("inlineDefer")
+        ));
+
+        Ok(())
+    }
+
+    // PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+    #[test]
+    fn external_stylesheets_preserve_author_source_order_and_rebuild_paint()
+    -> Result<(), EngineError> {
+        let mut engine = Engine::new();
+        engine.load_html(
+            r#"
+            <style>#target { color: red; }</style>
+            <link rel="stylesheet" href="/first.css">
+            <style>#target { color: blue; }</style>
+            <link rel="stylesheet" href="/last.css" type="text/css">
+            <link rel="alternate stylesheet" href="/alternate.css">
+            <link rel="stylesheet" href="/print.css" media="print">
+            <p id="target">External CSS</p>
+            "#,
+        )?;
+
+        let requests = engine.external_stylesheet_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].source(), "/first.css");
+        assert_eq!(requests[1].source(), "/last.css");
+
+        engine.install_external_stylesheet(
+            requests[0].node_id(),
+            "#target { color: rgb(0, 128, 0); }",
+        )?;
+        let target = engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
+                NodeKind::Element(element) if element.attribute("id") == Some("target") => {
+                    Some(node.id())
+                }
+                _ => None,
+            })
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        assert_eq!(
+            engine.styles().get(target).map(|style| style.color()),
+            Some(Rgba::new(0, 0, 255, 255))
+        );
+
+        engine.install_external_stylesheet(
+            requests[1].node_id(),
+            "#target { color: rgb(106, 27, 154); }",
+        )?;
+        assert_eq!(
+            engine.styles().get(target).map(|style| style.color()),
+            Some(Rgba::new(106, 27, 154, 255))
+        );
+        assert!(engine.paint_list().commands().iter().any(|command| {
+            matches!(
+                command,
+                PaintCommand::Text { color, .. }
+                    if color.red() == 106 && color.green() == 27 && color.blue() == 154
+            )
+        }));
+
+        Ok(())
+    }
+
+    // PHANTOM_2N3_STYLESHEET_LIFECYCLE_CACHE_III
+    #[test]
+    fn external_stylesheet_media_reacts_to_relayout_without_reinstall()
+    -> Result<(), EngineError> {
+        let mut engine = Engine::new();
+        engine.load_html(
+            "<link rel='stylesheet' href='/responsive.css'><p id='responsive'>Responsive external CSS</p>",
+        )?;
+        let request = engine.external_stylesheet_requests().into_iter().next()
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        engine.install_external_stylesheet(
+            request.node_id(),
+            "#responsive { color: rgb(198, 40, 40); } @media (max-width: 700px) { #responsive { color: rgb(21, 101, 192); } }",
+        )?;
+        let responsive = engine.document().nodes().find_map(|node| match node.kind() {
+            NodeKind::Element(element) if element.attribute("id") == Some("responsive") => Some(node.id()),
+            _ => None,
+        }).ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+
+        let wide = engine.styles().get(responsive).map(|style| style.color())
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        assert_eq!(wide, Rgba::new(198, 40, 40, 255));
+        engine.relayout_with_viewport(600.0, 768.0)?;
+        let narrow = engine.styles().get(responsive).map(|style| style.color())
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        assert_eq!(narrow, Rgba::new(21, 101, 192, 255));
+        engine.relayout_with_viewport(1024.0, 768.0)?;
+        let wide_again = engine.styles().get(responsive).map(|style| style.color())
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        assert_eq!(wide_again, Rgba::new(198, 40, 40, 255));
+        Ok(())
+    }
+
 }

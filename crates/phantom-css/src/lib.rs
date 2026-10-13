@@ -1079,7 +1079,37 @@ pub fn compute_styles_with_viewport(
     viewport_width: f32,
     viewport_height: f32,
 ) -> StyleMap {
-    let author_css = collect_author_css(document);
+    compute_styles_with_author_css_sources(document, None, viewport_width, viewport_height)
+}
+
+// PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+/// Computes styles with bounded external author CSS associated with owning DOM nodes.
+///
+/// The external sources are merged at their owning `NodeId` positions while
+/// collecting author CSS, preserving source order relative to inline `<style>`
+/// elements without moving network or URL concerns into the CSS crate.
+#[must_use]
+pub fn compute_styles_with_external_author_css_with_viewport(
+    document: &Document,
+    external_author_css: &BTreeMap<NodeId, String>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> StyleMap {
+    compute_styles_with_author_css_sources(
+        document,
+        Some(external_author_css),
+        viewport_width,
+        viewport_height,
+    )
+}
+
+fn compute_styles_with_author_css_sources(
+    document: &Document,
+    external_author_css: Option<&BTreeMap<NodeId, String>>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> StyleMap {
+    let author_css = collect_author_css(document, external_author_css);
     let stylesheet = Stylesheet::parse_for_viewport(&author_css, viewport_width, viewport_height);
 
     let selector_context = SelectorMatchContext::build(document);
@@ -3212,7 +3242,10 @@ fn apply_value(
     }
 }
 
-fn collect_author_css(document: &Document) -> String {
+fn collect_author_css(
+    document: &Document,
+    external_author_css: Option<&BTreeMap<NodeId, String>>,
+) -> String {
     let mut source = String::new();
 
     for node in document.nodes() {
@@ -3220,24 +3253,31 @@ fn collect_author_css(document: &Document) -> String {
             continue;
         };
 
-        if element.tag_name() != "style" {
-            continue;
+        if element.tag_name() == "style" {
+            for child_id in node.children() {
+                let Some(child) = document.node(*child_id) else {
+                    continue;
+                };
+
+                if let NodeKind::Text(text) = child.kind() {
+                    let required = text.len().saturating_add(1);
+                    if source.len().saturating_add(required) > MAX_CSS_SOURCE_BYTES {
+                        return source;
+                    }
+
+                    source.push_str(text);
+                    source.push('\n');
+                }
+            }
         }
 
-        for child_id in node.children() {
-            let Some(child) = document.node(*child_id) else {
-                continue;
-            };
-
-            if let NodeKind::Text(text) = child.kind() {
-                let required = text.len().saturating_add(1);
-                if source.len().saturating_add(required) > MAX_CSS_SOURCE_BYTES {
-                    return source;
-                }
-
-                source.push_str(text);
-                source.push('\n');
+        if let Some(external) = external_author_css.and_then(|styles| styles.get(&node.id())) {
+            let required = external.len().saturating_add(1);
+            if source.len().saturating_add(required) > MAX_CSS_SOURCE_BYTES {
+                return source;
             }
+            source.push_str(external);
+            source.push('\n');
         }
     }
 
@@ -5241,6 +5281,7 @@ mod tests {
     use super::{
         AlignContent, AlignSelf, ComputedStyle, Display, FlexDirection, FlexWrap, ObjectFit,
         ObjectPosition, Rgba, Stylesheet, compute_styles,
+        compute_styles_with_external_author_css_with_viewport,
     };
 
     #[test]
@@ -5788,6 +5829,68 @@ mod tests {
             styles.get(image).map(ComputedStyle::object_position),
             Some(ObjectPosition::new(0.25, 0.75)),
         );
+        Ok(())
+    }
+
+    // PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
+    #[test]
+    fn external_author_css_preserves_order_against_inline_style_nodes()
+    -> Result<(), phantom_dom::DomError> {
+        let mut document = Document::new();
+        let root = document.root();
+
+        let first_style =
+            document.append_child(root, NodeKind::Element(ElementData::new("style")))?;
+        document.append_child(
+            first_style,
+            NodeKind::Text("#target { color: red; }".to_owned()),
+        )?;
+        let first_link =
+            document.append_child(root, NodeKind::Element(ElementData::new("link")))?;
+        let second_style =
+            document.append_child(root, NodeKind::Element(ElementData::new("style")))?;
+        document.append_child(
+            second_style,
+            NodeKind::Text("#target { color: blue; }".to_owned()),
+        )?;
+        let second_link =
+            document.append_child(root, NodeKind::Element(ElementData::new("link")))?;
+
+        let mut attributes = BTreeMap::new();
+        attributes.insert("id".to_owned(), "target".to_owned());
+        let target = document.append_child(
+            root,
+            NodeKind::Element(ElementData::with_attributes("p", attributes)),
+        )?;
+
+        let mut external = BTreeMap::new();
+        external.insert(first_link, "#target { color: green; }".to_owned());
+        let styles = compute_styles_with_external_author_css_with_viewport(
+            &document,
+            &external,
+            1024.0,
+            768.0,
+        );
+        assert_eq!(
+            styles.get(target).map(ComputedStyle::color),
+            Some(Rgba::new(0, 0, 255, 255))
+        );
+
+        external.insert(
+            second_link,
+            "#target { color: rgb(106, 27, 154); }".to_owned(),
+        );
+        let styles = compute_styles_with_external_author_css_with_viewport(
+            &document,
+            &external,
+            1024.0,
+            768.0,
+        );
+        assert_eq!(
+            styles.get(target).map(ComputedStyle::color),
+            Some(Rgba::new(106, 27, 154, 255))
+        );
+
         Ok(())
     }
 }

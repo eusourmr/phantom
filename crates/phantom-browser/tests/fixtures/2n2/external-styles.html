@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>2N2 External Stylesheets</title>
+<style>
+#target { color: rgb(198, 40, 40); }
+#order { color: rgb(239, 108, 0); }
+</style>
+<link rel="stylesheet" href="/2n2-missing.css">
+<link rel="stylesheet" href="/2n2-redirect.css">
+<style>#order { color: rgb(21, 101, 192); }</style>
+<link rel="stylesheet" href="/2n2-late.css" type="text/css">
+<link rel="stylesheet" href="/2n2-wrong.css">
+<link rel="alternate stylesheet" href="/2n2-alternate.css">
+<link rel="stylesheet" href="/2n2-print.css" media="print">
+</head>
+<body>
+<p id="target">External stylesheet target</p>
+<p id="order">Author order</p>
+<div id="layout">External layout</div>
+<p id="script-marker">SCRIPT PENDING</p>
+<script>document.getElementById('script-marker').textContent = 'SCRIPT AFTER CSS';</script>
+</body>
+</html>

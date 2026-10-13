@@ -1,0 +1,15 @@
+var values = [1, 2, 3, 4];
+var context = {factor: 3};
+var mapped = values.map(function(value) { return value * this.factor; }, context);
+var filtered = values.filter(function(value) { return value % 2 === 0; });
+var total = values.reduce(function(acc, value) { return acc + value; }, 0);
+var flags = values.some(function(value) { return value === 4; }) + '-' + values.every(function(value) { return value > 0; }) + '-' + values.findIndex(function(value) { return value === 3; });
+var entries = Object.entries({b: 2, a: 1});
+var parts = 'alpha,beta,gamma'.split(',');
+document.getElementById('active').className = 'ready';
+document.getElementById('active').textContent = 'Core callbacks active';
+document.getElementById('array').textContent = 'Array callbacks ' + mapped.join('-') + ' ' + filtered.join('-') + ' ' + total + ' ' + flags;
+document.getElementById('object').textContent = 'Object entries ' + entries[0].join(':') + ',' + entries[1].join(':') + ' own-' + Object.hasOwn({x: 1}, 'x');
+document.getElementById('string').textContent = 'String helpers ' + parts.slice(1).join('|') + ' ' + 'Phantom browser'.replace('browser', 'engine');
+document.getElementById('final').className = 'ok';
+document.getElementById('final').textContent = 'Web core library III GREEN';

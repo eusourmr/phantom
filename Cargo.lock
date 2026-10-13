@@ -2396,6 +2396,7 @@ dependencies = [
  "phantom-dom",
  "phantom-html",
  "phantom-image",
+ "phantom-js",
  "phantom-layout",
  "phantom-paint",
  "thiserror 2.0.20",
@@ -2416,6 +2417,10 @@ dependencies = [
  "image",
  "thiserror 2.0.20",
 ]
+
+[[package]]
+name = "phantom-js"
+version = "0.0.1"
 
 [[package]]
 name = "phantom-layout"

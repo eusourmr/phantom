@@ -1,8 +1,9 @@
 //! JavaScript language foundation for the Phantom browser engine.
 //!
-//! Foundation 9 keeps the bounded lexer/expression compatibility and extends
-//! statement control flow with `while` and classic `for` loops. There is still no DOM
-//! binding, runtime, bytecode, `window`, or browser integration in this milestone.
+//! Runtime Core II keeps the bounded Foundation 9 lexer/parser and executes
+//! scalar values, lexical bindings, arrays, objects, functions, calls, and bounded
+//! control flow. Browser Host Foundation I additionally exposes snapshot-backed
+//! `window`, `document`, and `location` globals without coupling phantom-js to the DOM.
 
 #![forbid(unsafe_code)]
 
@@ -21,9 +22,16 @@ use std::fmt;
 /// Syntax tree nodes for JavaScript Foundation 9.
 pub mod ast;
 mod parser;
+mod runtime;
 
+// PHANTOM_2I1_JS_RUNTIME_CORE_I
 pub use parser::{
     ParseError, ParseErrorKind, parse_expression, parse_primary_expression, parse_program,
+};
+pub use runtime::{
+    BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, FetchCredentialsMode,
+    FetchHostRequest, Runtime, RuntimeError,
+    RuntimeErrorKind, Value,
 };
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;

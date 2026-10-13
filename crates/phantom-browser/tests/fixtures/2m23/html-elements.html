@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HTML element interaction I</title>
+<style>
+#status.ready { color: #2e7d32; }
+button[data-state="clicked"] { color: #5e35b1; }
+#final { color: #2e7d32; }
+</style>
+</head>
+<body>
+<input id="field" type="text" value="alpha">
+<button id="go">Go</button>
+<a id="link" href="/old">Link</a>
+<form id="form" action="/old" method="get"></form>
+<p id="status">waiting</p>
+<p id="props"></p>
+<p id="link-state"></p>
+<p id="form-state"></p>
+<p id="final"></p>
+<script src="/html-elements.js"></script>
+</body>
+</html>

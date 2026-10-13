@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>2N4 CSS Import Graph</title>
+  <link rel="stylesheet" href="/2n4-root.css">
+  <link rel="stylesheet" href="/2n4-budget-root.css">
+</head>
+<body>
+  <h1 id="imported">2N4 IMPORT GREEN</h1>
+  <div id="deep">DEEP GREEN</div>
+  <div id="redirected">REDIRECT GREEN</div>
+  <div id="order">ORDER GREEN</div>
+  <div id="cycle">CYCLE GREEN</div>
+  <div id="limit">LIMIT GREEN</div>
+  <div id="missing">MISSING SURVIVES</div>
+  <div id="budget">BUDGET GREEN</div>
+  <div id="script-marker">SCRIPT PENDING</div>
+  <script>
+    document.getElementById('script-marker').textContent = 'SCRIPT AFTER IMPORTS';
+  </script>
+</body>
+</html>

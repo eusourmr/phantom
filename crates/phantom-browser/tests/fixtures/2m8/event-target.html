@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+  <title>Phantom EventTarget</title>
+  <style>
+    .ok { color: #6a1b9a; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DOM EventTarget compatibility</h1>
+    <div id="event-target">Event target</div>
+    <p id="order-status" class="ok">Event order pending</p>
+    <p id="remove-status" class="ok">Removal pending</p>
+    <p id="this-status" class="ok">Listener context pending</p>
+    <p id="event-status" class="ok">Event object pending</p>
+    <p id="final-status" class="ok">Event target pending</p>
+  </main>
+  <script src="/event-target.js"></script>
+</body>
+</html>

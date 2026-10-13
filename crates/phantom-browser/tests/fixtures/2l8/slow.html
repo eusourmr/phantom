@@ -1,0 +1,1 @@
+<!doctype html><html><head><title>Slow Fetch</title></head><body><p id="target">Waiting</p><script>fetch('/slow.txt').then(function(response) { response.text().then(function(value) { document.getElementById('target').textContent = value; }); });</script></body></html>

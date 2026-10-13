@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><title>Phantom Lifecycle New</title></head>
+<body>
+  <main>
+    <h1>Lifecycle new page</h1>
+    <p id="new-status">New waiting external</p>
+    <p id="new-order">New order pending</p>
+    <p id="new-fetch">New fetch pending</p>
+    <p id="new-timer">New timer pending</p>
+    <div id="new-created"></div>
+  </main>
+  <script src="/lifecycle-new.js"></script>
+  <script>
+    document.getElementById('new-order').textContent = 'New inline after external';
+    fetch('/lifecycle-new-data.txt').then(function(response) {
+      response.text().then(function(text) {
+        document.getElementById('new-fetch').textContent = text;
+      });
+    });
+    setTimeout(function() {
+      document.getElementById('new-timer').textContent = 'New timer committed';
+    }, 1);
+  </script>
+</body>
+</html>
