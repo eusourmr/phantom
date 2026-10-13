@@ -990,10 +990,26 @@ impl StyleMap {
     }
 }
 
+/// Read-only parser counts for the accepted CSS subset.
+///
+/// These counts do not imply full CSS compatibility: inactive media branches
+/// and unsupported declarations are not separately classified yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CssParseDiagnostics {
+    /// Number of bounded rule blocks examined (including unsupported rules).
+    pub scanned_rule_blocks: usize,
+    /// Number of selector entries accepted after selector-list expansion.
+    pub accepted_selector_rules: usize,
+    /// Number of accepted property entries after shorthand expansion, counted
+    /// per accepted selector entry (not the number of source declarations).
+    pub accepted_declarations: usize,
+}
+
 /// Parsed stylesheet containing the CSS subset understood by Phantom.
 #[derive(Debug, Clone, Default)]
 pub struct Stylesheet {
     rules: Vec<StyleRule>,
+    diagnostics: CssParseDiagnostics,
 }
 
 impl Stylesheet {
@@ -1040,7 +1056,18 @@ impl Stylesheet {
             &mut rules,
         );
 
-        Self { rules }
+        let diagnostics = CssParseDiagnostics {
+            scanned_rule_blocks: scanned_blocks,
+            accepted_selector_rules: rules.len(),
+            accepted_declarations: rules.iter().map(|rule| rule.declarations.len()).sum(),
+        };
+        Self { rules, diagnostics }
+    }
+
+    /// Exposes counts from the actual parser pass, without reparsing the source.
+    #[must_use]
+    pub const fn diagnostics(&self) -> CssParseDiagnostics {
+        self.diagnostics
     }
 
     /// Returns the number of accepted selector rules.
