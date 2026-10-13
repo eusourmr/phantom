@@ -20,8 +20,11 @@ use phantom_dom::{Document, ElementData, MAX_DOM_NODES, Node, NodeId, NodeKind};
 const ROOT_FONT_SIZE_PX: f32 = 16.0;
 const NO_STYLE: usize = usize::MAX;
 const MAX_CSS_SOURCE_BYTES: usize = 1024 * 1024;
-const MAX_SCANNED_RULE_BLOCKS: usize = 2_048;
-const MAX_ACCEPTED_RULES: usize = 1_024;
+// Bounded adaptive admission: simple rules may use a larger selector budget,
+// but expanded declarations remain subject to a separate total budget.
+const MAX_SCANNED_RULE_BLOCKS: usize = 4_096;
+const MAX_ACCEPTED_RULES: usize = 2_048;
+const MAX_ACCEPTED_DECLARATIONS: usize = 16_384;
 const MAX_DECLARATIONS_PER_RULE: usize = 64;
 const MAX_SELECTOR_BYTES: usize = 4 * 1024;
 const MAX_SELECTOR_PARTS: usize = 32;
@@ -990,10 +993,33 @@ impl StyleMap {
     }
 }
 
+/// Read-only parser counts for the accepted CSS subset.
+///
+/// These counts do not imply full CSS compatibility: inactive media branches
+/// and unsupported declarations are not separately classified yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CssParseDiagnostics {
+    /// Number of bounded rule blocks examined (including unsupported rules).
+    pub scanned_rule_blocks: usize,
+    /// Count of scanned qualified blocks whose selectors were rejected.
+    pub rejected_selector_blocks: usize,
+    /// Whether the expanded-declaration admission budget was exhausted.
+    pub declaration_budget_exhausted: bool,
+    /// True once the configured maximum of accepted selector rules is reached.
+    /// It does not measure the number of subsequent, unexamined rules.
+    pub accepted_rule_limit_reached: bool,
+    /// Number of selector entries accepted after selector-list expansion.
+    pub accepted_selector_rules: usize,
+    /// Number of accepted property entries after shorthand expansion, counted
+    /// per accepted selector entry (not the number of source declarations).
+    pub accepted_declarations: usize,
+}
+
 /// Parsed stylesheet containing the CSS subset understood by Phantom.
 #[derive(Debug, Clone, Default)]
 pub struct Stylesheet {
     rules: Vec<StyleRule>,
+    diagnostics: CssParseDiagnostics,
 }
 
 impl Stylesheet {
@@ -1028,19 +1054,25 @@ impl Stylesheet {
         let cleaned = remove_comments(source);
         let viewport = MediaViewport::new(viewport_width, viewport_height);
         let mut rules = Vec::new();
-        let mut source_order = 0_u32;
-        let mut scanned_blocks = 0_usize;
+        let mut admission = ParseAdmission::default();
 
-        append_rule_source(
-            &cleaned,
-            viewport,
-            0,
-            &mut scanned_blocks,
-            &mut source_order,
-            &mut rules,
-        );
+        append_rule_source(&cleaned, viewport, 0, &mut rules, &mut admission);
 
-        Self { rules }
+        let diagnostics = CssParseDiagnostics {
+            scanned_rule_blocks: admission.scanned_blocks,
+            rejected_selector_blocks: admission.rejected_selector_blocks,
+            declaration_budget_exhausted: admission.declaration_budget_exhausted,
+            accepted_rule_limit_reached: rules.len() == MAX_ACCEPTED_RULES,
+            accepted_selector_rules: rules.len(),
+            accepted_declarations: admission.accepted_declarations,
+        };
+        Self { rules, diagnostics }
+    }
+
+    /// Exposes counts from the actual parser pass, without reparsing the source.
+    #[must_use]
+    pub const fn diagnostics(&self) -> CssParseDiagnostics {
+        self.diagnostics
     }
 
     /// Returns the number of accepted selector rules.
@@ -1054,6 +1086,19 @@ impl Stylesheet {
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
     }
+}
+
+/// Computes bounded CSS parser diagnostics from the combined author source
+/// used by the style pipeline. Intended only for on-demand inspection.
+#[must_use]
+pub fn diagnose_document_css(
+    document: &Document,
+    external_author_css: &BTreeMap<NodeId, String>,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> CssParseDiagnostics {
+    let source = collect_author_css(document, Some(external_author_css));
+    Stylesheet::parse_for_viewport(&source, viewport_width, viewport_height).diagnostics()
 }
 
 /// Computes an immutable, interned style snapshot for the document.
@@ -1175,26 +1220,38 @@ fn sanitize_media_dimension(value: f32) -> f32 {
     }
 }
 
+#[derive(Debug, Default)]
+struct ParseAdmission {
+    scanned_blocks: usize,
+    source_order: u32,
+    rejected_selector_blocks: usize,
+    accepted_declarations: usize,
+    declaration_budget_exhausted: bool,
+}
+
 fn append_rule_source(
     source: &str,
     viewport: MediaViewport,
     depth: usize,
-    scanned_blocks: &mut usize,
-    source_order: &mut u32,
     rules: &mut Vec<StyleRule>,
+    admission: &mut ParseAdmission,
 ) {
     if depth > MAX_MEDIA_NESTING
-        || *scanned_blocks >= MAX_SCANNED_RULE_BLOCKS
+        || admission.scanned_blocks >= MAX_SCANNED_RULE_BLOCKS
         || rules.len() >= MAX_ACCEPTED_RULES
+        || admission.declaration_budget_exhausted
     {
         return;
     }
 
     for block in scan_rule_blocks(source) {
-        if *scanned_blocks >= MAX_SCANNED_RULE_BLOCKS || rules.len() >= MAX_ACCEPTED_RULES {
+        if admission.scanned_blocks >= MAX_SCANNED_RULE_BLOCKS
+            || rules.len() >= MAX_ACCEPTED_RULES
+            || admission.declaration_budget_exhausted
+        {
             break;
         }
-        *scanned_blocks = (*scanned_blocks).saturating_add(1);
+        admission.scanned_blocks = (admission.scanned_blocks).saturating_add(1);
 
         let prelude = block.selector.trim();
         let lower = prelude.to_ascii_lowercase();
@@ -1216,9 +1273,8 @@ fn append_rule_source(
                         block.body,
                         viewport,
                         depth.saturating_add(1),
-                        scanned_blocks,
-                        source_order,
                         rules,
+                        admission,
                     );
                 }
             }
@@ -1230,13 +1286,15 @@ fn append_rule_source(
         }
 
         let Some(selectors) = parse_selector_list(prelude) else {
-            *source_order = (*source_order).saturating_add(1);
+            admission.rejected_selector_blocks =
+                (admission.rejected_selector_blocks).saturating_add(1);
+            admission.source_order = (admission.source_order).saturating_add(1);
             continue;
         };
 
         let declarations = parse_declarations(block.body);
         if declarations.is_empty() {
-            *source_order = (*source_order).saturating_add(1);
+            admission.source_order = (admission.source_order).saturating_add(1);
             continue;
         }
 
@@ -1244,15 +1302,26 @@ fn append_rule_source(
             if rules.len() >= MAX_ACCEPTED_RULES {
                 break;
             }
+            // Account after shorthand expansion. Do not partially admit a
+            // selector's declarations, which would change cascade semantics.
+            if declarations.len()
+                > MAX_ACCEPTED_DECLARATIONS.saturating_sub(admission.accepted_declarations)
+            {
+                admission.declaration_budget_exhausted = true;
+                break;
+            }
+            admission.accepted_declarations = admission
+                .accepted_declarations
+                .saturating_add(declarations.len());
             rules.push(StyleRule {
                 specificity: selector.specificity(),
                 selector,
                 declarations: declarations.clone(),
-                source_order: *source_order,
+                source_order: admission.source_order,
             });
         }
 
-        *source_order = (*source_order).saturating_add(1);
+        admission.source_order = (admission.source_order).saturating_add(1);
     }
 }
 
@@ -4621,6 +4690,9 @@ fn parse_display(value: &str) -> Option<Display> {
         "inline" | "inline-block" => Some(Display::Inline),
         "none" => Some(Display::None),
         "flex" | "inline-flex" => Some(Display::Flex),
+        // 2O-11: keep Grid containers visible while native Grid layout is absent.
+        // This is block-flow fallback, NOT Grid track placement or sizing.
+        "grid" | "inline-grid" => Some(Display::Block),
         _ => None,
     }
 }

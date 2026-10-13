@@ -482,6 +482,8 @@ struct PendingPageScripts {
     remaining: VecDeque<PageScriptTask>,
     external_receiver: Option<Receiver<Result<TextResponse, NetworkError>>>,
     external_count: usize,
+    script_index: usize,
+    pending_source: String,
 }
 
 // PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
@@ -527,6 +529,8 @@ struct BrowserTab {
     title: String,
     pinned: bool,
     status: String,
+    css_resources_loaded: usize,
+    css_resources_failed: usize,
     navigation: NavigationState,
     pending_images: Option<PendingImageBatch>,
     pending_site_icon: Option<PendingSiteIcon>,
@@ -570,6 +574,8 @@ impl BrowserTab {
             title: "Nova aba".to_owned(),
             pinned: false,
             status: "Nova aba · JavaScript OFF · Telemetria OFF".to_owned(),
+            css_resources_loaded: 0,
+            css_resources_failed: 0,
             navigation: NavigationState::Empty,
             pending_images: None,
             pending_site_icon: None,
@@ -656,6 +662,8 @@ impl BrowserTab {
         self.script_fetch_count = 0;
         self.pending_page_scripts = None;
         self.pending_external_stylesheets = None;
+        self.css_resources_loaded = 0;
+        self.css_resources_failed = 0;
     }
 
     fn is_loading_images(&self) -> bool {
@@ -735,6 +743,8 @@ struct PhantomApp {
     focus_address_next_frame: bool,
     window_maximized: bool,
     recently_closed_tabs: Vec<ClosedTabSnapshot>,
+    css_inspection: Option<String>,
+    diagnostics_open: bool,
 }
 
 impl PhantomApp {
@@ -751,6 +761,8 @@ impl PhantomApp {
             focus_address_next_frame: true,
             window_maximized: false,
             recently_closed_tabs: Vec::new(),
+            css_inspection: None,
+            diagnostics_open: false,
         }
     }
 
@@ -891,6 +903,9 @@ impl PhantomApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
+        if context.input(|input| input.key_pressed(egui::Key::F12)) {
+            self.diagnostics_open = !self.diagnostics_open;
+        }
         let (focus_location, new_tab, reopen_closed, close_tab, reload) = context.input(|input| {
             let command = input.modifiers.command;
             let shift = input.modifiers.shift;
@@ -1990,6 +2005,57 @@ impl PhantomApp {
         }
     }
 
+    // PHANTOM_2O6_F12_DIAGNOSTICS
+    // Native-only overlay. No DOM mutation, network requests or page scripts.
+    fn diagnostic_window(&mut self, context: &egui::Context) {
+        if !self.diagnostics_open {
+            return;
+        }
+        let report = browser_debug_report(self.active_tab());
+        let mut analyze_css = false;
+        egui::Window::new("Diagnóstico Phantom · F12")
+            .open(&mut self.diagnostics_open)
+            .default_width(470.0)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label("Relatório da aba ativa");
+                ui.separator();
+                ui.label(egui::RichText::new(&report).monospace().size(12.0));
+                ui.add_space(6.0);
+                if ui.button("Analisar CSS da aba").clicked() {
+                    analyze_css = true;
+                }
+                if let Some(summary) = &self.css_inspection {
+                    ui.separator();
+                    ui.label(egui::RichText::new(summary).monospace().size(12.0));
+                }
+                if ui.button("Copiar relatório").clicked() {
+                    let all = match &self.css_inspection {
+                        Some(summary) => format!("{report}\n{summary}"),
+                        None => report.clone(),
+                    };
+                    ui.ctx().copy_text(all);
+                }
+            });
+        if analyze_css {
+            let css = self.active_tab().engine.css_parse_diagnostics();
+            self.css_inspection = Some(format!(
+                "CSS analisado: {} (geração {})\nBlocos examinados: {}\nSeletores aceitos: {}\nDeclarações expandidas: {}\nSeletores rejeitados (blocos): {}\nLimite de regras atingido: {}\nObservação: não contabiliza propriedades rejeitadas nem regras não examinadas.",
+                self.active_tab().address,
+                self.active_tab().document_generation,
+                css.scanned_rule_blocks,
+                css.accepted_selector_rules,
+                css.accepted_declarations,
+                css.rejected_selector_blocks,
+                if css.accepted_rule_limit_reached {
+                    "sim"
+                } else {
+                    "não"
+                },
+            ));
+        }
+    }
+
     fn update_window_title(&self, context: &egui::Context) {
         let title = if self.active_tab().title == "Nova aba" {
             format!("{APP_NAME} {APP_VERSION}")
@@ -2041,6 +2107,87 @@ impl eframe::App for PhantomApp {
             });
 
         self.floating_navigation(ui.ctx());
+        self.diagnostic_window(ui.ctx());
+    }
+}
+
+// PHANTOM_2O6_F12_DIAGNOSTICS
+fn browser_debug_report(tab: &BrowserTab) -> String {
+    let snapshot = tab.engine.render_diagnostics();
+    format!(
+        "URL: {}\nFase: {:?}\nGeração: {}\nCSS externo: {}/{} instaladas\nRecursos CSS: {} carregados · {} falhas\nDOM: {} nós\nLayout: {} caixas\nPintura: {} comandos\nImagens: {} carregadas · {} falhas · {} adiadas\nPreloads: {} carregados · {} falhas\nEstado: {}",
+        tab.address,
+        tab.navigation_phase(),
+        tab.document_generation,
+        snapshot.external_css_installed,
+        snapshot.external_css_discovered,
+        tab.css_resources_loaded,
+        tab.css_resources_failed,
+        snapshot.dom_nodes,
+        snapshot.layout_boxes,
+        snapshot.paint_commands,
+        tab.loaded_images,
+        tab.failed_images,
+        tab.deferred_images.len(),
+        tab.preloaded_resources,
+        tab.failed_preloads,
+        tab.status,
+    )
+}
+
+#[cfg(test)]
+mod browser_script_diagnostics_2o12_tests {
+    use super::*;
+
+    #[test]
+    fn inline_failure_identifies_script_without_exposing_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html("<script>var x = @;</script><script>var y = 2;</script>")?;
+        let result = start_page_scripts(&mut tab, "https://example.test/", 1.0);
+        let error = result.err().ok_or("expected invalid script")?;
+        assert!(error.contains("inline #1"));
+        assert!(error.contains("bytes"));
+        assert!(!error.contains("var x = @"));
+        Ok(())
+    }
+
+    #[test]
+    fn valid_inline_scripts_preserve_document_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html("<script>var a = 1;</script><script>var b = 2;</script>")?;
+        assert_eq!(
+            start_page_scripts(&mut tab, "https://example.test/", 1.0)?,
+            2
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod browser_diagnostics_2o6_tests {
+    use super::*;
+
+    #[test]
+    fn report_is_generation_scoped_and_read_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html(r#"<link rel="stylesheet" href="/site.css"><p>Hello</p>"#)?;
+        tab.css_resources_failed = 1;
+        let before = tab.engine.render_diagnostics();
+        let report = browser_debug_report(&tab);
+        assert!(report.contains("CSS externo: 0/1 instaladas"));
+        assert!(report.contains("1 falhas"));
+        assert_eq!(tab.engine.render_diagnostics(), before);
+
+        tab.clear_navigation_state();
+        tab.engine.load_html("<p>Next page</p>")?;
+        let next = browser_debug_report(&tab);
+        assert!(next.contains("CSS externo: 0/0 instaladas"));
+        assert!(next.contains("0 falhas"));
+        Ok(())
     }
 }
 
@@ -2917,6 +3064,58 @@ fn reset_committed_document_resources(tab: &mut BrowserTab) {
     tab.reset_subresource_budget();
 }
 
+// PHANTOM_2O5_BROWSER_RENDER_DIAGNOSTICS
+// Read-only snapshot: no network activity, CSS parsing or DOM mutation.
+fn browser_render_diagnostics_status(
+    engine: &Engine,
+    status_code: u16,
+    body_bytes: usize,
+    stylesheet_loaded: usize,
+    stylesheet_failed: usize,
+) -> String {
+    let snapshot = engine.render_diagnostics();
+    format!(
+        "HTTP {status_code} · {body_bytes} bytes · CSS {}/{} instaladas · {} falhas · {} recursos CSS ok · {} nós · {} caixas · {} comandos",
+        snapshot.external_css_installed,
+        snapshot.external_css_discovered,
+        stylesheet_failed,
+        stylesheet_loaded,
+        snapshot.dom_nodes,
+        snapshot.layout_boxes,
+        snapshot.paint_commands,
+    )
+}
+
+#[cfg(test)]
+mod browser_render_diagnostics_2o5_tests {
+    use super::*;
+
+    #[test]
+    fn browser_status_distinguishes_discovered_installed_and_failed_css()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut engine = Engine::new();
+        engine
+            .load_html(r#"<link rel="stylesheet" href="/one.css"><link rel="stylesheet" href="/two.css"><p>OK</p>"#)
+            ?;
+        let first = browser_render_diagnostics_status(&engine, 200, 512, 0, 1);
+        assert!(first.contains("CSS 0/2 instaladas"));
+        assert!(first.contains("1 falhas"));
+        assert!(first.contains("HTTP 200"));
+
+        let request = engine.external_stylesheet_requests();
+        engine.install_external_stylesheet(request[0].node_id(), "p { color: red; }")?;
+        let second = browser_render_diagnostics_status(&engine, 200, 512, 1, 1);
+        assert!(second.contains("CSS 1/2 instaladas"));
+        assert!(second.contains("1 recursos CSS ok"));
+
+        engine.load_html("<p>Other page</p>")?;
+        let next = browser_render_diagnostics_status(&engine, 200, 16, 0, 0);
+        assert!(next.contains("CSS 0/0 instaladas"));
+        assert!(next.contains("0 falhas"));
+        Ok(())
+    }
+}
+
 fn finish_committed_document(
     network: &NetworkClient,
     tab: &mut BrowserTab,
@@ -2926,6 +3125,8 @@ fn finish_committed_document(
     stylesheet_failed: usize,
     device_pixel_ratio: f32,
 ) {
+    tab.css_resources_loaded = stylesheet_loaded;
+    tab.css_resources_failed = stylesheet_failed;
     let final_url = tab.address.clone();
     let script_result = start_page_scripts(tab, &final_url, device_pixel_ratio);
     tab.title = tab
@@ -2935,21 +3136,14 @@ fn finish_committed_document(
     tab.mark_navigation_ready();
     tab.javascript_last_tick = Some(Instant::now());
 
-    tab.status = if stylesheet_loaded == 0 && stylesheet_failed == 0 {
-        format!(
-            "HTTP {status_code} · {body_bytes} bytes · {} nós · {} caixas · {} comandos",
-            tab.engine.document().len(),
-            tab.engine.layout().len(),
-            tab.engine.paint_list().len()
-        )
-    } else {
-        format!(
-            "HTTP {status_code} · {body_bytes} bytes · CSS externo {stylesheet_loaded} ok / {stylesheet_failed} falha · {} nós · {} caixas · {} comandos",
-            tab.engine.document().len(),
-            tab.engine.layout().len(),
-            tab.engine.paint_list().len()
-        )
-    };
+    // PHANTOM_2O5_BROWSER_RENDER_DIAGNOSTICS
+    tab.status = browser_render_diagnostics_status(
+        &tab.engine,
+        status_code,
+        body_bytes,
+        stylesheet_loaded,
+        stylesheet_failed,
+    );
 
     if let Err(error) = script_result {
         // A script failure does not replace a successfully loaded page.
@@ -3088,6 +3282,8 @@ fn poll_pending_external_stylesheets(
 }
 
 // PHANTOM_2L2_BROWSER_PAGE_SCRIPT_EXECUTION_I
+// Retained for legacy regression tests; live scripts use ordered sequence.
+#[cfg(test)]
 fn execute_committed_page_scripts(
     tab: &mut BrowserTab,
     final_url: &str,
@@ -3102,19 +3298,16 @@ fn start_page_scripts(
     tab: &mut BrowserTab,
     document_url: &str,
     device_pixel_ratio: f32,
-) -> Result<usize, phantom_engine::EngineError> {
+) -> Result<usize, String> {
+    // Use one path for inline and external scripts so failures carry source identity.
     let tasks = tab.engine.page_script_tasks();
-    if !tasks
-        .iter()
-        .any(|task| matches!(task, PageScriptTask::External(_)))
-    {
-        return execute_committed_page_scripts(tab, document_url, device_pixel_ratio);
-    }
     let mut sequence = PendingPageScripts {
         generation: tab.document_generation,
         remaining: tasks.into(),
         external_receiver: None,
         external_count: 0,
+        script_index: 0,
+        pending_source: String::new(),
     };
     let executed =
         advance_page_script_sequence(tab, &mut sequence, document_url, device_pixel_ratio)?;
@@ -3124,12 +3317,17 @@ fn start_page_scripts(
     Ok(executed)
 }
 
+// Source labels are bounded, and script bodies are never included in diagnostics.
+fn page_script_error(source: &str, bytes: usize, error: &phantom_engine::EngineError) -> String {
+    format!("{source} ({bytes} bytes): {error}")
+}
+
 fn advance_page_script_sequence(
     tab: &mut BrowserTab,
     sequence: &mut PendingPageScripts,
     document_url: &str,
     device_pixel_ratio: f32,
-) -> Result<usize, phantom_engine::EngineError> {
+) -> Result<usize, String> {
     let mut executed = 0;
     loop {
         if let Some(receiver) = sequence.external_receiver.as_ref() {
@@ -3152,11 +3350,19 @@ fn advance_page_script_sequence(
                             || value.eq_ignore_ascii_case("application/x-javascript")
                     });
                     if (200..300).contains(&response.status()) && valid_mime {
-                        tab.engine.execute_javascript(
-                            response.body(),
-                            document_url,
-                            f64::from(device_pixel_ratio),
-                        )?;
+                        tab.engine
+                            .execute_javascript(
+                                response.body(),
+                                document_url,
+                                f64::from(device_pixel_ratio),
+                            )
+                            .map_err(|error| {
+                                page_script_error(
+                                    &sequence.pending_source,
+                                    response.body().len(),
+                                    &error,
+                                )
+                            })?;
                         executed += 1;
                     } else {
                         tab.status = "Script externo rejeitado por HTTP ou MIME".to_owned();
@@ -3168,13 +3374,13 @@ fn advance_page_script_sequence(
         let Some(task) = sequence.remaining.pop_front() else {
             return Ok(executed);
         };
+        sequence.script_index = sequence.script_index.saturating_add(1);
         match task {
             PageScriptTask::Inline(source) => {
-                tab.engine.execute_javascript(
-                    &source,
-                    document_url,
-                    f64::from(device_pixel_ratio),
-                )?;
+                let label = format!("inline #{}", sequence.script_index);
+                tab.engine
+                    .execute_javascript(&source, document_url, f64::from(device_pixel_ratio))
+                    .map_err(|error| page_script_error(&label, source.len(), &error))?;
                 executed += 1;
             }
             PageScriptTask::External(source) => {
@@ -3206,6 +3412,11 @@ fn advance_page_script_sequence(
                         let _ = sender.send(result);
                     });
                 if spawned.is_ok() {
+                    sequence.pending_source = format!(
+                        "external #{}: {}",
+                        sequence.script_index,
+                        truncate_text(&source, 160),
+                    );
                     sequence.external_count += 1;
                     sequence.external_receiver = Some(receiver);
                     return Ok(executed);
@@ -12624,7 +12835,9 @@ mod tests {
                 "pass={pass}: {painted:?}"
             );
             assert!(
-                tab.status.contains("CSS externo 27 ok / 5 falha"),
+                tab.status.contains("CSS 2/2 instaladas")
+                    && tab.status.contains("5 falhas")
+                    && tab.status.contains("27 recursos CSS ok"),
                 "pass={pass}: {}",
                 tab.status
             );
