@@ -494,6 +494,24 @@ pub enum PageScriptTask {
     External(String),
 }
 
+/// Read-only counters for a Phantom document rendering snapshot.
+///
+/// A discovered stylesheet is not necessarily downloaded or installed.
+/// These counters deliberately avoid claiming CSS standards coverage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderDiagnostics {
+    /// Number of nodes in the active DOM snapshot.
+    pub dom_nodes: usize,
+    /// Number of layout boxes in the active snapshot.
+    pub layout_boxes: usize,
+    /// Number of paint commands generated for the snapshot.
+    pub paint_commands: usize,
+    /// Eligible stylesheet links discovered in the current document.
+    pub external_css_discovered: usize,
+    /// External stylesheets installed in the active engine generation.
+    pub external_css_installed: usize,
+}
+
 /// High-level Phantom engine orchestration shell.
 ///
 /// The engine owns processing snapshots but does not own networking,
@@ -579,6 +597,21 @@ impl Engine {
     #[must_use]
     pub const fn paint_list(&self) -> &PaintList {
         &self.paint
+    }
+
+    /// Returns passive rendering diagnostics without reloading or mutating the page.
+    ///
+    /// These counters help distinguish missing stylesheet installation from
+    /// later CSS/layout/paint problems during browser-host investigations.
+    #[must_use]
+    pub fn render_diagnostics(&self) -> RenderDiagnostics {
+        RenderDiagnostics {
+            dom_nodes: self.document.len(),
+            layout_boxes: self.layout.boxes().len(),
+            paint_commands: self.paint.commands().len(),
+            external_css_discovered: self.external_stylesheet_requests().len(),
+            external_css_installed: self.external_stylesheets.len(),
+        }
     }
 
     /// Resolves a visible HTML `id` to its first laid-out document position.
