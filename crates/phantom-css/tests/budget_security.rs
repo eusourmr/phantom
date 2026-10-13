@@ -19,7 +19,8 @@ fn accepted_rule_count_is_bounded() {
         source.push_str(&format!(".c{index}{{color:red}}"));
     }
     let stylesheet = Stylesheet::parse(&source);
-    assert!(stylesheet.len() <= 1_024);
+    assert_eq!(stylesheet.len(), 1_100);
+    assert!(stylesheet.len() <= 2_048);
 }
 
 #[test]

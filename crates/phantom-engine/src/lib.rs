@@ -614,6 +614,18 @@ impl Engine {
         }
     }
 
+    /// Re-parses bounded author CSS on demand for passive diagnostics.
+    /// Computed styles and rendering state remain untouched.
+    #[must_use]
+    pub fn css_parse_diagnostics(&self) -> phantom_css::CssParseDiagnostics {
+        phantom_css::diagnose_document_css(
+            &self.document,
+            &self.external_stylesheets,
+            self.layout.viewport_width(),
+            self.layout.viewport_height(),
+        )
+    }
+
     /// Resolves a visible HTML `id` to its first laid-out document position.
     ///
     /// Fragment decoding beyond the serialized first-slice identifier is

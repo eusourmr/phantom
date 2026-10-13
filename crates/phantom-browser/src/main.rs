@@ -482,6 +482,8 @@ struct PendingPageScripts {
     remaining: VecDeque<PageScriptTask>,
     external_receiver: Option<Receiver<Result<TextResponse, NetworkError>>>,
     external_count: usize,
+    script_index: usize,
+    pending_source: String,
 }
 
 // PHANTOM_2N2_EXTERNAL_STYLESHEETS_I
@@ -741,6 +743,7 @@ struct PhantomApp {
     focus_address_next_frame: bool,
     window_maximized: bool,
     recently_closed_tabs: Vec<ClosedTabSnapshot>,
+    css_inspection: Option<String>,
     diagnostics_open: bool,
 }
 
@@ -758,6 +761,7 @@ impl PhantomApp {
             focus_address_next_frame: true,
             window_maximized: false,
             recently_closed_tabs: Vec::new(),
+            css_inspection: None,
             diagnostics_open: false,
         }
     }
@@ -2008,6 +2012,7 @@ impl PhantomApp {
             return;
         }
         let report = browser_debug_report(self.active_tab());
+        let mut analyze_css = false;
         egui::Window::new("Diagnóstico Phantom · F12")
             .open(&mut self.diagnostics_open)
             .default_width(470.0)
@@ -2017,10 +2022,38 @@ impl PhantomApp {
                 ui.separator();
                 ui.label(egui::RichText::new(&report).monospace().size(12.0));
                 ui.add_space(6.0);
+                if ui.button("Analisar CSS da aba").clicked() {
+                    analyze_css = true;
+                }
+                if let Some(summary) = &self.css_inspection {
+                    ui.separator();
+                    ui.label(egui::RichText::new(summary).monospace().size(12.0));
+                }
                 if ui.button("Copiar relatório").clicked() {
-                    ui.ctx().copy_text(report.clone());
+                    let all = match &self.css_inspection {
+                        Some(summary) => format!("{report}\n{summary}"),
+                        None => report.clone(),
+                    };
+                    ui.ctx().copy_text(all);
                 }
             });
+        if analyze_css {
+            let css = self.active_tab().engine.css_parse_diagnostics();
+            self.css_inspection = Some(format!(
+                "CSS analisado: {} (geração {})\nBlocos examinados: {}\nSeletores aceitos: {}\nDeclarações expandidas: {}\nSeletores rejeitados (blocos): {}\nLimite de regras atingido: {}\nObservação: não contabiliza propriedades rejeitadas nem regras não examinadas.",
+                self.active_tab().address,
+                self.active_tab().document_generation,
+                css.scanned_rule_blocks,
+                css.accepted_selector_rules,
+                css.accepted_declarations,
+                css.rejected_selector_blocks,
+                if css.accepted_rule_limit_reached {
+                    "sim"
+                } else {
+                    "não"
+                },
+            ));
+        }
     }
 
     fn update_window_title(&self, context: &egui::Context) {
@@ -2100,6 +2133,37 @@ fn browser_debug_report(tab: &BrowserTab) -> String {
         tab.failed_preloads,
         tab.status,
     )
+}
+
+#[cfg(test)]
+mod browser_script_diagnostics_2o12_tests {
+    use super::*;
+
+    #[test]
+    fn inline_failure_identifies_script_without_exposing_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html("<script>var x = @;</script><script>var y = 2;</script>")?;
+        let result = start_page_scripts(&mut tab, "https://example.test/", 1.0);
+        let error = result.err().ok_or("expected invalid script")?;
+        assert!(error.contains("inline #1"));
+        assert!(error.contains("bytes"));
+        assert!(!error.contains("var x = @"));
+        Ok(())
+    }
+
+    #[test]
+    fn valid_inline_scripts_preserve_document_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tab = BrowserTab::new();
+        tab.engine
+            .load_html("<script>var a = 1;</script><script>var b = 2;</script>")?;
+        assert_eq!(
+            start_page_scripts(&mut tab, "https://example.test/", 1.0)?,
+            2
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -3218,6 +3282,8 @@ fn poll_pending_external_stylesheets(
 }
 
 // PHANTOM_2L2_BROWSER_PAGE_SCRIPT_EXECUTION_I
+// Retained for legacy regression tests; live scripts use ordered sequence.
+#[cfg(test)]
 fn execute_committed_page_scripts(
     tab: &mut BrowserTab,
     final_url: &str,
@@ -3232,19 +3298,16 @@ fn start_page_scripts(
     tab: &mut BrowserTab,
     document_url: &str,
     device_pixel_ratio: f32,
-) -> Result<usize, phantom_engine::EngineError> {
+) -> Result<usize, String> {
+    // Use one path for inline and external scripts so failures carry source identity.
     let tasks = tab.engine.page_script_tasks();
-    if !tasks
-        .iter()
-        .any(|task| matches!(task, PageScriptTask::External(_)))
-    {
-        return execute_committed_page_scripts(tab, document_url, device_pixel_ratio);
-    }
     let mut sequence = PendingPageScripts {
         generation: tab.document_generation,
         remaining: tasks.into(),
         external_receiver: None,
         external_count: 0,
+        script_index: 0,
+        pending_source: String::new(),
     };
     let executed =
         advance_page_script_sequence(tab, &mut sequence, document_url, device_pixel_ratio)?;
@@ -3254,12 +3317,17 @@ fn start_page_scripts(
     Ok(executed)
 }
 
+// Source labels are bounded, and script bodies are never included in diagnostics.
+fn page_script_error(source: &str, bytes: usize, error: &phantom_engine::EngineError) -> String {
+    format!("{source} ({bytes} bytes): {error}")
+}
+
 fn advance_page_script_sequence(
     tab: &mut BrowserTab,
     sequence: &mut PendingPageScripts,
     document_url: &str,
     device_pixel_ratio: f32,
-) -> Result<usize, phantom_engine::EngineError> {
+) -> Result<usize, String> {
     let mut executed = 0;
     loop {
         if let Some(receiver) = sequence.external_receiver.as_ref() {
@@ -3282,11 +3350,19 @@ fn advance_page_script_sequence(
                             || value.eq_ignore_ascii_case("application/x-javascript")
                     });
                     if (200..300).contains(&response.status()) && valid_mime {
-                        tab.engine.execute_javascript(
-                            response.body(),
-                            document_url,
-                            f64::from(device_pixel_ratio),
-                        )?;
+                        tab.engine
+                            .execute_javascript(
+                                response.body(),
+                                document_url,
+                                f64::from(device_pixel_ratio),
+                            )
+                            .map_err(|error| {
+                                page_script_error(
+                                    &sequence.pending_source,
+                                    response.body().len(),
+                                    &error,
+                                )
+                            })?;
                         executed += 1;
                     } else {
                         tab.status = "Script externo rejeitado por HTTP ou MIME".to_owned();
@@ -3298,13 +3374,13 @@ fn advance_page_script_sequence(
         let Some(task) = sequence.remaining.pop_front() else {
             return Ok(executed);
         };
+        sequence.script_index = sequence.script_index.saturating_add(1);
         match task {
             PageScriptTask::Inline(source) => {
-                tab.engine.execute_javascript(
-                    &source,
-                    document_url,
-                    f64::from(device_pixel_ratio),
-                )?;
+                let label = format!("inline #{}", sequence.script_index);
+                tab.engine
+                    .execute_javascript(&source, document_url, f64::from(device_pixel_ratio))
+                    .map_err(|error| page_script_error(&label, source.len(), &error))?;
                 executed += 1;
             }
             PageScriptTask::External(source) => {
@@ -3336,6 +3412,11 @@ fn advance_page_script_sequence(
                         let _ = sender.send(result);
                     });
                 if spawned.is_ok() {
+                    sequence.pending_source = format!(
+                        "external #{}: {}",
+                        sequence.script_index,
+                        truncate_text(&source, 160),
+                    );
                     sequence.external_count += 1;
                     sequence.external_receiver = Some(receiver);
                     return Ok(executed);
