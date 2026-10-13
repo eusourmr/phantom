@@ -112,10 +112,27 @@ fn missing_content_type_non_html_is_rejected() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn legacy_declared_charset_is_explicitly_rejected() -> Result<(), Box<dyn Error>> {
+fn latin1_label_decodes_using_windows_1252_compatibility() -> Result<(), Box<dyn Error>> {
+    let body = [
+        b'<', b'p', b'>', b'O', b'l', 0xE1, b' ', 0x80, b'<', b'/', b'p', b'>',
+    ];
     let url = serve_once(
         "200 OK",
         &[("Content-Type", "text/html; charset=iso-8859-1")],
+        &body,
+    )?;
+
+    let document = NetworkClient::new().fetch_document(&url)?;
+
+    assert_eq!(document.body(), "<p>Olá €</p>");
+    Ok(())
+}
+
+#[test]
+fn unsupported_declared_charset_is_still_rejected() -> Result<(), Box<dyn Error>> {
+    let url = serve_once(
+        "200 OK",
+        &[("Content-Type", "text/html; charset=shift_jis")],
         b"<html></html>",
     )?;
 
@@ -123,10 +140,10 @@ fn legacy_declared_charset_is_explicitly_rejected() -> Result<(), Box<dyn Error>
 
     match result {
         Err(DocumentLoadError::Network(NetworkError::UnsupportedCharset(charset))) => {
-            assert_eq!(charset, "iso-8859-1");
+            assert_eq!(charset, "shift_jis");
         }
         Ok(_) => {
-            return Err(io::Error::other("legacy charset unexpectedly admitted").into());
+            return Err(io::Error::other("unsupported charset unexpectedly admitted").into());
         }
         Err(error) => {
             return Err(io::Error::other(format!("unexpected charset error: {error}")).into());

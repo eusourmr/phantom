@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><title>Phantom Lifecycle Old</title></head>
+<body>
+  <main>
+    <h1>Lifecycle old page</h1>
+    <p id="old-fetch">Old fetch pending</p>
+    <p id="old-timer">Old timer pending</p>
+  </main>
+  <script>
+    fetch('/lifecycle-old-data.txt').then(function(response) {
+      response.text().then(function(text) {
+        document.getElementById('old-fetch').textContent = text;
+      });
+    });
+    setTimeout(function() {
+      document.getElementById('old-timer').textContent = 'STALE OLD TIMER MUTATION';
+    }, 500);
+  </script>
+</body>
+</html>

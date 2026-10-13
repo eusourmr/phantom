@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <title>Phantom Event Propagation</title>
+  <style>
+    .ok { color: #00695c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DOM event propagation compatibility</h1>
+    <div id="root"><div id="parent"><div id="target">Propagation target</div></div></div>
+    <p id="order-status" class="ok">Propagation order pending</p>
+    <p id="phase-status" class="ok">Event phase pending</p>
+    <p id="context-status" class="ok">Propagation context pending</p>
+    <p id="final-status" class="ok">Event propagation pending</p>
+  </main>
+  <script src="/event-propagation.js"></script>
+</body>
+</html>

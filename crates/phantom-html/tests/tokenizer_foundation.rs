@@ -4,8 +4,8 @@ use phantom_html::{
     MAX_ATTRIBUTE_BYTES_PER_ELEMENT, MAX_ATTRIBUTES_PER_ELEMENT, MAX_COMMENT_BYTES,
     MAX_HTML_SOURCE_BYTES, MAX_RAW_START_TAG_BYTES,
     tokenizer::{
-        CharacterReferenceContext, ParseErrorCode, SourceSpan, Token, TokenizerError,
-        TokenizerState, tokenize,
+        CharacterReferenceContext, MAX_CHARACTER_REFERENCE_DIAGNOSTICS, MAX_TOKENIZER_DIAGNOSTICS,
+        ParseErrorCode, SourceSpan, Token, TokenizerError, TokenizerState, tokenize,
     },
 };
 
@@ -156,19 +156,25 @@ fn unquoted_attribute_value_preserves_slashes() -> Result<(), TokenizerError> {
 }
 
 #[test]
-fn character_reference_seam_preserves_source_and_context() -> Result<(), TokenizerError> {
-    let source = "A&amp;<a href='?x=1&amp;y=2'>B</a>";
+fn character_references_resolve_with_data_and_attribute_context() -> Result<(), TokenizerError> {
+    let source = "A&amp;<a href='?x=1&amp;y=2' data-raw='&ampx'>B</a>";
     let output = tokenize(source)?;
 
-    assert_eq!(output.character_references.len(), 2);
+    assert_eq!(output.character_references_total, 3);
+    assert_eq!(output.character_references_resolved, 2);
+    assert_eq!(output.character_references_preserved, 1);
+    assert_eq!(output.character_references.len(), 3);
     assert_eq!(
         output.character_references[0].context,
         CharacterReferenceContext::Data
     );
+    assert!(output.character_references[0].resolved);
     assert_eq!(
         output.character_references[1].context,
         CharacterReferenceContext::Attribute
     );
+    assert!(output.character_references[1].resolved);
+    assert!(!output.character_references[2].resolved);
 
     let href = output.tokens.iter().find_map(|token| match token {
         Token::StartTag(tag) => tag
@@ -178,7 +184,46 @@ fn character_reference_seam_preserves_source_and_context() -> Result<(), Tokeniz
             .map(|attribute| attribute.value.as_str()),
         _ => None,
     });
-    assert_eq!(href, Some("?x=1&amp;y=2"));
+    let raw = output.tokens.iter().find_map(|token| match token {
+        Token::StartTag(tag) => tag
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "data-raw")
+            .map(|attribute| attribute.value.as_str()),
+        _ => None,
+    });
+
+    assert_eq!(href, Some("?x=1&y=2"));
+    assert_eq!(raw, Some("&ampx"));
+    Ok(())
+}
+
+#[test]
+fn tokenizer_diagnostics_are_bounded() -> Result<(), TokenizerError> {
+    let source = "\0".repeat(MAX_TOKENIZER_DIAGNOSTICS.saturating_add(32));
+    let output = tokenize(&source)?;
+
+    assert_eq!(output.parse_errors.len(), MAX_TOKENIZER_DIAGNOSTICS);
+    assert!(output.parse_errors_truncated);
+    assert!(output.parse_errors_total > MAX_TOKENIZER_DIAGNOSTICS);
+    Ok(())
+}
+
+#[test]
+fn character_reference_diagnostics_are_bounded() -> Result<(), TokenizerError> {
+    let source = "&amp;".repeat(MAX_CHARACTER_REFERENCE_DIAGNOSTICS.saturating_add(32));
+    let output = tokenize(&source)?;
+
+    assert_eq!(
+        output.character_references.len(),
+        MAX_CHARACTER_REFERENCE_DIAGNOSTICS
+    );
+    assert!(output.character_references_truncated);
+    assert!(output.character_references_total > MAX_CHARACTER_REFERENCE_DIAGNOSTICS);
+    assert_eq!(
+        output.character_references_resolved,
+        output.character_references_total
+    );
     Ok(())
 }
 
@@ -192,9 +237,13 @@ fn nul_is_replaced_and_accounted_as_parse_error() -> Result<(), TokenizerError> 
             .iter()
             .any(|error| error.code == ParseErrorCode::UnexpectedNullCharacter)
     );
-    assert!(output.tokens.iter().any(|token| {
-        matches!(token, Token::Character(character) if character.data == "\u{fffd}")
-    }));
+    let mut text = String::new();
+    for token in &output.tokens {
+        if let Token::Character(character) = token {
+            text.push_str(&character.data);
+        }
+    }
+    assert_eq!(text, "a\u{fffd}b");
     Ok(())
 }
 

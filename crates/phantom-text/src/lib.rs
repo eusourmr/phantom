@@ -8,6 +8,10 @@
 //! line-breaking, paint, and compositor architecture matures. It is not
 //! presented as standards-complete font shaping.
 //!
+//! Phantom 2H-1 tightens the fallback contract for Latin text and combining
+//! marks so layout measurement and renderer output diverge less while the real
+//! production font backend is still under construction.
+//!
 //! A future production backend can implement [`TextShaper`] without changing
 //! the layout contract.
 
@@ -350,7 +354,12 @@ impl TextShaper for FallbackTextShaper {
     }
 }
 
+// PHANTOM_2H1_TEXT_FONT_FIDELITY_I
 fn glyph_advance(character: char, style: TextStyle) -> f32 {
+    if is_zero_advance_scalar(character) {
+        return 0.0;
+    }
+
     let family_factor = match style.family() {
         FontFamily::Monospace => 0.62,
 
@@ -364,11 +373,11 @@ fn glyph_advance(character: char, style: TextStyle) -> f32 {
                 0.29
             } else if matches!(character, 'M' | 'W' | '@' | '#' | '%' | '&') {
                 0.82
-            } else if character.is_ascii_uppercase() {
-                0.63
             } else if character.is_ascii_digit() {
                 0.56
-            } else if character.is_ascii_lowercase() {
+            } else if character.is_uppercase() {
+                0.63
+            } else if character.is_lowercase() {
                 0.52
             } else if character as u32 >= 0x2E80 {
                 1.0
@@ -389,6 +398,19 @@ fn glyph_advance(character: char, style: TextStyle) -> f32 {
     };
 
     family_factor * style.font_size() * weight_factor * slant_factor
+}
+
+fn is_zero_advance_scalar(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0300..=0x036F
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x20D0..=0x20FF
+            | 0xFE00..=0xFE0F
+            | 0xFE20..=0xFE2F
+            | 0x200B..=0x200D
+    )
 }
 
 #[cfg(test)]

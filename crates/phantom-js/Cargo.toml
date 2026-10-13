@@ -1,0 +1,22 @@
+[package]
+name = "phantom-js"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+rust-version = "1.95"
+repository = "https://github.com/eusourmr/phantom"
+description = "Independent JavaScript language foundation for the Phantom browser engine"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

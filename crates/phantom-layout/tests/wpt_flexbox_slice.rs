@@ -45,6 +45,14 @@ fn rect_by_id(document: &Document, snapshot: &LayoutSnapshot, id: &str) -> Optio
         .map(|layout_box| layout_box.rect())
 }
 
+fn relative_x(child: Rect, parent: Rect) -> f32 {
+    child.x() - parent.x()
+}
+
+fn relative_y(child: Rect, parent: Rect) -> f32 {
+    child.y() - parent.y()
+}
+
 #[test]
 fn wpt_slice_row_main_axis_auto_margin_absorbs_free_space() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -61,11 +69,12 @@ fn wpt_slice_row_main_axis_auto_margin_absorbs_free_space() -> Result<(), Box<dy
         "#,
     )?;
 
+    let container = rect_by_id(&document, &snapshot, "container").unwrap_or_default();
     let a = rect_by_id(&document, &snapshot, "a").unwrap_or_default();
     let b = rect_by_id(&document, &snapshot, "b").unwrap_or_default();
 
-    assert!((a.x() - 0.0).abs() < 0.1);
-    assert!((b.x() - 250.0).abs() < 0.1);
+    assert!((relative_x(a, container) - 0.0).abs() < 0.1);
+    assert!((relative_x(b, container) - 250.0).abs() < 0.1);
 
     Ok(())
 }
@@ -83,9 +92,10 @@ fn wpt_slice_two_auto_margins_center_flex_item() -> Result<(), Box<dyn std::erro
         "#,
     )?;
 
+    let container = rect_by_id(&document, &snapshot, "container").unwrap_or_default();
     let item = rect_by_id(&document, &snapshot, "item").unwrap_or_default();
 
-    assert!((item.x() - 125.0).abs() < 0.1);
+    assert!((relative_x(item, container) - 125.0).abs() < 0.1);
 
     Ok(())
 }
@@ -104,9 +114,10 @@ fn wpt_slice_cross_axis_auto_margin_overrides_align_items() -> Result<(), Box<dy
         "#,
     )?;
 
+    let container = rect_by_id(&document, &snapshot, "container").unwrap_or_default();
     let item = rect_by_id(&document, &snapshot, "item").unwrap_or_default();
 
-    assert!((item.y() - 80.0).abs() < 0.1);
+    assert!((relative_y(item, container) - 80.0).abs() < 0.1);
 
     Ok(())
 }
@@ -125,9 +136,10 @@ fn wpt_slice_column_main_axis_auto_margin_absorbs_free_space()
         "#,
     )?;
 
+    let container = rect_by_id(&document, &snapshot, "container").unwrap_or_default();
     let item = rect_by_id(&document, &snapshot, "item").unwrap_or_default();
 
-    assert!((item.y() - 150.0).abs() < 0.1);
+    assert!((relative_y(item, container) - 150.0).abs() < 0.1);
 
     Ok(())
 }
@@ -146,12 +158,13 @@ fn wpt_slice_flex_one_items_share_main_axis() -> Result<(), Box<dyn std::error::
         "#,
     )?;
 
+    let container = rect_by_id(&document, &snapshot, "container").unwrap_or_default();
     let a = rect_by_id(&document, &snapshot, "a").unwrap_or_default();
     let b = rect_by_id(&document, &snapshot, "b").unwrap_or_default();
 
     assert!((a.width() - 200.0).abs() < 0.1);
     assert!((b.width() - 200.0).abs() < 0.1);
-    assert!((b.x() - 200.0).abs() < 0.1);
+    assert!((relative_x(b, container) - 200.0).abs() < 0.1);
 
     Ok(())
 }

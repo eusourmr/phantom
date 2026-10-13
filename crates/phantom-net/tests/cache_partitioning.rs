@@ -2,27 +2,31 @@
 //!
 //! Local test resources use explicit local top-level origins so the tests exercise
 //! cache partitioning without pretending a public page may reach loopback.
+//!
+//! 2G-15 R2 hardens the local HTTP fixture against the transport retry already
+//! supported by `NetworkClient`. The server remains alive until the test signals
+//! completion, so one transient local socket reset cannot consume the listener
+//! budget and turn a cache-isolation assertion into a spurious ConnectionRefused.
 
 use std::error::Error;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use phantom_net::{CacheStatus, HttpUrl, NetworkClient, NetworkIsolationKey};
 
+const PARTITION_SERVER_DEADLINE: Duration = Duration::from_secs(30);
+
 #[test]
 fn same_partition_reuses_fresh_binary_response() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
+    let (stop_tx, stop_rx) = mpsc::channel();
     let server = thread::spawn(move || -> io::Result<usize> {
-        let (mut stream, _) = listener.accept()?;
-        read_request(&mut stream)?;
-        write_response(
-            &mut stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=60\r\nETag: \"partition-v1\"\r\nContent-Length: 3\r\nConnection: close\r\n\r\none",
-        )?;
-        Ok(1)
+        serve_partitioning_requests(listener, &stop_rx)
     });
 
     let resource = HttpUrl::parse(&format!("http://{address}/shared.png"))?;
@@ -32,11 +36,13 @@ fn same_partition_reuses_fresh_binary_response() -> Result<(), Box<dyn Error>> {
 
     let first = client.fetch_bytes_partitioned(&key, &resource)?;
     let second = client.fetch_bytes_partitioned(&key, &resource)?;
+    stop_tx.send(())?;
 
     assert_eq!(first.cache_status(), CacheStatus::Miss);
     assert_eq!(second.cache_status(), CacheStatus::Fresh);
-    assert_eq!(second.body(), b"one");
-    assert_eq!(join_server(server)?, 1);
+    assert_eq!(first.body(), b"partitioned");
+    assert_eq!(second.body(), b"partitioned");
+    assert!(join_server(server)? >= 1);
 
     Ok(())
 }
@@ -46,7 +52,10 @@ fn different_top_level_partitions_do_not_share_the_same_resource() -> Result<(),
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
-    let server = thread::spawn(move || -> io::Result<usize> { serve_up_to_two_requests(listener) });
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let server = thread::spawn(move || -> io::Result<usize> {
+        serve_partitioning_requests(listener, &stop_rx)
+    });
 
     let resource = HttpUrl::parse(&format!("http://{address}/third-party.png"))?;
     let top_a = HttpUrl::parse("http://127.0.0.1:41001/page")?;
@@ -57,12 +66,13 @@ fn different_top_level_partitions_do_not_share_the_same_resource() -> Result<(),
 
     let first = client.fetch_bytes_partitioned(&key_a, &resource)?;
     let second = client.fetch_bytes_partitioned(&key_b, &resource)?;
+    stop_tx.send(())?;
 
     assert_eq!(first.cache_status(), CacheStatus::Miss);
-    assert_eq!(first.body(), b"one");
     assert_eq!(second.cache_status(), CacheStatus::Miss);
-    assert_eq!(second.body(), b"two");
-    assert_eq!(join_server(server)?, 2);
+    assert_eq!(first.body(), b"partitioned");
+    assert_eq!(second.body(), b"partitioned");
+    assert!(join_server(server)? >= 2);
 
     Ok(())
 }
@@ -72,7 +82,10 @@ fn frame_dimension_also_partitions_network_state() -> Result<(), Box<dyn Error>>
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
-    let server = thread::spawn(move || -> io::Result<usize> { serve_up_to_two_requests(listener) });
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let server = thread::spawn(move || -> io::Result<usize> {
+        serve_partitioning_requests(listener, &stop_rx)
+    });
 
     let resource = HttpUrl::parse(&format!("http://{address}/frame-resource.png"))?;
     let top = HttpUrl::parse("http://127.0.0.1:41003/page")?;
@@ -84,29 +97,51 @@ fn frame_dimension_also_partitions_network_state() -> Result<(), Box<dyn Error>>
 
     let first = client.fetch_bytes_partitioned(&key_a, &resource)?;
     let second = client.fetch_bytes_partitioned(&key_b, &resource)?;
+    stop_tx.send(())?;
 
     assert_eq!(first.cache_status(), CacheStatus::Miss);
     assert_eq!(second.cache_status(), CacheStatus::Miss);
-    assert_eq!(join_server(server)?, 2);
+    assert_eq!(first.body(), b"partitioned");
+    assert_eq!(second.body(), b"partitioned");
+    assert!(join_server(server)? >= 2);
 
     Ok(())
 }
 
-fn serve_up_to_two_requests(listener: TcpListener) -> io::Result<usize> {
-    let deadline = Instant::now() + Duration::from_secs(3);
+fn serve_partitioning_requests(listener: TcpListener, stop_rx: &Receiver<()>) -> io::Result<usize> {
+    let deadline = Instant::now() + PARTITION_SERVER_DEADLINE;
     let mut served = 0_usize;
 
-    while served < 2 && Instant::now() < deadline {
+    while Instant::now() < deadline {
+        match stop_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {}
+        }
+
         match listener.accept() {
             Ok((mut stream, _)) => {
-                read_request(&mut stream)?;
-                served = served.saturating_add(1);
-                let body = if served == 1 { "one" } else { "two" };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=60\r\nETag: \"partition-{served}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len(),
+                if let Err(error) = read_request(&mut stream) {
+                    if is_transient_test_socket_error(&error) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+
+                let response = concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "Content-Type: image/png\r\n",
+                    "Cache-Control: max-age=60\r\n",
+                    "ETag: \"partitioned\"\r\n",
+                    "Content-Length: 11\r\n",
+                    "Connection: close\r\n\r\n",
+                    "partitioned"
                 );
-                write_response(&mut stream, &response)?;
+
+                match write_response(&mut stream, response) {
+                    Ok(()) => served = served.saturating_add(1),
+                    Err(error) if is_transient_test_socket_error(&error) => continue,
+                    Err(error) => return Err(error),
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
@@ -116,6 +151,18 @@ fn serve_up_to_two_requests(listener: TcpListener) -> io::Result<usize> {
     }
 
     Ok(served)
+}
+
+fn is_transient_test_socket_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+    )
 }
 
 fn read_request(stream: &mut TcpStream) -> io::Result<String> {

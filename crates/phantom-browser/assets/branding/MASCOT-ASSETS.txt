@@ -1,0 +1,26 @@
+PHANTOM MASCOT ASSETS — 2G-3
+
+Runtime
+- phantom-logo.png: New Tab/opening logo (ghost + phantom)
+- phantom-app-icon-1024.png: application/window icon (ghost only)
+- phantom-app-icon-512.png / 256.png: derived icon sizes
+- favicons/phantom-*.png: derived small-size icon family
+- phantom.ico / phantom-desktop.ico: multi-resolution Windows icon family
+
+4K masters
+- mascot/phantom-mascot-main-4096.png: primary ghost-only master
+- mascot/phantom-mascot-bold-4096.png: stronger small-size variant
+- mascot/phantom-mascot-flat-4096.png: simplified/flat variant
+- phantom-logo-4096.png: ghost + phantom master
+
+Future status assets
+- status/phantom-offline-4096.png
+- status/phantom-404-4096.png
+- status/phantom-protected-4096.png
+
+Rules
+- transparent background
+- no branding in the top browser chrome
+- ghost-only for application/icon use
+- ghost + phantom for opening/brand lockup
+- status mascots are reserved for future state-specific UI wiring

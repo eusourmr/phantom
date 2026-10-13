@@ -1,0 +1,1 @@
+fetch('/promise-data.txt').then(function(response){return response.text();}).then(function(text){var status=document.getElementById('status');status.textContent=text;status.setAttribute('style','color:#800080');});

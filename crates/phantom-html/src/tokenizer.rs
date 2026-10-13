@@ -1,11 +1,9 @@
-//! Deterministic, bounded HTML tokenization foundation for Phantom.
+//! Deterministic, bounded HTML tokenizer for Phantom.
 //!
-//! This module is intentionally separate from the current DOM tree builder.
-//! `2E-1` establishes a standards-shaped token stream that `2E-2` can consume
-//! without changing the already-homologated parser behavior in one step.
-//!
-//! Character references are identified as candidates but are not resolved yet;
-//! resolution and malformed-reference recovery belong to the `2E-3` scope.
+//! Cycle 2E connects this tokenizer directly to Phantom's tree builder and
+//! rendering-facing parser. The implementation remains a measured HTML subset:
+//! unsupported WHATWG behavior is explicit rather than delegated to another
+//! browser engine.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -13,8 +11,13 @@ use std::fmt::{Display, Formatter};
 
 use crate::{
     MAX_ATTRIBUTE_BYTES_PER_ELEMENT, MAX_ATTRIBUTES_PER_ELEMENT, MAX_COMMENT_BYTES,
-    MAX_HTML_SOURCE_BYTES, MAX_RAW_START_TAG_BYTES,
+    MAX_HTML_SOURCE_BYTES, MAX_RAW_START_TAG_BYTES, MAX_STYLE_BODY_BYTES,
 };
+
+/// Maximum retained recoverable tokenizer diagnostics per document.
+pub const MAX_TOKENIZER_DIAGNOSTICS: usize = 4_096;
+/// Maximum retained character-reference observations per document.
+pub const MAX_CHARACTER_REFERENCE_DIAGNOSTICS: usize = 4_096;
 
 /// Half-open byte range in the original UTF-8 source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,6 +53,12 @@ impl SourceSpan {
 pub enum TokenizerState {
     /// Ordinary character data.
     Data,
+    /// Replaceable character data, currently used by `title` and `textarea`.
+    Rcdata,
+    /// Raw text, currently used by `style` and the supported HTML raw-text set.
+    RawText,
+    /// Script data retained for the future Phantom JavaScript runtime.
+    ScriptData,
     /// Immediately after `<`.
     TagOpen,
     /// Immediately after `</`.
@@ -89,7 +98,7 @@ pub enum TokenizerState {
 pub struct AttributeToken {
     /// ASCII-normalized attribute name.
     pub name: String,
-    /// Attribute value. Character references are not resolved in 2E-1.
+    /// Attribute value after bounded character-reference resolution.
     pub value: String,
     /// Source span containing the attribute name.
     pub name_span: SourceSpan,
@@ -202,6 +211,18 @@ pub enum ParseErrorCode {
     MissingDoctypeName,
     /// EOF occurred while parsing a DOCTYPE.
     EofInDoctype,
+    /// A named or numeric character reference omitted its semicolon.
+    MissingSemicolonAfterCharacterReference,
+    /// A semicolon-terminated named reference is not in Phantom's measured set.
+    UnknownNamedCharacterReference,
+    /// A numeric character reference did not contain digits.
+    AbsenceOfDigitsInNumericCharacterReference,
+    /// A numeric character reference resolved to U+0000.
+    NullCharacterReference,
+    /// A numeric character reference resolved above the Unicode range.
+    CharacterReferenceOutsideUnicodeRange,
+    /// A numeric character reference resolved to a UTF-16 surrogate.
+    SurrogateCharacterReference,
 }
 
 /// Recoverable parse error with an exact source location.
@@ -213,7 +234,7 @@ pub struct ParseError {
     pub span: SourceSpan,
 }
 
-/// Context in which a future character-reference resolver must operate.
+/// Context in which character-reference resolution operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CharacterReferenceContext {
     /// Ordinary data state.
@@ -222,17 +243,18 @@ pub enum CharacterReferenceContext {
     Attribute,
 }
 
-/// An ampersand that forms the seam for 2E-3 character-reference handling.
+/// One bounded character-reference observation.
 ///
-/// The 2E-1 tokenizer deliberately leaves the source text unchanged. A later
-/// resolver can consume these deterministic candidates using their exact
-/// source positions and parsing context.
+/// The observation is passive and deterministic. It records only source span,
+/// parsing context, and whether Phantom resolved the reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CharacterReferenceCandidate {
-    /// Span covering the source ampersand.
+    /// Span covering the consumed source candidate.
     pub span: SourceSpan,
     /// Parsing context in which the candidate occurred.
     pub context: CharacterReferenceContext,
+    /// Whether the candidate resolved to a character sequence.
+    pub resolved: bool,
 }
 
 /// Successful deterministic tokenization result.
@@ -240,10 +262,28 @@ pub struct CharacterReferenceCandidate {
 pub struct Tokenization {
     /// Ordered token stream, always terminated by [`Token::Eof`].
     pub tokens: Vec<Token>,
-    /// Ordered recoverable parse errors.
+    /// Bounded ordered recoverable parse errors.
     pub parse_errors: Vec<ParseError>,
-    /// Ordered character-reference candidates for 2E-3.
+    /// Total recoverable parse errors, including diagnostics not retained.
+    pub parse_errors_total: usize,
+    /// Whether tokenizer diagnostics reached their deterministic retention cap.
+    pub parse_errors_truncated: bool,
+    /// Bounded ordered character-reference observations.
     pub character_references: Vec<CharacterReferenceCandidate>,
+    /// Total character-reference candidates observed.
+    pub character_references_total: usize,
+    /// Number of candidates resolved by the measured reference table/algorithm.
+    pub character_references_resolved: usize,
+    /// Number of ampersands preserved because no supported reference resolved.
+    pub character_references_preserved: usize,
+    /// Whether reference diagnostics reached their deterministic retention cap.
+    pub character_references_truncated: bool,
+    /// Number of RCDATA sections entered.
+    pub rcdata_sections: usize,
+    /// Number of RAWTEXT sections entered.
+    pub rawtext_sections: usize,
+    /// Number of script-data sections entered.
+    pub script_data_sections: usize,
     /// Last tokenizer state observed before EOF.
     pub final_state: TokenizerState,
 }
@@ -263,6 +303,8 @@ pub enum TokenizerError {
     AttributeBytesExceeded,
     /// A comment exceeded the 2D-6 comment budget.
     CommentTooLarge,
+    /// A `<style>` RAWTEXT body exceeded the inherited 2D-6 retention budget.
+    StyleBodyTooLarge,
 }
 
 impl Display for TokenizerError {
@@ -295,6 +337,12 @@ impl Display for TokenizerError {
             Self::CommentTooLarge => {
                 write!(formatter, "HTML comment exceeds {MAX_COMMENT_BYTES} bytes")
             }
+            Self::StyleBodyTooLarge => {
+                write!(
+                    formatter,
+                    "HTML style body exceeds {MAX_STYLE_BODY_BYTES} bytes"
+                )
+            }
         }
     }
 }
@@ -303,13 +351,14 @@ impl Error for TokenizerError {}
 
 /// Tokenizes HTML source into Phantom's deterministic, bounded token stream.
 ///
-/// This is the 2E-1 tokenizer foundation. It does not yet replace [`crate::parse`];
-/// migration of token output into the DOM tree builder is the 2E-2 milestone.
+/// Cycle 2E includes measured character-reference handling plus RCDATA,
+/// RAWTEXT, and script-data foundations. The same token stream feeds the
+/// rendering-facing tree builder.
 ///
 /// # Errors
 ///
-/// Returns [`TokenizerError`] when source, start-tag, attribute, or comment
-/// admission budgets inherited from 2D-6 are exceeded.
+/// Returns [`TokenizerError`] when source, start-tag, attribute, comment, or
+/// style-RAWTEXT admission budgets inherited from 2D-6 are exceeded.
 pub fn tokenize(source: &str) -> Result<Tokenization, TokenizerError> {
     if source.len() > MAX_HTML_SOURCE_BYTES {
         return Err(TokenizerError::SourceTooLarge);
@@ -325,7 +374,17 @@ struct Tokenizer<'a> {
     state: TokenizerState,
     tokens: Vec<Token>,
     parse_errors: Vec<ParseError>,
+    parse_errors_total: usize,
+    parse_errors_truncated: bool,
     character_references: Vec<CharacterReferenceCandidate>,
+    character_references_total: usize,
+    character_references_resolved: usize,
+    character_references_preserved: usize,
+    character_references_truncated: bool,
+    rcdata_sections: usize,
+    rawtext_sections: usize,
+    script_data_sections: usize,
+    pending_text_mode: Option<TextMode>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -337,16 +396,31 @@ impl<'a> Tokenizer<'a> {
             state: TokenizerState::Data,
             tokens: Vec::new(),
             parse_errors: Vec::new(),
+            parse_errors_total: 0,
+            parse_errors_truncated: false,
             character_references: Vec::new(),
+            character_references_total: 0,
+            character_references_resolved: 0,
+            character_references_preserved: 0,
+            character_references_truncated: false,
+            rcdata_sections: 0,
+            rawtext_sections: 0,
+            script_data_sections: 0,
+            pending_text_mode: None,
         }
     }
 
     fn run(mut self) -> Result<Tokenization, TokenizerError> {
         while self.cursor < self.bytes.len() {
-            self.state = TokenizerState::Data;
-            self.consume_data()?;
+            if let Some(mode) = self.pending_text_mode.take() {
+                self.consume_text_mode(mode)?;
+            } else {
+                self.state = TokenizerState::Data;
+                self.consume_data()?;
+            }
         }
 
+        self.tokens = coalesce_character_tokens(self.tokens);
         self.tokens.push(Token::Eof {
             position: self.source.len(),
         });
@@ -354,7 +428,16 @@ impl<'a> Tokenizer<'a> {
         Ok(Tokenization {
             tokens: self.tokens,
             parse_errors: self.parse_errors,
+            parse_errors_total: self.parse_errors_total,
+            parse_errors_truncated: self.parse_errors_truncated,
             character_references: self.character_references,
+            character_references_total: self.character_references_total,
+            character_references_resolved: self.character_references_resolved,
+            character_references_preserved: self.character_references_preserved,
+            character_references_truncated: self.character_references_truncated,
+            rcdata_sections: self.rcdata_sections,
+            rawtext_sections: self.rawtext_sections,
+            script_data_sections: self.script_data_sections,
             final_state: self.state,
         })
     }
@@ -379,12 +462,9 @@ impl<'a> Tokenizer<'a> {
             b'<' => self.consume_tag_open(),
             b'&' => {
                 let start = self.cursor;
-                self.character_references.push(CharacterReferenceCandidate {
-                    span: SourceSpan::new(start, start.saturating_add(1)),
-                    context: CharacterReferenceContext::Data,
-                });
-                self.cursor = self.cursor.saturating_add(1);
-                self.emit_owned_character("&".to_owned(), start, self.cursor);
+                let limit = self.bytes.len();
+                let data = self.consume_character_reference(CharacterReferenceContext::Data, limit);
+                self.emit_owned_character(data, start, self.cursor);
                 Ok(())
             }
             b'\0' => {
@@ -479,6 +559,10 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn consume_tag(&mut self, tag_start: usize, end_tag: bool) -> Result<(), TokenizerError> {
+        if !end_tag {
+            self.check_raw_start_tag_scan_budget(tag_start)?;
+        }
+
         self.state = TokenizerState::TagName;
         let name_start = self.cursor;
         let mut name = String::new();
@@ -578,6 +662,17 @@ impl<'a> Tokenizer<'a> {
                 ParseErrorCode::EndTagWithTrailingSolidus,
                 SourceSpan::new(tag_start, self.cursor),
             );
+        }
+
+        if !end_tag
+            && !self_closing
+            && let Some(kind) = text_mode_for_tag(&name)
+        {
+            self.observe_text_mode(kind);
+            self.pending_text_mode = Some(TextMode {
+                kind,
+                tag_name: name.clone(),
+            });
         }
 
         let token = TagToken {
@@ -722,13 +817,10 @@ impl<'a> Tokenizer<'a> {
                     return (value, SourceSpan::new(value_start, value_end), true);
                 }
                 b'&' => {
-                    let start = self.cursor;
-                    self.character_references.push(CharacterReferenceCandidate {
-                        span: SourceSpan::new(start, start.saturating_add(1)),
-                        context: CharacterReferenceContext::Attribute,
-                    });
-                    value.push('&');
-                    self.cursor = self.cursor.saturating_add(1);
+                    let limit = self.bytes.len();
+                    let resolved = self
+                        .consume_character_reference(CharacterReferenceContext::Attribute, limit);
+                    value.push_str(&resolved);
                 }
                 b'\0' => {
                     let span = self.current_char_span();
@@ -755,13 +847,10 @@ impl<'a> Tokenizer<'a> {
             match self.bytes[self.cursor] {
                 byte if byte.is_ascii_whitespace() || byte == b'>' => break,
                 b'&' => {
-                    let start = self.cursor;
-                    self.character_references.push(CharacterReferenceCandidate {
-                        span: SourceSpan::new(start, start.saturating_add(1)),
-                        context: CharacterReferenceContext::Attribute,
-                    });
-                    value.push('&');
-                    self.cursor = self.cursor.saturating_add(1);
+                    let limit = self.bytes.len();
+                    let resolved = self
+                        .consume_character_reference(CharacterReferenceContext::Attribute, limit);
+                    value.push_str(&resolved);
                 }
                 b'\0' => {
                     let span = self.current_char_span();
@@ -1002,6 +1091,162 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    fn consume_text_mode(&mut self, mode: TextMode) -> Result<(), TokenizerError> {
+        self.state = mode.kind.state();
+
+        let content_start = self.cursor;
+        let content_end = find_appropriate_end_tag(self.source, content_start, &mode.tag_name)
+            .unwrap_or(self.bytes.len());
+
+        if mode.kind == TextModeKind::RawText
+            && mode.tag_name == "style"
+            && content_end.saturating_sub(content_start) > MAX_STYLE_BODY_BYTES
+        {
+            return Err(TokenizerError::StyleBodyTooLarge);
+        }
+
+        let mut data = String::new();
+
+        while self.cursor < content_end {
+            match self.bytes[self.cursor] {
+                b'&' if mode.kind == TextModeKind::Rcdata => {
+                    let resolved = self
+                        .consume_character_reference(CharacterReferenceContext::Data, content_end);
+                    data.push_str(&resolved);
+                }
+                b'\0' => {
+                    let span = self.current_char_span();
+                    self.push_error(ParseErrorCode::UnexpectedNullCharacter, span);
+                    data.push('\u{fffd}');
+                    self.cursor = self.cursor.saturating_add(1);
+                }
+                _ => {
+                    data.push(self.current_char());
+                    self.advance_char();
+                }
+            }
+        }
+
+        if !data.is_empty() {
+            self.emit_owned_character(data, content_start, content_end);
+        }
+
+        if content_end < self.bytes.len() {
+            self.consume_tag_open()?;
+        } else {
+            self.state = mode.kind.state();
+        }
+
+        Ok(())
+    }
+
+    fn consume_character_reference(
+        &mut self,
+        context: CharacterReferenceContext,
+        limit: usize,
+    ) -> String {
+        let start = self.cursor;
+        let bounded_end = limit.min(self.source.len());
+
+        let resolution = {
+            let remaining = self.source.get(start..bounded_end).unwrap_or("&");
+            resolve_character_reference(remaining, context)
+        };
+
+        let available = bounded_end.saturating_sub(start);
+        let consumed = resolution.consumed.max(1).min(available.max(1));
+        let end = start.saturating_add(consumed).min(bounded_end);
+        self.cursor = end;
+
+        let resolved = resolution.replacement.is_some();
+        self.record_character_reference(start, end, context, resolved);
+
+        if let Some(code) = resolution.primary_error {
+            self.push_error(code, SourceSpan::new(start, end));
+        }
+        if let Some(code) = resolution.secondary_error {
+            self.push_error(code, SourceSpan::new(start, end));
+        }
+
+        resolution.replacement.unwrap_or_else(|| "&".to_owned())
+    }
+
+    fn record_character_reference(
+        &mut self,
+        start: usize,
+        end: usize,
+        context: CharacterReferenceContext,
+        resolved: bool,
+    ) {
+        self.character_references_total = self.character_references_total.saturating_add(1);
+        if resolved {
+            self.character_references_resolved =
+                self.character_references_resolved.saturating_add(1);
+        } else {
+            self.character_references_preserved =
+                self.character_references_preserved.saturating_add(1);
+        }
+
+        if self.character_references.len() < MAX_CHARACTER_REFERENCE_DIAGNOSTICS {
+            self.character_references.push(CharacterReferenceCandidate {
+                span: SourceSpan::new(start, end),
+                context,
+                resolved,
+            });
+        } else {
+            self.character_references_truncated = true;
+        }
+    }
+
+    fn observe_text_mode(&mut self, kind: TextModeKind) {
+        match kind {
+            TextModeKind::Rcdata => {
+                self.rcdata_sections = self.rcdata_sections.saturating_add(1);
+            }
+            TextModeKind::RawText => {
+                self.rawtext_sections = self.rawtext_sections.saturating_add(1);
+            }
+            TextModeKind::ScriptData => {
+                self.script_data_sections = self.script_data_sections.saturating_add(1);
+            }
+        }
+    }
+
+    fn check_raw_start_tag_scan_budget(&self, tag_start: usize) -> Result<(), TokenizerError> {
+        let mut cursor = tag_start.saturating_add(1);
+        let mut quote = None;
+
+        while cursor < self.bytes.len() {
+            let byte = self.bytes[cursor];
+            let raw_bytes = cursor.saturating_sub(tag_start).saturating_sub(1);
+
+            if raw_bytes > MAX_RAW_START_TAG_BYTES {
+                return Err(TokenizerError::StartTagTooLarge);
+            }
+
+            if let Some(active_quote) = quote {
+                if byte == active_quote {
+                    quote = None;
+                }
+            } else {
+                match byte {
+                    b'"' | b'\'' => quote = Some(byte),
+                    b'>' => return Ok(()),
+                    _ => {}
+                }
+            }
+
+            cursor = cursor.saturating_add(1);
+        }
+
+        let raw_bytes = self.bytes.len().saturating_sub(tag_start).saturating_sub(1);
+        if raw_bytes > MAX_RAW_START_TAG_BYTES {
+            return Err(TokenizerError::StartTagTooLarge);
+        }
+
+        Ok(())
+    }
+
     fn check_start_tag_budget(
         &self,
         tag_start: usize,
@@ -1041,7 +1286,13 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn push_error(&mut self, code: ParseErrorCode, span: SourceSpan) {
-        self.parse_errors.push(ParseError { code, span });
+        self.parse_errors_total = self.parse_errors_total.saturating_add(1);
+
+        if self.parse_errors.len() < MAX_TOKENIZER_DIAGNOSTICS {
+            self.parse_errors.push(ParseError { code, span });
+        } else {
+            self.parse_errors_truncated = true;
+        }
     }
 
     fn remaining(&self) -> &'a str {
@@ -1077,6 +1328,294 @@ impl<'a> Tokenizer<'a> {
             self.cursor = self.cursor.saturating_add(1);
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextModeKind {
+    Rcdata,
+    RawText,
+    ScriptData,
+}
+
+impl TextModeKind {
+    const fn state(self) -> TokenizerState {
+        match self {
+            Self::Rcdata => TokenizerState::Rcdata,
+            Self::RawText => TokenizerState::RawText,
+            Self::ScriptData => TokenizerState::ScriptData,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TextMode {
+    kind: TextModeKind,
+    tag_name: String,
+}
+
+fn text_mode_for_tag(tag_name: &str) -> Option<TextModeKind> {
+    match tag_name {
+        "title" | "textarea" => Some(TextModeKind::Rcdata),
+        "style" | "xmp" | "iframe" | "noembed" | "noframes" => Some(TextModeKind::RawText),
+        "script" => Some(TextModeKind::ScriptData),
+        _ => None,
+    }
+}
+
+fn find_appropriate_end_tag(source: &str, start: usize, tag_name: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let name = tag_name.as_bytes();
+
+    if start >= bytes.len() || name.is_empty() {
+        return None;
+    }
+
+    let mut cursor = start;
+    while cursor.saturating_add(2).saturating_add(name.len()) <= bytes.len() {
+        if bytes[cursor] == b'<' && bytes.get(cursor.saturating_add(1)) == Some(&b'/') {
+            let name_start = cursor.saturating_add(2);
+            let name_end = name_start.saturating_add(name.len());
+
+            if name_end <= bytes.len()
+                && bytes[name_start..name_end].eq_ignore_ascii_case(name)
+                && bytes
+                    .get(name_end)
+                    .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(*byte, b'/' | b'>'))
+            {
+                return Some(cursor);
+            }
+        }
+
+        cursor = cursor.saturating_add(1);
+    }
+
+    None
+}
+
+struct ReferenceResolution {
+    consumed: usize,
+    replacement: Option<String>,
+    primary_error: Option<ParseErrorCode>,
+    secondary_error: Option<ParseErrorCode>,
+}
+
+impl ReferenceResolution {
+    fn preserved(error: Option<ParseErrorCode>) -> Self {
+        Self {
+            consumed: 1,
+            replacement: None,
+            primary_error: error,
+            secondary_error: None,
+        }
+    }
+}
+
+fn resolve_character_reference(
+    input: &str,
+    context: CharacterReferenceContext,
+) -> ReferenceResolution {
+    let bytes = input.as_bytes();
+
+    if bytes.first() != Some(&b'&') || bytes.len() == 1 {
+        return ReferenceResolution::preserved(None);
+    }
+
+    if bytes.get(1) == Some(&b'#') {
+        return resolve_numeric_character_reference(input);
+    }
+
+    let mut run_end = 1_usize;
+    while run_end < bytes.len()
+        && bytes[run_end].is_ascii_alphanumeric()
+        && run_end.saturating_sub(1) < 64
+    {
+        run_end = run_end.saturating_add(1);
+    }
+
+    if run_end == 1 {
+        return ReferenceResolution::preserved(None);
+    }
+
+    if bytes.get(run_end) == Some(&b';') {
+        let name = &input[1..run_end];
+        if let Some(replacement) = named_reference(name) {
+            return ReferenceResolution {
+                consumed: run_end.saturating_add(1),
+                replacement: Some(replacement.to_owned()),
+                primary_error: None,
+                secondary_error: None,
+            };
+        }
+
+        return ReferenceResolution::preserved(Some(
+            ParseErrorCode::UnknownNamedCharacterReference,
+        ));
+    }
+
+    let run = &input[1..run_end];
+    let mut matched = None;
+
+    for length in 1..=run.len() {
+        let name = &run[..length];
+        if let Some(replacement) = named_reference(name) {
+            matched = Some((length, name, replacement));
+        }
+    }
+
+    let Some((name_len, name, replacement)) = matched else {
+        return ReferenceResolution::preserved(None);
+    };
+
+    if !allows_missing_semicolon(name) {
+        return ReferenceResolution::preserved(None);
+    }
+
+    let next = bytes.get(1_usize.saturating_add(name_len)).copied();
+    if context == CharacterReferenceContext::Attribute
+        && next.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'=')
+    {
+        return ReferenceResolution::preserved(None);
+    }
+
+    ReferenceResolution {
+        consumed: 1_usize.saturating_add(name_len),
+        replacement: Some(replacement.to_owned()),
+        primary_error: Some(ParseErrorCode::MissingSemicolonAfterCharacterReference),
+        secondary_error: None,
+    }
+}
+
+fn resolve_numeric_character_reference(input: &str) -> ReferenceResolution {
+    let bytes = input.as_bytes();
+    let (radix, digits_start) = if bytes
+        .get(2)
+        .is_some_and(|byte| matches!(*byte, b'x' | b'X'))
+    {
+        (16_u32, 3_usize)
+    } else {
+        (10_u32, 2_usize)
+    };
+
+    let mut digits_end = digits_start;
+    while digits_end < bytes.len()
+        && if radix == 16 {
+            bytes[digits_end].is_ascii_hexdigit()
+        } else {
+            bytes[digits_end].is_ascii_digit()
+        }
+    {
+        digits_end = digits_end.saturating_add(1);
+    }
+
+    if digits_end == digits_start {
+        return ReferenceResolution::preserved(Some(
+            ParseErrorCode::AbsenceOfDigitsInNumericCharacterReference,
+        ));
+    }
+
+    let digits = &input[digits_start..digits_end];
+    let value = u64::from_str_radix(digits, radix).unwrap_or(u64::MAX);
+    let has_semicolon = bytes.get(digits_end) == Some(&b';');
+    let consumed = digits_end.saturating_add(if has_semicolon { 1 } else { 0 });
+
+    let (character, value_error) = normalize_numeric_reference(value);
+    let missing_semicolon =
+        (!has_semicolon).then_some(ParseErrorCode::MissingSemicolonAfterCharacterReference);
+
+    ReferenceResolution {
+        consumed,
+        replacement: Some(character.to_string()),
+        primary_error: value_error,
+        secondary_error: missing_semicolon,
+    }
+}
+
+fn normalize_numeric_reference(value: u64) -> (char, Option<ParseErrorCode>) {
+    if value == 0 {
+        return ('\u{fffd}', Some(ParseErrorCode::NullCharacterReference));
+    }
+
+    if value > 0x10ffff {
+        return (
+            '\u{fffd}',
+            Some(ParseErrorCode::CharacterReferenceOutsideUnicodeRange),
+        );
+    }
+
+    let scalar = u32::try_from(value).unwrap_or(u32::MAX);
+    if (0xd800..=0xdfff).contains(&scalar) {
+        return (
+            '\u{fffd}',
+            Some(ParseErrorCode::SurrogateCharacterReference),
+        );
+    }
+
+    (char::from_u32(scalar).unwrap_or('\u{fffd}'), None)
+}
+
+fn named_reference(name: &str) -> Option<&'static str> {
+    match name {
+        "amp" | "AMP" => Some("&"),
+        "lt" | "LT" => Some("<"),
+        "gt" | "GT" => Some(">"),
+        "quot" | "QUOT" => Some("\""),
+        "apos" => Some("'"),
+        "nbsp" => Some("\u{00a0}"),
+        "copy" => Some("\u{00a9}"),
+        "reg" => Some("\u{00ae}"),
+        "cent" => Some("\u{00a2}"),
+        "pound" => Some("\u{00a3}"),
+        "yen" => Some("\u{00a5}"),
+        "euro" => Some("\u{20ac}"),
+        "hellip" => Some("\u{2026}"),
+        "ndash" => Some("\u{2013}"),
+        "mdash" => Some("\u{2014}"),
+        "laquo" => Some("\u{00ab}"),
+        "raquo" => Some("\u{00bb}"),
+        _ => None,
+    }
+}
+
+fn allows_missing_semicolon(name: &str) -> bool {
+    matches!(
+        name,
+        "amp"
+            | "AMP"
+            | "lt"
+            | "LT"
+            | "gt"
+            | "GT"
+            | "quot"
+            | "QUOT"
+            | "nbsp"
+            | "copy"
+            | "reg"
+            | "cent"
+            | "pound"
+            | "yen"
+    )
+}
+
+fn coalesce_character_tokens(tokens: Vec<Token>) -> Vec<Token> {
+    let mut coalesced = Vec::with_capacity(tokens.len());
+
+    for token in tokens {
+        match token {
+            Token::Character(character) => {
+                if let Some(Token::Character(previous)) = coalesced.last_mut()
+                    && previous.span.end == character.span.start
+                {
+                    previous.data.push_str(&character.data);
+                    previous.span.end = character.span.end;
+                } else {
+                    coalesced.push(Token::Character(character));
+                }
+            }
+            other => coalesced.push(other),
+        }
+    }
+
+    coalesced
 }
 
 fn ascii_lowercase(character: char) -> char {

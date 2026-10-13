@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOM Selector API II</title>
+<style>
+#query-status.active { color: #00695c; font-weight: 700; }
+#hero.selected { color: #5e35b1; font-weight: 700; }
+#final-status.ready { color: #2e7d32; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="app" class="shell">
+  <section id="primary" class="panel primary" data-state="ready">
+    <article id="card-1" class="card featured"><span id="hero" class="label hero" data-kind="hero" data-label="hero card">Hero</span></article>
+    <article id="card-2" class="card"><span id="plain" class="label">Plain</span></article>
+  </section>
+  <section id="secondary" class="panel secondary"><span id="side" class="label" data-kind="side">Side</span></section>
+</div>
+<p id="query-status">Selector query pending</p>
+<p id="match-status">Matches closest pending</p>
+<p id="scope-status">Element scope pending</p>
+<p id="final-status">DOM selector pending</p>
+<script src="/dom-selectors.js"></script>
+</body>
+</html>

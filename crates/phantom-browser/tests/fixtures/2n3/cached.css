@@ -1,0 +1,5 @@
+#cache { color: rgb(46, 125, 50); }
+#responsive { color: rgb(198, 40, 40); }
+@media (max-width: 700px) {
+  #responsive { color: rgb(21, 101, 192); }
+}
