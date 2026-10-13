@@ -26,10 +26,7 @@ fn array_front_back_concat_reverse_and_at_cover_common_mutation_paths()
     let value = runtime.execute(
         "var a = [2, 3]; var n = a.unshift(0, 1); var first = a.shift(); var c = a.concat([4, 5], 6); c.reverse(); c.join(',') + '|' + c.at(-1) + '|' + first + '|' + n + '|' + a.join(',');",
     )?;
-    assert_eq!(
-        value,
-        Value::String("6,5,4,3,2,1|1|0|4|1,2,3".to_owned())
-    );
+    assert_eq!(value, Value::String("6,5,4,3,2,1|1|0|4|1,2,3".to_owned()));
     Ok(())
 }
 

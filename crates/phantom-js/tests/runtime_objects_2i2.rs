@@ -114,8 +114,8 @@ fn calling_non_function_fails_closed() {
 }
 
 #[test]
-fn this_and_closure_capture_execute_with_function_context()
--> Result<(), Box<dyn std::error::Error>> {
+fn this_and_closure_capture_execute_with_function_context() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = Runtime::new();
     let method_value = runtime.execute(
         "let holder = { value: 7, read: function() { return this.value; } }; holder.read();",

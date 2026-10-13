@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn runtime_with_target(class_name: &str) -> Result<Runtime, Box<dyn std::error::Error>> {
     let mut attributes = BTreeMap::from([("id".to_owned(), "target".to_owned())]);
@@ -61,8 +63,8 @@ fn class_list_toggle_supports_boolean_force_and_returns_presence()
 }
 
 #[test]
-fn invalid_class_list_token_fails_before_partial_mutation()
--> Result<(), Box<dyn std::error::Error>> {
+fn invalid_class_list_token_fails_before_partial_mutation() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = runtime_with_target("base")?;
     let error = runtime
         .execute(
@@ -72,9 +74,7 @@ fn invalid_class_list_token_fails_before_partial_mutation()
         .expect_err("ASCII whitespace in a DOM token must fail closed");
     assert_eq!(error.kind(), RuntimeErrorKind::InvalidDomToken);
 
-    let value = runtime.execute(
-        "document.getElementById('target').className;",
-    )?;
+    let value = runtime.execute("document.getElementById('target').className;")?;
     assert_eq!(value, Value::String("base".to_owned()));
     Ok(())
 }

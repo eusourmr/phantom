@@ -16,8 +16,8 @@ fn browser_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn array_instance_methods_are_receiver_bound_and_mutating()
--> Result<(), Box<dyn std::error::Error>> {
+fn array_instance_methods_are_receiver_bound_and_mutating() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = browser_runtime()?;
     let value = runtime.execute(
         "var a = [1, 2]; var n = a.push(3, 4); var p = a.pop(); n + '|' + p + '|' + a.join('-') + '|' + a.indexOf(2) + '|' + a.includes(9) + '|' + a.slice(1, 3).join(',');",
@@ -27,13 +27,15 @@ fn array_instance_methods_are_receiver_bound_and_mutating()
 }
 
 #[test]
-fn string_instance_methods_cover_common_web_transforms()
--> Result<(), Box<dyn std::error::Error>> {
+fn string_instance_methods_cover_common_web_transforms() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = browser_runtime()?;
     let value = runtime.execute(
         "var s = '  Phantom Browser  '.trim(); s.length + '|' + s.toLowerCase() + '|' + s.toUpperCase().startsWith('PHANTOM') + '|' + s.includes('Browser') + '|' + s.endsWith('Browser') + '|' + s.indexOf('Browser') + '|' + s.slice(8);",
     )?;
-    assert_eq!(value, Value::String("15|phantom browser|true|true|true|8|Browser".to_owned()));
+    assert_eq!(
+        value,
+        Value::String("15|phantom browser|true|true|true|8|Browser".to_owned())
+    );
     Ok(())
 }
 
@@ -63,8 +65,7 @@ fn json_parse_and_stringify_round_trip_nested_arrays_and_objects()
 }
 
 #[test]
-fn invalid_json_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
+fn invalid_json_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = browser_runtime()?;
     match runtime.execute("JSON.parse('{bad json}');") {
         Err(error) => assert_eq!(error.kind(), RuntimeErrorKind::InvalidJson),

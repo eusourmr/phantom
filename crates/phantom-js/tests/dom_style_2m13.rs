@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn runtime_with_target(style: &str) -> Result<Runtime, Box<dyn std::error::Error>> {
     let mut attributes = BTreeMap::from([("id".to_owned(), "target".to_owned())]);
@@ -24,8 +26,7 @@ fn runtime_with_target(style: &str) -> Result<Runtime, Box<dyn std::error::Error
 }
 
 #[test]
-fn style_direct_members_and_property_methods_are_live()
--> Result<(), Box<dyn std::error::Error>> {
+fn style_direct_members_and_property_methods_are_live() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_target("color: red; width: 10px")?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \
@@ -36,10 +37,7 @@ fn style_direct_members_and_property_methods_are_live()
          (style === target.style) + '|' + style.backgroundColor + '|' + style.getPropertyValue('width') + '|' + style.fontWeight;",
     )?;
 
-    assert_eq!(
-        value,
-        Value::String("true|#1565c0|10px|700".to_owned())
-    );
+    assert_eq!(value, Value::String("true|#1565c0|10px|700".to_owned()));
     Ok(())
 }
 
@@ -73,16 +71,13 @@ fn css_text_assignment_is_canonical_and_style_identity_survives_set_attribute()
 
     assert_eq!(
         value,
-        Value::String(
-            "true|color: #6a1b9a; font-weight: 700|#1565c0|20px".to_owned()
-        )
+        Value::String("true|color: #6a1b9a; font-weight: 700|#1565c0|20px".to_owned())
     );
     Ok(())
 }
 
 #[test]
-fn invalid_style_property_name_fails_before_mutation()
--> Result<(), Box<dyn std::error::Error>> {
+fn invalid_style_property_name_fails_before_mutation() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_target("color: red")?;
     let error = runtime
         .execute(
@@ -92,9 +87,7 @@ fn invalid_style_property_name_fails_before_mutation()
         .expect_err("whitespace in a bounded CSS property name must fail closed");
     assert_eq!(error.kind(), RuntimeErrorKind::InvalidCssPropertyName);
 
-    let value = runtime.execute(
-        "document.getElementById('target').style.color;",
-    )?;
+    let value = runtime.execute("document.getElementById('target').style.color;")?;
     assert_eq!(value, Value::String("red".to_owned()));
     Ok(())
 }

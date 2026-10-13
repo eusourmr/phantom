@@ -94,8 +94,7 @@ fn stop_immediate_propagation_skips_remaining_target_and_ancestor_listeners()
 }
 
 #[test]
-fn once_option_removes_listener_before_second_dispatch()
--> Result<(), Box<dyn std::error::Error>> {
+fn once_option_removes_listener_before_second_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_tree()?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \

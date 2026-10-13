@@ -75,10 +75,7 @@ fn append_child_moves_existing_subtree_to_end_and_updates_live_navigation()
     let value = runtime.execute(
         "var parent = document.getElementById('parent'); var other = document.getElementById('other'); var b = document.getElementById('b'); var d = document.getElementById('d'); other.appendChild(b); parent.childElementCount + '|' + parent.lastElementChild.id + '|' + other.childElementCount + '|' + other.firstElementChild.id + '|' + other.lastElementChild.id + '|' + b.parentElement.id + '|' + d.nextElementSibling.id + '|' + b.previousElementSibling.id;",
     )?;
-    assert_eq!(
-        value,
-        Value::String("2|c|2|d|b|other|b|d".to_owned())
-    );
+    assert_eq!(value, Value::String("2|c|2|d|b|other|b|d".to_owned()));
     Ok(())
 }
 

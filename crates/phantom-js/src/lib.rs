@@ -30,8 +30,7 @@ pub use parser::{
 };
 pub use runtime::{
     BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, FetchCredentialsMode,
-    FetchHostRequest, Runtime, RuntimeError,
-    RuntimeErrorKind, Value,
+    FetchHostRequest, Runtime, RuntimeError, RuntimeErrorKind, Value,
 };
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;

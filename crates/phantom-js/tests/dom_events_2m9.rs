@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn runtime_with_tree() -> Result<Runtime, Box<dyn std::error::Error>> {
     // Simulate the browser bridge: the top element can point at a Document
@@ -28,14 +30,9 @@ fn runtime_with_tree() -> Result<Runtime, Box<dyn std::error::Error>> {
         "target",
     )?
     .with_parent_node_id(Some(2));
-    let snapshot = BrowserHostSnapshot::new(
-        "https://events.test/",
-        "Propagation",
-        800.0,
-        600.0,
-        1.0,
-    )?
-    .with_dom_elements(vec![root, parent, target])?;
+    let snapshot =
+        BrowserHostSnapshot::new("https://events.test/", "Propagation", 800.0, 600.0, 1.0)?
+            .with_dom_elements(vec![root, parent, target])?;
     let mut runtime = Runtime::new();
     runtime.install_browser_host(&snapshot)?;
     Ok(runtime)
@@ -143,7 +140,9 @@ fn event_ancestor_path_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::new();
     runtime.install_browser_host(&snapshot)?;
     let error = runtime
-        .execute("document.getElementById('target-258').dispatchEvent({ type: 'deep', bubbles: true });")
+        .execute(
+            "document.getElementById('target-258').dispatchEvent({ type: 'deep', bubbles: true });",
+        )
         .err();
 
     assert_eq!(

@@ -27,8 +27,7 @@ fn object_entries_and_has_own_cover_common_enumeration_paths()
 }
 
 #[test]
-fn array_iteration_methods_bind_callbacks_and_this_arg()
--> Result<(), Box<dyn std::error::Error>> {
+fn array_iteration_methods_bind_callbacks_and_this_arg() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = browser_runtime()?;
     let value = runtime.execute(
         "var a = [1, 2, 3]; var seen = ''; a.forEach(function(v, i, source) { seen = seen + v + ':' + i + ':' + (source === a) + ';'; }); var ctx = {factor: 3}; var mapped = a.map(function(v) { return v * this.factor; }, ctx); seen + '|' + mapped.join(',');",
@@ -58,13 +57,15 @@ fn string_split_and_string_replace_cover_common_text_paths()
     let value = runtime.execute(
         "var s = 'alpha,beta,gamma'; s.split(',').slice(1).join('|') + '|' + s.replace('beta', 'B') + '|' + 'abc'.split('').join('-');",
     )?;
-    assert_eq!(value, Value::String("beta|gamma|alpha,B,gamma|a-b-c".to_owned()));
+    assert_eq!(
+        value,
+        Value::String("beta|gamma|alpha,B,gamma|a-b-c".to_owned())
+    );
     Ok(())
 }
 
 #[test]
-fn callback_and_empty_reduce_errors_fail_closed()
--> Result<(), Box<dyn std::error::Error>> {
+fn callback_and_empty_reduce_errors_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = browser_runtime()?;
     match runtime.execute("[1].map(7);") {
         Err(error) => assert_eq!(error.kind(), RuntimeErrorKind::CallNonFunction),

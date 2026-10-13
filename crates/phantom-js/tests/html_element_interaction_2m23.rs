@@ -10,9 +10,11 @@ fn element(
     attributes: BTreeMap<String, String>,
     parent: Option<u64>,
 ) -> Result<BrowserDomElementSnapshot, Box<dyn std::error::Error>> {
-    Ok(BrowserDomElementSnapshot::new(node_id, tag, attributes, "")?
-        .with_parent_node_id(parent)
-        .with_connected(true))
+    Ok(
+        BrowserDomElementSnapshot::new(node_id, tag, attributes, "")?
+            .with_parent_node_id(parent)
+            .with_connected(true),
+    )
 }
 
 fn attrs(values: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -48,8 +50,18 @@ fn interaction_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
             attrs(&[("id", "form"), ("action", "/old"), ("method", "get")]),
             Some(3),
         )?,
-        element(8, "label", attrs(&[("id", "label"), ("for", "field")]), Some(3))?,
-        element(9, "button", attrs(&[("id", "disabled"), ("disabled", "")]), Some(3))?,
+        element(
+            8,
+            "label",
+            attrs(&[("id", "label"), ("for", "field")]),
+            Some(3),
+        )?,
+        element(
+            9,
+            "button",
+            attrs(&[("id", "disabled"), ("disabled", "")]),
+            Some(3),
+        )?,
     ])?;
     let mut runtime = Runtime::new();
     runtime.install_browser_host(&snapshot)?;
@@ -57,8 +69,7 @@ fn interaction_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn common_string_properties_round_trip_with_attributes()
--> Result<(), Box<dyn std::error::Error>> {
+fn common_string_properties_round_trip_with_attributes() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = interaction_runtime()?;
     let value = runtime.execute(
         "var f = document.getElementById('field'); f.value = 'beta'; f.name = 'q'; f.placeholder = 'Search'; f.setAttribute('type', 'email'); var a = document.getElementById('link'); a.href = '/next'; a.target = '_blank'; a.rel = 'noopener'; f.value + '|' + f.getAttribute('value') + '|' + f.name + '|' + f.placeholder + '|' + f.type + '|' + a.href + '|' + a.target + '|' + a.rel;",
@@ -71,8 +82,7 @@ fn common_string_properties_round_trip_with_attributes()
 }
 
 #[test]
-fn form_label_and_camel_case_reflection_stays_live()
--> Result<(), Box<dyn std::error::Error>> {
+fn form_label_and_camel_case_reflection_stays_live() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = interaction_runtime()?;
     let value = runtime.execute(
         "var form = document.getElementById('form'); var button = document.getElementById('go'); var label = document.getElementById('label'); form.action = '/submit'; form.method = 'post'; form.enctype = 'multipart/form-data'; button.formAction = '/override'; button.formMethod = 'post'; button.formEnctype = 'text/plain'; label.htmlFor = 'field'; form.setAttribute('method', 'dialog'); form.action + '|' + form.method + '|' + form.enctype + '|' + button.getAttribute('formaction') + '|' + button.formMethod + '|' + button.formEnctype + '|' + label.getAttribute('for') + '|' + label.htmlFor;",

@@ -692,8 +692,7 @@ fn cors_request_header_is_safelisted(name: &str, value: &str) -> bool {
         return !value.bytes().any(cors_unsafe_request_header_byte);
     }
 
-    if name.eq_ignore_ascii_case("accept-language")
-        || name.eq_ignore_ascii_case("content-language")
+    if name.eq_ignore_ascii_case("accept-language") || name.eq_ignore_ascii_case("content-language")
     {
         return value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
@@ -722,8 +721,19 @@ fn cors_unsafe_request_header_byte(byte: u8) -> bool {
     (byte < 0x20 && byte != b'\t')
         || matches!(
             byte,
-            b'"' | b'(' | b')' | b':' | b'<' | b'>' | b'?' | b'@' | b'[' | b'\\'
-                | b']' | b'{' | b'}' | 0x7f
+            b'"' | b'('
+                | b')'
+                | b':'
+                | b'<'
+                | b'>'
+                | b'?'
+                | b'@'
+                | b'['
+                | b'\\'
+                | b']'
+                | b'{'
+                | b'}'
+                | 0x7f
         )
 }
 
@@ -766,8 +776,20 @@ fn cors_author_headers_transport_safe(author_headers: &[(&str, &str)]) -> bool {
                 byte.is_ascii_alphanumeric()
                     || matches!(
                         byte,
-                        b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-'
-                            | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
                     )
             })
             && !value.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
@@ -796,7 +818,6 @@ fn cors_unsafe_request_header_names(author_headers: &[(&str, &str)]) -> Vec<Stri
     names.dedup();
     names
 }
-
 
 // PHANTOM_2N19_FINAL_ORIGIN_CORS_HARDENING
 /// Whether the final response origin requires explicit CORS admission.
@@ -857,7 +878,6 @@ fn cors_preflight_allows_headers_for_credentials(
                 && !header.eq_ignore_ascii_case("authorization"))
     })
 }
-
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct CookieStoreKey {
@@ -1016,16 +1036,28 @@ fn cookie_name_is_valid(name: &str) -> bool {
         byte.is_ascii_alphanumeric()
             || matches!(
                 byte,
-                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-'
-                    | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+                b'!' | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
             )
     })
 }
 
 fn cookie_value_is_valid(value: &str) -> bool {
-    value.bytes().all(|byte| {
-        matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e)
-    })
+    value
+        .bytes()
+        .all(|byte| matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e))
 }
 
 fn cookie_default_path(url: &HttpUrl) -> String {
@@ -1053,10 +1085,7 @@ fn cookie_path_matches(cookie_path: &str, request_path: &str) -> bool {
                     .is_some_and(|byte| *byte == b'/')))
 }
 
-fn cookie_same_site_allows(
-    same_site: CookieSameSite,
-    context: CookieSiteContext,
-) -> bool {
+fn cookie_same_site_allows(same_site: CookieSameSite, context: CookieSiteContext) -> bool {
     match same_site {
         CookieSameSite::None => true,
         CookieSameSite::Default | CookieSameSite::Lax | CookieSameSite::Strict => {
@@ -1065,10 +1094,7 @@ fn cookie_same_site_allows(
     }
 }
 
-fn parse_set_cookie(
-    set_cookie: &str,
-    response_url: &HttpUrl,
-) -> Option<ParsedCookie> {
+fn parse_set_cookie(set_cookie: &str, response_url: &HttpUrl) -> Option<ParsedCookie> {
     if set_cookie.is_empty() || set_cookie.len() > MAX_SET_COOKIE_BYTES {
         return None;
     }
@@ -1146,9 +1172,7 @@ fn parse_set_cookie(
     if name.starts_with("__Secure-") && (!secure || response_url.scheme() != "https") {
         return None;
     }
-    if name.starts_with("__Host-")
-        && (!secure || response_url.scheme() != "https" || path != "/")
-    {
+    if name.starts_with("__Host-") && (!secure || response_url.scheme() != "https" || path != "/") {
         return None;
     }
 
@@ -1206,7 +1230,8 @@ impl CorsPreflightCache {
     }
 
     fn insert(&mut self, key: CorsPreflightCacheKey, expires_at: Instant) {
-        self.entries.retain(|_, entry| entry.expires_at > Instant::now());
+        self.entries
+            .retain(|_, entry| entry.expires_at > Instant::now());
         self.clock = self.clock.saturating_add(1);
 
         if !self.entries.contains_key(&key)
@@ -1396,7 +1421,10 @@ impl CorsSafelistedResponseHeaders {
     /// No raw HTTP header map crosses this boundary.
     #[must_use]
     pub fn into_pairs(&self) -> Vec<(String, String)> {
-        self.values.iter().map(|(name, value)| (name.clone(), value.clone())).collect()
+        self.values
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
     }
 
     /// Number of admitted safelisted response headers.
@@ -2033,11 +2061,11 @@ fn enforce_subresource_policy(
 }
 
 // PHANTOM_2N8_CORS_REDIRECT_ADMISSION_I
-fn joined_response_header(
-    headers: &ureq::http::HeaderMap,
-    name: &str,
-) -> Option<String> {
-    let mut values = headers.get_all(name).iter().filter_map(|value| value.to_str().ok());
+fn joined_response_header(headers: &ureq::http::HeaderMap, name: &str) -> Option<String> {
+    let mut values = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok());
     values.next().map(|first| {
         let mut joined = first.to_owned();
         for value in values {
@@ -2094,9 +2122,7 @@ fn cors_credentialed_response_admits(
     exact_origin && credentials
 }
 
-fn bounded_set_cookie_fields(
-    headers: &ureq::http::HeaderMap,
-) -> Result<Vec<String>, NetworkError> {
+fn bounded_set_cookie_fields(headers: &ureq::http::HeaderMap) -> Result<Vec<String>, NetworkError> {
     let mut fields = Vec::new();
     let mut total_bytes = 0_usize;
 
@@ -2395,12 +2421,7 @@ impl NetworkClient {
         self.cookie_store
             .lock()
             .map_err(|_| NetworkError::Request("cookie store lock poisoned".to_owned()))?
-            .cookie_header(
-                &isolation_key,
-                request_url,
-                site_context,
-                Instant::now(),
-            )
+            .cookie_header(&isolation_key, request_url, site_context, Instant::now())
     }
 
     /// Fetches an HTTP(S) document using normal navigation cache semantics.
@@ -2541,19 +2562,13 @@ impl NetworkClient {
                     "CORS request rejected forbidden author header".to_owned(),
                 ));
             }
-            CorsRequestClassification::Simple
-            | CorsRequestClassification::PreflightRequired => {}
+            CorsRequestClassification::Simple | CorsRequestClassification::PreflightRequired => {}
         }
 
         let resource_url = HttpUrl::parse(input)?;
         let cross_origin = !resource_url.same_origin(document_url);
         if cross_origin {
-            self.ensure_cors_preflight(
-                resource_url.as_str(),
-                document_url,
-                "GET",
-                author_headers,
-            )?;
+            self.ensure_cors_preflight(resource_url.as_str(), document_url, "GET", author_headers)?;
         }
 
         let result = self.fetch_text_with_policy(
@@ -2587,10 +2602,7 @@ impl NetworkClient {
         let final_url = HttpUrl::parse(response.final_url())?;
         if cors_final_origin_needs_admission(document_url, &final_url) {
             let request_origin = document_url.origin();
-            if !cors_allow_origin_admits(
-                &request_origin,
-                response.access_control_allow_origin(),
-            ) {
+            if !cors_allow_origin_admits(&request_origin, response.access_control_allow_origin()) {
                 self.clear_cors_preflight_for(document_url, &resource_url)?;
                 return Err(NetworkError::Request(
                     "CORS final response denied request origin".to_owned(),
@@ -2689,10 +2701,7 @@ impl NetworkClient {
         let final_url = HttpUrl::parse(response.final_url())?;
         if cors_final_origin_needs_admission(document_url, &final_url) {
             let request_origin = document_url.origin();
-            if !cors_allow_origin_admits(
-                &request_origin,
-                response.access_control_allow_origin(),
-            ) {
+            if !cors_allow_origin_admits(&request_origin, response.access_control_allow_origin()) {
                 self.clear_cors_preflight_for(document_url, &resource_url)?;
                 return Err(NetworkError::Request(
                     "CORS body response denied request origin".to_owned(),
@@ -3112,7 +3121,10 @@ impl NetworkClient {
 
         let mut current_url = HttpUrl::parse(input)?;
         if let Some(document) = document_url {
-            enforce_subresource_policy(&NetworkIsolationKey::from_top_level(document), &current_url)?;
+            enforce_subresource_policy(
+                &NetworkIsolationKey::from_top_level(document),
+                &current_url,
+            )?;
         }
         if cross_origin_mode == TextCrossOriginMode::Block
             && document_url.is_some_and(|document| !current_url.same_origin(document))
@@ -3144,11 +3156,7 @@ impl NetworkClient {
             let cache_key = cors_request_origin.as_ref().map_or_else(
                 || PartitionedCacheKey::new(&isolation_key, current_url.as_str()),
                 |origin| {
-                    PartitionedCacheKey::new_cors(
-                        &isolation_key,
-                        current_url.as_str(),
-                        origin,
-                    )
+                    PartitionedCacheKey::new_cors(&isolation_key, current_url.as_str(), origin)
                 },
             );
             let cached = if cache_enabled {
@@ -3304,7 +3312,10 @@ impl NetworkClient {
 
                 let next_url = current_url.resolve(location)?;
                 if let Some(document) = document_url {
-                    enforce_subresource_policy(&NetworkIsolationKey::from_top_level(document), &next_url)?;
+                    enforce_subresource_policy(
+                        &NetworkIsolationKey::from_top_level(document),
+                        &next_url,
+                    )?;
                 }
                 if cross_origin_mode == TextCrossOriginMode::Block
                     && document_url.is_some_and(|document| !next_url.same_origin(document))
@@ -3327,7 +3338,10 @@ impl NetworkClient {
 
             let final_url = HttpUrl::parse(&response.get_uri().to_string())?;
             if let Some(document) = document_url {
-                enforce_subresource_policy(&NetworkIsolationKey::from_top_level(document), &final_url)?;
+                enforce_subresource_policy(
+                    &NetworkIsolationKey::from_top_level(document),
+                    &final_url,
+                )?;
             }
             if cross_origin_mode == TextCrossOriginMode::Block
                 && document_url.is_some_and(|document| !final_url.same_origin(document))
@@ -3399,7 +3413,9 @@ impl NetworkClient {
                 let mut refreshed_cors_safelisted_response_headers =
                     existing.cors_safelisted_response_headers.clone();
                 for (name, value) in cors_safelisted_response_headers.values {
-                    refreshed_cors_safelisted_response_headers.values.insert(name, value);
+                    refreshed_cors_safelisted_response_headers
+                        .values
+                        .insert(name, value);
                 }
 
                 let refreshed = CachedTextResponse {
@@ -4183,29 +4199,21 @@ pub enum NetworkError {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachePolicy, CacheStatus, CorsSafelistedResponseHeaders, HttpUrl, NetworkClient,
-        NetworkIsolationKey, OriginScheme, TextResponse, UrlError, admit_document, cache_policy,
-        enforce_navigation_redirect_policy,
+        CachePolicy, CacheStatus, CookieSiteContext, CookieStoreOutcome, CorsBodyMethod,
+        CorsRequestClassification, CorsSafelistedResponseHeaders, CredentialsMode, HttpUrl,
+        MAX_CORS_REQUEST_BODY_BYTES, NetworkClient, NetworkIsolationKey, OriginScheme,
+        TextResponse, UrlError, admit_document, cache_policy, classify_cors_request,
+        comma_list_contains_token_for_credentials, cors_credentialed_response_admits,
+        cors_preflight_allows_headers_for_credentials, enforce_navigation_redirect_policy,
         host_is_private_namespace, is_public_network_ip, navigation_allows_private_network,
         trim_http_quotes, vary_allows_fixed_accept_request,
-        CookieSiteContext,
-        CookieStoreOutcome,
-        CredentialsMode,
-        CorsBodyMethod,
-        CorsRequestClassification,
-        MAX_CORS_REQUEST_BODY_BYTES,
-        classify_cors_request,
-        comma_list_contains_token_for_credentials,
-        cors_credentialed_response_admits,
-        cors_preflight_allows_headers_for_credentials,
     };
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     // PHANTOM_2N20_FINAL_SECURITY_INTEGRATION_GATE
     #[test]
-    fn integrated_final_origin_cors_matrix_2n20()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn integrated_final_origin_cors_matrix_2n20() -> Result<(), Box<dyn std::error::Error>> {
         let page = HttpUrl::parse("https://app.example.test/index.html")?;
         let request_origin = page.origin();
         for target in [
@@ -4217,34 +4225,49 @@ mod tests {
             assert!(super::cors_final_origin_needs_admission(&page, &final_url));
             assert!(!super::cors_allow_origin_admits(&request_origin, None));
             assert!(!super::cors_credentialed_response_admits(
-                &request_origin, Some("*"), Some("true"),
+                &request_origin,
+                Some("*"),
+                Some("true"),
             ));
             assert!(!super::cors_credentialed_response_admits(
-                &request_origin, Some("https://app.example.test"), None,
+                &request_origin,
+                Some("https://app.example.test"),
+                None,
             ));
         }
         let same = HttpUrl::parse("https://app.example.test/other")?;
         assert!(!super::cors_final_origin_needs_admission(&page, &same));
         assert!(super::cors_credentialed_response_admits(
-            &request_origin, Some("https://app.example.test"), Some("true"),
+            &request_origin,
+            Some("https://app.example.test"),
+            Some("true"),
         ));
         Ok(())
     }
 
     #[test]
-    fn integrated_response_origin_isolation_2n20()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn integrated_response_origin_isolation_2n20() -> Result<(), Box<dyn std::error::Error>> {
         let page = HttpUrl::parse("https://app.example.test/")?;
         let original = page.origin();
         let other = HttpUrl::parse("https://other.example.test/")?.origin();
-        assert!(!super::cors_allow_origin_admits(&original, Some("https://other.example.test")));
-        assert!(!super::cors_credentialed_response_admits(
-            &original, Some("https://other.example.test"), Some("true"),
+        assert!(!super::cors_allow_origin_admits(
+            &original,
+            Some("https://other.example.test")
         ));
         assert!(!super::cors_credentialed_response_admits(
-            &other, Some("https://app.example.test"), Some("true"),
+            &original,
+            Some("https://other.example.test"),
+            Some("true"),
         ));
-        assert!(super::cors_allow_origin_admits(&original, Some("https://app.example.test")));
+        assert!(!super::cors_credentialed_response_admits(
+            &other,
+            Some("https://app.example.test"),
+            Some("true"),
+        ));
+        assert!(super::cors_allow_origin_admits(
+            &original,
+            Some("https://app.example.test")
+        ));
         Ok(())
     }
 
@@ -4257,8 +4280,13 @@ mod tests {
         let different = HttpUrl::parse("https://api.example.test/data")?;
         let downgraded = HttpUrl::parse("http://app.example.test/data")?;
         assert!(!super::cors_final_origin_needs_admission(&document, &same));
-        assert!(super::cors_final_origin_needs_admission(&document, &different));
-        assert!(super::cors_final_origin_needs_admission(&document, &downgraded));
+        assert!(super::cors_final_origin_needs_admission(
+            &document, &different
+        ));
+        assert!(super::cors_final_origin_needs_admission(
+            &document,
+            &downgraded
+        ));
         let request_origin = document.origin();
         assert!(!super::cors_allow_origin_admits(&request_origin, None));
         assert!(super::cors_allow_origin_admits(
@@ -4281,11 +4309,18 @@ mod tests {
         let key = NetworkIsolationKey::from_top_level(&secure_document);
         let cdn = HttpUrl::parse("https://cdn.example.test/app.js")?;
         assert!(super::enforce_subresource_policy(&key, &cdn).is_ok());
-        let mixed = client.fetch_text_classic_script("http://cdn.example.test/app.js", &secure_document);
-        assert!(matches!(mixed, Err(super::NetworkError::MixedContentBlocked { .. })));
+        let mixed =
+            client.fetch_text_classic_script("http://cdn.example.test/app.js", &secure_document);
+        assert!(matches!(
+            mixed,
+            Err(super::NetworkError::MixedContentBlocked { .. })
+        ));
         let public_document = HttpUrl::parse("http://example.test/page")?;
         let private = client.fetch_text_classic_script("http://127.0.0.1/app.js", &public_document);
-        assert!(matches!(private, Err(super::NetworkError::PrivateNetworkBlocked { .. })));
+        assert!(matches!(
+            private,
+            Err(super::NetworkError::PrivateNetworkBlocked { .. })
+        ));
         Ok(())
     }
 
@@ -4323,15 +4358,17 @@ mod tests {
         let document = HttpUrl::parse("https://app.example.test/page")?;
         let client = NetworkClient::new();
         let oversized = vec![b'x'; MAX_CORS_REQUEST_BODY_BYTES + 1];
-        assert!(client
-            .fetch_text_cors_with_body(
-                "https://api.example.test/items",
-                &document,
-                CorsBodyMethod::Post,
-                &[("Content-Type", "application/json")],
-                &oversized,
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_with_body(
+                    "https://api.example.test/items",
+                    &document,
+                    CorsBodyMethod::Post,
+                    &[("Content-Type", "application/json")],
+                    &oversized,
+                )
+                .is_err()
+        );
         Ok(())
     }
 
@@ -4346,7 +4383,11 @@ mod tests {
             Some("https://app.example.test"),
             Some("true"),
         ));
-        assert!(!cors_credentialed_response_admits(&origin, Some("*"), Some("true")));
+        assert!(!cors_credentialed_response_admits(
+            &origin,
+            Some("*"),
+            Some("true")
+        ));
         assert!(!cors_credentialed_response_admits(
             &origin,
             Some("https://app.example.test"),
@@ -4385,20 +4426,24 @@ mod tests {
 
     // PHANTOM_2N13_CREDENTIALS_COOKIE_FOUNDATION_I
     #[test]
-    fn credentials_modes_gate_request_and_response_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn credentials_modes_gate_request_and_response_state() -> Result<(), Box<dyn std::error::Error>>
+    {
         let document = HttpUrl::parse("https://app.example.test/page")?;
         let same_origin = HttpUrl::parse("https://app.example.test/api")?;
         let cross_origin = HttpUrl::parse("https://api.example.test/data")?;
 
         assert!(!CredentialsMode::Omit.includes_request_credentials(&document, &same_origin));
         assert!(CredentialsMode::SameOrigin.includes_request_credentials(&document, &same_origin));
-        assert!(!CredentialsMode::SameOrigin.includes_request_credentials(&document, &cross_origin));
+        assert!(
+            !CredentialsMode::SameOrigin.includes_request_credentials(&document, &cross_origin)
+        );
         assert!(CredentialsMode::Include.includes_request_credentials(&document, &cross_origin));
 
         assert!(!CredentialsMode::Omit.accepts_response_credentials(&document, &same_origin));
         assert!(CredentialsMode::SameOrigin.accepts_response_credentials(&document, &same_origin));
-        assert!(!CredentialsMode::SameOrigin.accepts_response_credentials(&document, &cross_origin));
+        assert!(
+            !CredentialsMode::SameOrigin.accepts_response_credentials(&document, &cross_origin)
+        );
         assert!(CredentialsMode::Include.accepts_response_credentials(&document, &cross_origin));
         Ok(())
     }
@@ -4532,7 +4577,9 @@ mod tests {
                 CredentialsMode::Include,
                 CookieSiteContext::SameSite,
             )?
-            .ok_or(std::io::Error::other("expected cookie header after deletion"))?;
+            .ok_or(std::io::Error::other(
+                "expected cookie header after deletion",
+            ))?;
         assert!(!header.contains("lax="));
 
         let bounded = NetworkClient::with_cookie_store_limit(2);
@@ -4594,12 +4641,14 @@ mod tests {
             ("X-Phantom", "ok"),
             ("Accept", "text/plain"),
         ]));
-        assert!(!super::cors_author_headers_transport_safe(&[
-            ("Bad Header", "x"),
-        ]));
-        assert!(!super::cors_author_headers_transport_safe(&[
-            ("X-Phantom", "ok\r\nInjected: yes"),
-        ]));
+        assert!(!super::cors_author_headers_transport_safe(&[(
+            "Bad Header",
+            "x"
+        ),]));
+        assert!(!super::cors_author_headers_transport_safe(&[(
+            "X-Phantom",
+            "ok\r\nInjected: yes"
+        ),]));
     }
 
     // PHANTOM_2N11_CORS_PREFLIGHT_FOUNDATION_I
@@ -4617,7 +4666,10 @@ mod tests {
 
         assert!(super::comma_list_contains_token(Some("GET, PUT"), "PUT"));
         assert!(super::comma_list_contains_token(Some("*"), "PATCH"));
-        assert!(!super::comma_list_contains_token(Some("GET, POST"), "DELETE"));
+        assert!(!super::comma_list_contains_token(
+            Some("GET, POST"),
+            "DELETE"
+        ));
 
         assert!(super::cors_preflight_allows_headers(
             Some("Content-Type, X-Phantom"),
@@ -4793,9 +4845,8 @@ mod tests {
         assert_eq!(admitted.get("set-cookie"), None);
         assert_eq!(admitted.get("x-phantom-secret"), None);
 
-        let oversized = "x".repeat(
-            super::MAX_CORS_SAFELISTED_RESPONSE_HEADER_VALUE_BYTES.saturating_add(1),
-        );
+        let oversized =
+            "x".repeat(super::MAX_CORS_SAFELISTED_RESPONSE_HEADER_VALUE_BYTES.saturating_add(1));
         headers.insert("pragma", oversized.parse::<HeaderValue>()?);
         let bounded = super::cors_safelisted_response_headers(&headers);
         assert_eq!(bounded.get("pragma"), None);
@@ -4808,7 +4859,10 @@ mod tests {
         let client = NetworkClient::with_max_body_bytes(1024 * 1024);
         let document = HttpUrl::parse("https://example.test/page")?;
         let result = client.fetch_text_same_origin("https://other.test/data", &document);
-        assert!(matches!(result, Err(super::NetworkError::CrossOriginBlocked { .. })));
+        assert!(matches!(
+            result,
+            Err(super::NetworkError::CrossOriginBlocked { .. })
+        ));
         Ok(())
     }
 

@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn attrs(values: &[(&str, &str)]) -> BTreeMap<String, String> {
     values
@@ -18,9 +20,11 @@ fn element(
     parent: Option<u64>,
     connected: bool,
 ) -> Result<BrowserDomElementSnapshot, Box<dyn std::error::Error>> {
-    Ok(BrowserDomElementSnapshot::new(node_id, tag, attrs(attributes), "")?
-        .with_parent_node_id(parent)
-        .with_connected(connected))
+    Ok(
+        BrowserDomElementSnapshot::new(node_id, tag, attrs(attributes), "")?
+            .with_parent_node_id(parent)
+            .with_connected(connected),
+    )
 }
 
 fn selector_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
@@ -34,11 +38,21 @@ fn selector_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
     .with_dom_elements(vec![
         element(1, "html", &[("id", "html")], Some(99), true)?,
         element(2, "body", &[("id", "body")], Some(1), true)?,
-        element(3, "div", &[("id", "app"), ("class", "shell")], Some(2), true)?,
+        element(
+            3,
+            "div",
+            &[("id", "app"), ("class", "shell")],
+            Some(2),
+            true,
+        )?,
         element(
             4,
             "section",
-            &[("id", "primary"), ("class", "panel primary"), ("data-state", "ready")],
+            &[
+                ("id", "primary"),
+                ("class", "panel primary"),
+                ("data-state", "ready"),
+            ],
             Some(3),
             true,
         )?,
@@ -68,7 +82,13 @@ fn selector_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
             Some(4),
             true,
         )?,
-        element(8, "span", &[("id", "plain"), ("class", "label")], Some(7), true)?,
+        element(
+            8,
+            "span",
+            &[("id", "plain"), ("class", "label")],
+            Some(7),
+            true,
+        )?,
         element(
             9,
             "section",
@@ -83,7 +103,13 @@ fn selector_runtime() -> Result<Runtime, Box<dyn std::error::Error>> {
             Some(9),
             true,
         )?,
-        element(11, "span", &[("id", "detached"), ("class", "label")], None, false)?,
+        element(
+            11,
+            "span",
+            &[("id", "detached"), ("class", "label")],
+            None,
+            false,
+        )?,
     ])?;
     let mut runtime = Runtime::new();
     runtime.install_browser_host(&snapshot)?;
@@ -135,8 +161,8 @@ fn matches_and_closest_accept_compounds_chains_and_selector_lists()
 }
 
 #[test]
-fn unsupported_or_malformed_selector_syntax_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
+fn unsupported_or_malformed_selector_syntax_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+{
     for source in [
         "document.querySelector('div + span');",
         "document.querySelector('section:not(.x)');",

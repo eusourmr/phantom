@@ -5866,10 +5866,7 @@ mod tests {
         let mut external = BTreeMap::new();
         external.insert(first_link, "#target { color: green; }".to_owned());
         let styles = compute_styles_with_external_author_css_with_viewport(
-            &document,
-            &external,
-            1024.0,
-            768.0,
+            &document, &external, 1024.0, 768.0,
         );
         assert_eq!(
             styles.get(target).map(ComputedStyle::color),
@@ -5881,10 +5878,7 @@ mod tests {
             "#target { color: rgb(106, 27, 154); }".to_owned(),
         );
         let styles = compute_styles_with_external_author_css_with_viewport(
-            &document,
-            &external,
-            1024.0,
-            768.0,
+            &document, &external, 1024.0, 768.0,
         );
         assert_eq!(
             styles.get(target).map(ComputedStyle::color),

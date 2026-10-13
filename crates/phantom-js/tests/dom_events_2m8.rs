@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn runtime_with_target() -> Result<Runtime, Box<dyn std::error::Error>> {
     let target = BrowserDomElementSnapshot::new(
@@ -11,14 +13,8 @@ fn runtime_with_target() -> Result<Runtime, Box<dyn std::error::Error>> {
         BTreeMap::from([("id".to_owned(), "target".to_owned())]),
         "target",
     )?;
-    let snapshot = BrowserHostSnapshot::new(
-        "https://events.test/",
-        "Events",
-        800.0,
-        600.0,
-        1.0,
-    )?
-    .with_dom_elements(vec![target])?;
+    let snapshot = BrowserHostSnapshot::new("https://events.test/", "Events", 800.0, 600.0, 1.0)?
+        .with_dom_elements(vec![target])?;
     let mut runtime = Runtime::new();
     runtime.install_browser_host(&snapshot)?;
     Ok(runtime)
@@ -54,8 +50,7 @@ fn event_target_dispatch_orders_capture_then_bubble_and_binds_context()
 }
 
 #[test]
-fn event_listener_survives_successive_execute_calls()
--> Result<(), Box<dyn std::error::Error>> {
+fn event_listener_survives_successive_execute_calls() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_target()?;
     runtime.execute(
         "var node = document.getElementById('target'); \

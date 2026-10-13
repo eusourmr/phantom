@@ -2,9 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
-fn runtime_with_target(attributes: BTreeMap<String, String>) -> Result<Runtime, Box<dyn std::error::Error>> {
+fn runtime_with_target(
+    attributes: BTreeMap<String, String>,
+) -> Result<Runtime, Box<dyn std::error::Error>> {
     let target = BrowserDomElementSnapshot::new(1, "div", attributes, "target")?;
     let snapshot = BrowserHostSnapshot::new(
         "https://dom.test/dataset",
@@ -40,10 +44,8 @@ fn dataset_identity_camel_case_and_assignment_reflect_to_data_attributes()
 #[test]
 fn dataset_is_live_across_set_attribute_and_remove_attribute()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = runtime_with_target(BTreeMap::from([(
-        "id".to_owned(),
-        "target".to_owned(),
-    )]))?;
+    let mut runtime =
+        runtime_with_target(BTreeMap::from([("id".to_owned(), "target".to_owned())]))?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \
          var dataset = target.dataset; \
@@ -60,10 +62,8 @@ fn dataset_is_live_across_set_attribute_and_remove_attribute()
 #[test]
 fn toggle_attribute_supports_default_toggle_and_boolean_force()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = runtime_with_target(BTreeMap::from([(
-        "id".to_owned(),
-        "target".to_owned(),
-    )]))?;
+    let mut runtime =
+        runtime_with_target(BTreeMap::from([("id".to_owned(), "target".to_owned())]))?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \
          var first = target.toggleAttribute('data-enabled'); \
@@ -77,12 +77,10 @@ fn toggle_attribute_supports_default_toggle_and_boolean_force()
 }
 
 #[test]
-fn invalid_dataset_member_fails_before_attribute_mutation()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = runtime_with_target(BTreeMap::from([(
-        "id".to_owned(),
-        "target".to_owned(),
-    )]))?;
+fn invalid_dataset_member_fails_before_attribute_mutation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut runtime =
+        runtime_with_target(BTreeMap::from([("id".to_owned(), "target".to_owned())]))?;
     let error = runtime
         .execute(
             "var target = document.getElementById('target'); \
@@ -91,9 +89,8 @@ fn invalid_dataset_member_fails_before_attribute_mutation()
         .expect_err("Foundation I rejects dataset keys outside the bounded camelCase subset");
     assert_eq!(error.kind(), RuntimeErrorKind::InvalidPropertyKey);
 
-    let value = runtime.execute(
-        "document.getElementById('target').getAttribute('data-bad-key') === null;",
-    )?;
+    let value = runtime
+        .execute("document.getElementById('target').getAttribute('data-bad-key') === null;")?;
     assert_eq!(value, Value::Boolean(true));
     Ok(())
 }

@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use phantom_engine::{
-    Engine, FetchCredentialsMode, FetchHostRequest, ExternalStylesheetRequest, FormControlId, FormControlKind, FormSubmissionError,
-    ImageLoading, ObjectFit, ObjectPosition, PaintAttachment, PaintColor, PaintCommand,
-    PaintFontFamily, PaintFontStyle, PaintFontWeight, PaintList, PaintRect, PaintTextRange,
-    PageScriptTask, ResourcePriority,
+    Engine, ExternalStylesheetRequest, FetchCredentialsMode, FetchHostRequest, FormControlId,
+    FormControlKind, FormSubmissionError, ImageLoading, ObjectFit, ObjectPosition, PageScriptTask,
+    PaintAttachment, PaintColor, PaintCommand, PaintFontFamily, PaintFontStyle, PaintFontWeight,
+    PaintList, PaintRect, PaintTextRange, ResourcePriority,
 };
 use phantom_image::{
     AnimatedImageDecoder, AnimationDecodeLimits, AnimationLoopCount, DecodedAnimation,
@@ -32,8 +32,9 @@ use phantom_image::{
     RasterImageDecoder, image_is_animated,
 };
 use phantom_net::{
-    BinaryResponse, CookieSiteContext, CorsBodyMethod, CorsRequestClassification, DocumentLoadError, DocumentResponse, HttpUrl,
-    NetworkClient, NetworkError, NetworkIsolationKey, TextResponse, classify_cors_request,
+    BinaryResponse, CookieSiteContext, CorsBodyMethod, CorsRequestClassification,
+    DocumentLoadError, DocumentResponse, HttpUrl, NetworkClient, NetworkError, NetworkIsolationKey,
+    TextResponse, classify_cors_request,
 };
 const APP_NAME: &str = "Phantom";
 const APP_VERSION: &str = "0.0.1";
@@ -1816,8 +1817,7 @@ impl PhantomApp {
                             }
                         }
                         Err(error) => {
-                            self.tabs[active_index].status =
-                                format!("Link bloqueado · {error}");
+                            self.tabs[active_index].status = format!("Link bloqueado · {error}");
                         }
                     }
                 }
@@ -1830,8 +1830,7 @@ impl PhantomApp {
                 ui.ctx().pixels_per_point(),
             )
         {
-            self.tabs[active_index].status =
-                format!("Falha no click JavaScript nativo: {error}");
+            self.tabs[active_index].status = format!("Falha no click JavaScript nativo: {error}");
         }
     }
     fn floating_navigation(&mut self, context: &egui::Context) {
@@ -2405,10 +2404,7 @@ enum PageFetchCorsDecision {
     CorsRequired { request_origin: String },
 }
 
-fn classify_page_fetch_cors(
-    document_origin: &HttpUrl,
-    target: &HttpUrl,
-) -> PageFetchCorsDecision {
+fn classify_page_fetch_cors(document_origin: &HttpUrl, target: &HttpUrl) -> PageFetchCorsDecision {
     if target.same_origin(document_origin) {
         PageFetchCorsDecision::SameOrigin
     } else {
@@ -2422,19 +2418,16 @@ fn classify_page_fetch_cors(
 fn cors_simple_request_denial(method: &str, author_headers: &[(&str, &str)]) -> Option<String> {
     match classify_cors_request(method, author_headers) {
         CorsRequestClassification::Simple => None,
-        CorsRequestClassification::PreflightRequired => Some(
-            "CORS preflight required; OPTIONS transport is not enabled in 2N-10".to_owned(),
-        ),
+        CorsRequestClassification::PreflightRequired => {
+            Some("CORS preflight required; OPTIONS transport is not enabled in 2N-10".to_owned())
+        }
         CorsRequestClassification::Forbidden => {
             Some("CORS request rejected by forbidden method/header policy".to_owned())
         }
     }
 }
 
-fn cors_response_origin_denial(
-    request_origin: &str,
-    allow_origin: Option<&str>,
-) -> Option<String> {
+fn cors_response_origin_denial(request_origin: &str, allow_origin: Option<&str>) -> Option<String> {
     let admitted = allow_origin
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2477,10 +2470,8 @@ fn fetch_text_subresource(
         let final_url = HttpUrl::parse(response.final_url())?;
         if let PageFetchCorsDecision::CorsRequired { request_origin } =
             classify_page_fetch_cors(document_origin, &final_url)
-            && let Some(reason) = cors_response_origin_denial(
-                &request_origin,
-                response.access_control_allow_origin(),
-            )
+            && let Some(reason) =
+                cors_response_origin_denial(&request_origin, response.access_control_allow_origin())
         {
             return Err(NetworkError::Request(reason));
         }
@@ -2496,7 +2487,9 @@ fn fetch_structured_page_request(
     url: &HttpUrl,
     document_url: &HttpUrl,
 ) -> Result<TextResponse, NetworkError> {
-    let headers = request.headers().iter()
+    let headers = request
+        .headers()
+        .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect::<Vec<_>>();
     let credentials = request.credentials();
@@ -2508,19 +2501,24 @@ fn fetch_structured_page_request(
         && credentials == FetchCredentialsMode::SameOrigin
     {
         return fetch_text_subresource(
-            client, url, document_url, TextSubresourcePolicy::SameOriginFetch,
+            client,
+            url,
+            document_url,
+            TextSubresourcePolicy::SameOriginFetch,
         );
     }
     if request.method() == "GET" {
         return match credentials {
-            FetchCredentialsMode::Omit => client.fetch_text_cors_get_with_headers(
-                url.as_str(), document_url, &headers,
-            ),
+            FetchCredentialsMode::Omit => {
+                client.fetch_text_cors_get_with_headers(url.as_str(), document_url, &headers)
+            }
             FetchCredentialsMode::SameOrigin | FetchCredentialsMode::Include => {
                 let same_origin = url.same_origin(document_url);
                 if credentials == FetchCredentialsMode::SameOrigin && !same_origin {
                     return client.fetch_text_cors_get_with_headers(
-                        url.as_str(), document_url, &headers,
+                        url.as_str(),
+                        document_url,
+                        &headers,
                     );
                 }
                 // Tuple-origin equivalence is enough to prove same-site,
@@ -2531,7 +2529,10 @@ fn fetch_structured_page_request(
                     CookieSiteContext::CrossSite
                 };
                 client.fetch_text_cors_credentialed_get_with_headers(
-                    url.as_str(), document_url, &headers, site_context,
+                    url.as_str(),
+                    document_url,
+                    &headers,
+                    site_context,
                 )
             }
         };
@@ -2551,7 +2552,10 @@ fn fetch_structured_page_request(
         _ => return Err(NetworkError::Request("unsupported fetch method".to_owned())),
     };
     client.fetch_text_cors_with_body(
-        url.as_str(), document_url, method, &headers,
+        url.as_str(),
+        document_url,
+        method,
+        &headers,
         request.body().unwrap_or_default().as_bytes(),
     )
 }
@@ -2584,9 +2588,7 @@ fn skip_css_space_and_comments(source: &str, mut offset: usize) -> usize {
             && bytes[offset] == b'/'
             && bytes[offset + 1] == b'*'
         {
-            let Some(relative_end) = source
-                .get(offset + 2..)
-                .and_then(|tail| tail.find("*/"))
+            let Some(relative_end) = source.get(offset + 2..).and_then(|tail| tail.find("*/"))
             else {
                 return bytes.len();
             };
@@ -2617,10 +2619,7 @@ fn css_statement_end(source: &str, start: usize) -> Option<usize> {
             continue;
         }
 
-        if offset.saturating_add(1) < bytes.len()
-            && byte == b'/'
-            && bytes[offset + 1] == b'*'
-        {
+        if offset.saturating_add(1) < bytes.len() && byte == b'/' && bytes[offset + 1] == b'*' {
             let relative_end = source.get(offset + 2..)?.find("*/")?;
             offset = offset.saturating_add(2 + relative_end + 2);
             continue;
@@ -2661,7 +2660,10 @@ fn parse_css_quoted_prefix(input: &str) -> Option<(String, &str)> {
 
 fn parse_unconditional_css_import_href(statement: &str) -> Option<String> {
     let mut input = statement.trim();
-    if !input.get(..7).is_some_and(|value| value.eq_ignore_ascii_case("@import")) {
+    if !input
+        .get(..7)
+        .is_some_and(|value| value.eq_ignore_ascii_case("@import"))
+    {
         return None;
     }
     input = input.get(7..)?.trim_start();
@@ -2686,7 +2688,9 @@ fn parse_unconditional_css_import_href(statement: &str) -> Option<String> {
         } else {
             if raw_value.is_empty()
                 || raw_value.chars().any(char::is_whitespace)
-                || raw_value.chars().any(|character| matches!(character, '\'' | '"' | '(' | ')' | '\\'))
+                || raw_value
+                    .chars()
+                    .any(|character| matches!(character, '\'' | '"' | '(' | ')' | '\\'))
             {
                 return None;
             }
@@ -2774,10 +2778,18 @@ fn fetch_stylesheet_graph_node(
         };
     }
 
-    let response = match fetch_text_subresource(client, url, document_origin, TextSubresourcePolicy::Stylesheet) {
+    let response = match fetch_text_subresource(
+        client,
+        url,
+        document_origin,
+        TextSubresourcePolicy::Stylesheet,
+    ) {
         Ok(response)
             if (200..300).contains(&response.status())
-                && valid_stylesheet_mime(response.content_type()) => response,
+                && valid_stylesheet_mime(response.content_type()) =>
+        {
+            response
+        }
         Ok(_) | Err(_) => {
             return StylesheetGraphOutcome {
                 css: None,
@@ -2948,11 +2960,7 @@ fn finish_committed_document(
     start_image_loading(network, tab, &final_url, device_pixel_ratio);
 }
 
-fn start_external_stylesheets(
-    tab: &mut BrowserTab,
-    status_code: u16,
-    body_bytes: usize,
-) -> bool {
+fn start_external_stylesheets(tab: &mut BrowserTab, status_code: u16, body_bytes: usize) -> bool {
     let requests = tab.engine.external_stylesheet_requests();
     if requests.is_empty() {
         return false;
@@ -2994,7 +3002,9 @@ fn advance_external_stylesheet_sequence(
             sequence.active = None;
             sequence.failed = sequence.failed.saturating_add(result.failed);
             if let Some(css) = result.css {
-                sequence.loaded = sequence.loaded.saturating_add(result.loaded.saturating_sub(1));
+                sequence.loaded = sequence
+                    .loaded
+                    .saturating_add(result.loaded.saturating_sub(1));
                 match tab.engine.install_external_stylesheet(node_id, &css) {
                     Ok(()) => sequence.loaded = sequence.loaded.saturating_add(1),
                     Err(error) => {
@@ -3003,7 +3013,8 @@ fn advance_external_stylesheet_sequence(
                     }
                 }
             } else {
-                tab.status = "Stylesheet externo ou @import rejeitado por HTTP, MIME ou limite".to_owned();
+                tab.status =
+                    "Stylesheet externo ou @import rejeitado por HTTP, MIME ou limite".to_owned();
             }
         }
 
@@ -3093,7 +3104,10 @@ fn start_page_scripts(
     device_pixel_ratio: f32,
 ) -> Result<usize, phantom_engine::EngineError> {
     let tasks = tab.engine.page_script_tasks();
-    if !tasks.iter().any(|task| matches!(task, PageScriptTask::External(_))) {
+    if !tasks
+        .iter()
+        .any(|task| matches!(task, PageScriptTask::External(_)))
+    {
         return execute_committed_page_scripts(tab, document_url, device_pixel_ratio);
     }
     let mut sequence = PendingPageScripts {
@@ -3102,7 +3116,8 @@ fn start_page_scripts(
         external_receiver: None,
         external_count: 0,
     };
-    let executed = advance_page_script_sequence(tab, &mut sequence, document_url, device_pixel_ratio)?;
+    let executed =
+        advance_page_script_sequence(tab, &mut sequence, document_url, device_pixel_ratio)?;
     if !sequence.remaining.is_empty() || sequence.external_receiver.is_some() {
         tab.pending_page_scripts = Some(sequence);
     }
@@ -3128,9 +3143,9 @@ fn advance_page_script_sequence(
             sequence.external_receiver = None;
             match result {
                 Ok(response) => {
-                    let mime = response.content_type().map(|value| {
-                        value.split(';').next().unwrap_or_default().trim()
-                    });
+                    let mime = response
+                        .content_type()
+                        .map(|value| value.split(';').next().unwrap_or_default().trim());
                     let valid_mime = mime.is_none_or(|value| {
                         value.eq_ignore_ascii_case("text/javascript")
                             || value.eq_ignore_ascii_case("application/javascript")
@@ -3138,7 +3153,9 @@ fn advance_page_script_sequence(
                     });
                     if (200..300).contains(&response.status()) && valid_mime {
                         tab.engine.execute_javascript(
-                            response.body(), document_url, f64::from(device_pixel_ratio),
+                            response.body(),
+                            document_url,
+                            f64::from(device_pixel_ratio),
                         )?;
                         executed += 1;
                     } else {
@@ -3154,7 +3171,9 @@ fn advance_page_script_sequence(
         match task {
             PageScriptTask::Inline(source) => {
                 tab.engine.execute_javascript(
-                    &source, document_url, f64::from(device_pixel_ratio),
+                    &source,
+                    document_url,
+                    f64::from(device_pixel_ratio),
                 )?;
                 executed += 1;
             }
@@ -3210,7 +3229,9 @@ fn poll_pending_page_scripts(tab: &mut BrowserTab, device_pixel_ratio: f32) {
     match advance_page_script_sequence(tab, &mut sequence, &document_url, device_pixel_ratio) {
         Ok(executed) => {
             if executed > 0 {
-                tab.title = tab.engine.document_title()
+                tab.title = tab
+                    .engine
+                    .document_title()
                     .unwrap_or_else(|| title_from_url(&document_url));
             }
             if !sequence.remaining.is_empty() || sequence.external_receiver.is_some() {
@@ -3312,12 +3333,14 @@ fn pump_page_timers(tab: &mut BrowserTab, now: Instant, device_pixel_ratio: f32)
     if tab.engine.pending_javascript_timer_count() == 0 {
         return;
     }
-    let elapsed_ms = now.duration_since(previous_tick).as_millis().min(u128::from(u64::MAX)) as u64;
-    if let Err(error) = tab.engine.advance_javascript_time(
-        elapsed_ms,
-        &tab.address,
-        f64::from(device_pixel_ratio),
-    ) {
+    let elapsed_ms = now
+        .duration_since(previous_tick)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    if let Err(error) =
+        tab.engine
+            .advance_javascript_time(elapsed_ms, &tab.address, f64::from(device_pixel_ratio))
+    {
         tab.status = format!("Falha no timer da página: {error}");
         tab.javascript_timer_failed = true;
     }
@@ -3340,14 +3363,19 @@ fn poll_page_fetches(tab: &mut BrowserTab, device_pixel_ratio: f32) {
                 waiting.push(pending);
                 continue;
             }
-            Err(TryRecvError::Disconnected) => Err(NetworkError::Request("fetch worker stopped".to_owned())),
+            Err(TryRecvError::Disconnected) => {
+                Err(NetworkError::Request("fetch worker stopped".to_owned()))
+            }
         };
         let completion = match result {
             Ok(response) => tab.engine.complete_javascript_fetch_success_with_headers(
                 pending.request_id,
                 response.status(),
                 response.final_url(),
-                (response.body(), &response.cors_safelisted_response_headers().into_pairs()),
+                (
+                    response.body(),
+                    &response.cors_safelisted_response_headers().into_pairs(),
+                ),
                 &document_url,
                 f64::from(device_pixel_ratio),
             ),
@@ -3379,7 +3407,10 @@ fn poll_page_fetches(tab: &mut BrowserTab, device_pixel_ratio: f32) {
         };
         if let Some(reason) = denied {
             if let Err(error) = tab.engine.complete_javascript_fetch_failure(
-                request_id, &reason, &document_url, f64::from(device_pixel_ratio),
+                request_id,
+                &reason,
+                &document_url,
+                f64::from(device_pixel_ratio),
             ) {
                 tab.status = format!("Falha no fetch da página: {error}");
             }
@@ -3392,9 +3423,7 @@ fn poll_page_fetches(tab: &mut BrowserTab, device_pixel_ratio: f32) {
         let spawned = thread::Builder::new()
             .name("phantom-script-fetch".to_owned())
             .spawn(move || {
-                let result = fetch_structured_page_request(
-                    &client, &request, &url, &origin,
-                );
+                let result = fetch_structured_page_request(&client, &request, &url, &origin);
                 let _ = sender.send(result);
             });
         if spawned.is_ok() {
@@ -3405,7 +3434,10 @@ fn poll_page_fetches(tab: &mut BrowserTab, device_pixel_ratio: f32) {
                 receiver,
             });
         } else if let Err(error) = tab.engine.complete_javascript_fetch_failure(
-            request_id, "fetch worker unavailable", &document_url, f64::from(device_pixel_ratio),
+            request_id,
+            "fetch worker unavailable",
+            &document_url,
+            f64::from(device_pixel_ratio),
         ) {
             tab.status = format!("Falha no fetch da página: {error}");
         }
@@ -4982,9 +5014,13 @@ mod tests {
                 while !worker_stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            if let Ok(mut events) = worker_events.lock() { events.push("accepted".to_owned()); }
+                            if let Ok(mut events) = worker_events.lock() {
+                                events.push("accepted".to_owned());
+                            }
                             if let Err(error) = stream.set_nonblocking(false) {
-                                if let Ok(mut events) = worker_events.lock() { events.push(format!("blocking mode: {error}")); }
+                                if let Ok(mut events) = worker_events.lock() {
+                                    events.push(format!("blocking mode: {error}"));
+                                }
                                 continue;
                             }
                             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
@@ -4994,11 +5030,15 @@ mod tests {
                                 let read = match stream.read(&mut buffer) {
                                     Ok(read) => read,
                                     Err(error) => {
-                                        if let Ok(mut events) = worker_events.lock() { events.push(format!("read: {error}")); }
+                                        if let Ok(mut events) = worker_events.lock() {
+                                            events.push(format!("read: {error}"));
+                                        }
                                         break;
                                     }
                                 };
-                                if read == 0 { break; }
+                                if read == 0 {
+                                    break;
+                                }
                                 request_bytes.extend_from_slice(&buffer[..read]);
                                 if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
                                     break;
@@ -5006,116 +5046,490 @@ mod tests {
                             }
                             let request = String::from_utf8_lossy(&request_bytes);
                             let path = request.split_whitespace().nth(1).unwrap_or_default();
-                            if let Ok(mut events) = worker_events.lock() { events.push(format!("request: {path}; bytes={}", request_bytes.len())); }
-                            if path == "/slow.txt" { thread::sleep(Duration::from_millis(150)); }
-                            if path == "/lifecycle-old-data.txt" { thread::sleep(Duration::from_millis(600)); }
-                            if path.starts_with("/stress-data-") { thread::sleep(Duration::from_millis(12)); }
+                            if let Ok(mut events) = worker_events.lock() {
+                                events.push(format!(
+                                    "request: {path}; bytes={}",
+                                    request_bytes.len()
+                                ));
+                            }
+                            if path == "/slow.txt" {
+                                thread::sleep(Duration::from_millis(150));
+                            }
+                            if path == "/lifecycle-old-data.txt" {
+                                thread::sleep(Duration::from_millis(600));
+                            }
+                            if path.starts_with("/stress-data-") {
+                                thread::sleep(Duration::from_millis(12));
+                            }
                             let (status, mime, body) = match path {
-                                "/static.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l7/static.html")),
-                                "/external.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l7/external.html")),
-                                "/async.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l7/async.html")),
-                                "/app.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2l7/app.js")),
-                                "/data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l7/data.txt")),
-                                "/slow.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l8/slow.html")),
-                                "/slow.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l8/slow.txt")),
-                                "/dynamic.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l9/dynamic.html")),
-                                "/integrated.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l10/integrated.html")),
-                                "/integrated-app.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2l10/integrated-app.js")),
-                                "/integrated-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l10/integrated-data.txt")),
-                                "/recovery.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l11/recovery.html")),
-                                "/recovery-app.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2l11/recovery-app.js")),
-                                "/recovery-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l11/recovery-data.txt")),
-                                "/lifecycle-old.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l12/lifecycle-old.html")),
-                                "/lifecycle-old-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l12/lifecycle-old-data.txt")),
-                                "/lifecycle-new.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l12/lifecycle-new.html")),
-                                "/lifecycle-new.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2l12/lifecycle-new.js")),
-                                "/lifecycle-new-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l12/lifecycle-new-data.txt")),
-                                "/stress-a.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l13/stress-a.html")),
-                                "/stress-b.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l13/stress-b.html")),
-                                "/stress-c.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2l13/stress-c.html")),
-                                "/stress-runtime.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2l13/stress-runtime.js")),
-                                "/stress-data-1.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-1.txt")),
-                                "/stress-data-2.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-2.txt")),
-                                "/stress-data-3.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-3.txt")),
-                                "/stress-data-4.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-4.txt")),
-                                "/stress-data-5.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-5.txt")),
-                                "/stress-data-6.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-6.txt")),
-                                "/stress-data-7.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2l13/stress-data-7.txt")),
-                                "/promise-assimilation.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m1/promise-assimilation.html")),
-                                "/promise-assimilation.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m1/promise-assimilation.js")),
-                                "/promise-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2m1/promise-data.txt")),
-                                "/promise-resolution.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m2/promise-resolution.html")),
-                                "/promise-resolution.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m2/promise-resolution.js")),
-                                "/promise-first.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2m2/promise-first.txt")),
-                                "/promise-second.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2m2/promise-second.txt")),
-                                "/promise-cycle.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m3/promise-cycle.html")),
-                                "/promise-cycle.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m3/promise-cycle.js")),
-                                "/thenable-assimilation.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m4/thenable-assimilation.html")),
-                                "/thenable-assimilation.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m4/thenable-assimilation.js")),
-                                "/thenable-resolution.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m5/thenable-resolution.html")),
-                                "/thenable-resolution.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m5/thenable-resolution.js")),
-                                "/promise-final.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m6/promise-final.html")),
-                                "/promise-final.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m6/promise-final.js")),
-                                "/promise-final-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2m6/promise-final-data.txt")),
-                                "/function-context.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m7/function-context.html")),
-                                "/function-context.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m7/function-context.js")),
-                                "/event-target.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m8/event-target.html")),
-                                "/event-target.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m8/event-target.js")),
-                                "/event-propagation.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m9/event-propagation.html")),
-                                "/event-propagation.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m9/event-propagation.js")),
-                                "/event-control.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m10/event-control.html")),
-                                "/event-control.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m10/event-control.js")),
-                                "/event-listeners.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m11/event-listeners.html")),
-                                "/event-listeners.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m11/event-listeners.js")),
-                                "/classlist.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m12/classlist.html")),
-                                "/classlist.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m12/classlist.js")),
-                                "/style.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m13/style.html")),
-                                "/style.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m13/style.js")),
-                                "/dataset.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m14/dataset.html")),
-                                "/dataset.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m14/dataset.js")),
-                                "/reflection.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m15/reflection.html")),
-                                "/reflection.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m15/reflection.js")),
-                                "/builtins.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m16/builtins.html")),
-                                "/builtins.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m16/builtins.js")),
-                                "/core-library.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m17/core-library.html")),
-                                "/core-library.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m17/core-library.js")),
-                                "/core-library-iii.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m18/core-library-iii.html")),
-                                "/core-library-iii.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m18/core-library-iii.js")),
-                                "/core-library-final.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m19/core-library-final.html")),
-                                "/core-library-final.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m19/core-library-final.js")),
-                                "/dom-tree.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m20/dom-tree.html")),
-                                "/dom-tree.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m20/dom-tree.js")),
-                                "/dom-selectors.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m21/dom-selectors.html")),
-                                "/dom-selectors.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m21/dom-selectors.js")),
-                                "/dom-mutations.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m22/dom-mutations.html")),
-                                "/dom-mutations.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m22/dom-mutations.js")),
-                                "/html-elements.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m23/html-elements.html")),
-                                "/html-elements.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m23/html-elements.js")),
-                                "/native-interaction.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m24/native-interaction.html")),
-                                "/native-interaction.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m24/native-interaction.js")),
-                                "/web-compat-final.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m25/web-compat-final.html")),
-                                "/web-compat-final.js" => ("200 OK", "text/javascript", include_str!("../tests/fixtures/2m25/web-compat-final.js")),
-                                "/web-compat-final-data.txt" => ("200 OK", "text/plain", include_str!("../tests/fixtures/2m25/web-compat-final-data.txt")),
-                                "/web-compat-final-target.html" => ("200 OK", "text/html", include_str!("../tests/fixtures/2m25/web-compat-final-target.html")),
+                                "/static.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l7/static.html"),
+                                ),
+                                "/external.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l7/external.html"),
+                                ),
+                                "/async.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l7/async.html"),
+                                ),
+                                "/app.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2l7/app.js"),
+                                ),
+                                "/data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l7/data.txt"),
+                                ),
+                                "/slow.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l8/slow.html"),
+                                ),
+                                "/slow.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l8/slow.txt"),
+                                ),
+                                "/dynamic.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l9/dynamic.html"),
+                                ),
+                                "/integrated.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l10/integrated.html"),
+                                ),
+                                "/integrated-app.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2l10/integrated-app.js"),
+                                ),
+                                "/integrated-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l10/integrated-data.txt"),
+                                ),
+                                "/recovery.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l11/recovery.html"),
+                                ),
+                                "/recovery-app.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2l11/recovery-app.js"),
+                                ),
+                                "/recovery-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l11/recovery-data.txt"),
+                                ),
+                                "/lifecycle-old.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l12/lifecycle-old.html"),
+                                ),
+                                "/lifecycle-old-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l12/lifecycle-old-data.txt"),
+                                ),
+                                "/lifecycle-new.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l12/lifecycle-new.html"),
+                                ),
+                                "/lifecycle-new.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2l12/lifecycle-new.js"),
+                                ),
+                                "/lifecycle-new-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l12/lifecycle-new-data.txt"),
+                                ),
+                                "/stress-a.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l13/stress-a.html"),
+                                ),
+                                "/stress-b.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l13/stress-b.html"),
+                                ),
+                                "/stress-c.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2l13/stress-c.html"),
+                                ),
+                                "/stress-runtime.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2l13/stress-runtime.js"),
+                                ),
+                                "/stress-data-1.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-1.txt"),
+                                ),
+                                "/stress-data-2.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-2.txt"),
+                                ),
+                                "/stress-data-3.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-3.txt"),
+                                ),
+                                "/stress-data-4.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-4.txt"),
+                                ),
+                                "/stress-data-5.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-5.txt"),
+                                ),
+                                "/stress-data-6.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-6.txt"),
+                                ),
+                                "/stress-data-7.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2l13/stress-data-7.txt"),
+                                ),
+                                "/promise-assimilation.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m1/promise-assimilation.html"),
+                                ),
+                                "/promise-assimilation.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m1/promise-assimilation.js"),
+                                ),
+                                "/promise-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2m1/promise-data.txt"),
+                                ),
+                                "/promise-resolution.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m2/promise-resolution.html"),
+                                ),
+                                "/promise-resolution.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m2/promise-resolution.js"),
+                                ),
+                                "/promise-first.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2m2/promise-first.txt"),
+                                ),
+                                "/promise-second.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2m2/promise-second.txt"),
+                                ),
+                                "/promise-cycle.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m3/promise-cycle.html"),
+                                ),
+                                "/promise-cycle.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m3/promise-cycle.js"),
+                                ),
+                                "/thenable-assimilation.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!(
+                                        "../tests/fixtures/2m4/thenable-assimilation.html"
+                                    ),
+                                ),
+                                "/thenable-assimilation.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m4/thenable-assimilation.js"),
+                                ),
+                                "/thenable-resolution.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m5/thenable-resolution.html"),
+                                ),
+                                "/thenable-resolution.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m5/thenable-resolution.js"),
+                                ),
+                                "/promise-final.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m6/promise-final.html"),
+                                ),
+                                "/promise-final.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m6/promise-final.js"),
+                                ),
+                                "/promise-final-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!("../tests/fixtures/2m6/promise-final-data.txt"),
+                                ),
+                                "/function-context.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m7/function-context.html"),
+                                ),
+                                "/function-context.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m7/function-context.js"),
+                                ),
+                                "/event-target.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m8/event-target.html"),
+                                ),
+                                "/event-target.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m8/event-target.js"),
+                                ),
+                                "/event-propagation.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m9/event-propagation.html"),
+                                ),
+                                "/event-propagation.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m9/event-propagation.js"),
+                                ),
+                                "/event-control.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m10/event-control.html"),
+                                ),
+                                "/event-control.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m10/event-control.js"),
+                                ),
+                                "/event-listeners.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m11/event-listeners.html"),
+                                ),
+                                "/event-listeners.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m11/event-listeners.js"),
+                                ),
+                                "/classlist.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m12/classlist.html"),
+                                ),
+                                "/classlist.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m12/classlist.js"),
+                                ),
+                                "/style.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m13/style.html"),
+                                ),
+                                "/style.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m13/style.js"),
+                                ),
+                                "/dataset.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m14/dataset.html"),
+                                ),
+                                "/dataset.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m14/dataset.js"),
+                                ),
+                                "/reflection.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m15/reflection.html"),
+                                ),
+                                "/reflection.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m15/reflection.js"),
+                                ),
+                                "/builtins.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m16/builtins.html"),
+                                ),
+                                "/builtins.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m16/builtins.js"),
+                                ),
+                                "/core-library.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m17/core-library.html"),
+                                ),
+                                "/core-library.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m17/core-library.js"),
+                                ),
+                                "/core-library-iii.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m18/core-library-iii.html"),
+                                ),
+                                "/core-library-iii.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m18/core-library-iii.js"),
+                                ),
+                                "/core-library-final.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m19/core-library-final.html"),
+                                ),
+                                "/core-library-final.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m19/core-library-final.js"),
+                                ),
+                                "/dom-tree.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m20/dom-tree.html"),
+                                ),
+                                "/dom-tree.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m20/dom-tree.js"),
+                                ),
+                                "/dom-selectors.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m21/dom-selectors.html"),
+                                ),
+                                "/dom-selectors.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m21/dom-selectors.js"),
+                                ),
+                                "/dom-mutations.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m22/dom-mutations.html"),
+                                ),
+                                "/dom-mutations.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m22/dom-mutations.js"),
+                                ),
+                                "/html-elements.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m23/html-elements.html"),
+                                ),
+                                "/html-elements.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m23/html-elements.js"),
+                                ),
+                                "/native-interaction.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m24/native-interaction.html"),
+                                ),
+                                "/native-interaction.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m24/native-interaction.js"),
+                                ),
+                                "/web-compat-final.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!("../tests/fixtures/2m25/web-compat-final.html"),
+                                ),
+                                "/web-compat-final.js" => (
+                                    "200 OK",
+                                    "text/javascript",
+                                    include_str!("../tests/fixtures/2m25/web-compat-final.js"),
+                                ),
+                                "/web-compat-final-data.txt" => (
+                                    "200 OK",
+                                    "text/plain",
+                                    include_str!(
+                                        "../tests/fixtures/2m25/web-compat-final-data.txt"
+                                    ),
+                                ),
+                                "/web-compat-final-target.html" => (
+                                    "200 OK",
+                                    "text/html",
+                                    include_str!(
+                                        "../tests/fixtures/2m25/web-compat-final-target.html"
+                                    ),
+                                ),
                                 _ => ("404 Not Found", "text/plain", "missing"),
                             };
-                            let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {mime}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-                            let outcome = stream.write_all(headers.as_bytes())
+                            let headers = format!(
+                                "HTTP/1.1 {status}\r\nContent-Type: {mime}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let outcome = stream
+                                .write_all(headers.as_bytes())
                                 .and_then(|()| stream.write_all(body.as_bytes()))
                                 .and_then(|()| stream.flush());
-                            if let Ok(mut events) = worker_events.lock() { events.push(format!("response: {path}; {outcome:?}")); }
+                            if let Ok(mut events) = worker_events.lock() {
+                                events.push(format!("response: {path}; {outcome:?}"));
+                            }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(2));
                         }
                         Err(error) => {
-                            if let Ok(mut events) = worker_events.lock() { events.push(format!("accept: {error}")); }
+                            if let Ok(mut events) = worker_events.lock() {
+                                events.push(format!("accept: {error}"));
+                            }
                             break;
-                        },
+                        }
                     }
                 }
             });
-            Ok(Self { address, stop, events, worker: Some(worker) })
+            Ok(Self {
+                address,
+                stop,
+                events,
+                worker: Some(worker),
+            })
         }
     }
 
@@ -5201,12 +5615,9 @@ mod tests {
                                         "Content-Encoding: gzip\r\nCache-Control: no-cache\r\n",
                                         include_bytes!("../tests/fixtures/2n1/real-web.html.gz"),
                                     ),
-                                    "/2n1-missing.js" => (
-                                        "404 Not Found",
-                                        "text/javascript",
-                                        "",
-                                        b"missing",
-                                    ),
+                                    "/2n1-missing.js" => {
+                                        ("404 Not Found", "text/javascript", "", b"missing")
+                                    }
                                     "/2n1-deferred.js" => (
                                         "200 OK",
                                         "text/javascript",
@@ -5219,12 +5630,7 @@ mod tests {
                                         "Cache-Control: max-age=60\r\n",
                                         include_bytes!("../tests/fixtures/2n1/data.txt"),
                                     ),
-                                    _ => (
-                                        "404 Not Found",
-                                        "text/plain",
-                                        "",
-                                        b"missing",
-                                    ),
+                                    _ => ("404 Not Found", "text/plain", "", b"missing"),
                                 };
 
                             let headers = format!(
@@ -5328,14 +5734,13 @@ mod tests {
                                         "200 OK",
                                         "text/html",
                                         "Cache-Control: no-cache\r\n",
-                                        include_bytes!("../tests/fixtures/2n2/external-styles.html"),
+                                        include_bytes!(
+                                            "../tests/fixtures/2n2/external-styles.html"
+                                        ),
                                     ),
-                                    "/2n2-missing.css" => (
-                                        "404 Not Found",
-                                        "text/css",
-                                        "",
-                                        b"missing",
-                                    ),
+                                    "/2n2-missing.css" => {
+                                        ("404 Not Found", "text/css", "", b"missing")
+                                    }
                                     "/2n2-redirect.css" => (
                                         "302 Found",
                                         "text/plain",
@@ -5366,12 +5771,7 @@ mod tests {
                                         "",
                                         b"must not be requested",
                                     ),
-                                    _ => (
-                                        "404 Not Found",
-                                        "text/plain",
-                                        "",
-                                        b"missing",
-                                    ),
+                                    _ => ("404 Not Found", "text/plain", "", b"missing"),
                                 };
 
                             let headers = format!(
@@ -5471,7 +5871,9 @@ mod tests {
                             if let Ok(mut events) = worker_events.lock() {
                                 events.push(format!("request: {path}"));
                                 if path == "/nested/deep/deep.css" && deep_revalidation {
-                                    events.push("revalidate: if-none-match=\"2n4-deep-v1\"".to_owned());
+                                    events.push(
+                                        "revalidate: if-none-match=\"2n4-deep-v1\"".to_owned(),
+                                    );
                                 }
                             }
 
@@ -5517,7 +5919,9 @@ mod tests {
                                         "200 OK",
                                         "text/css",
                                         "Content-Encoding: gzip\r\nCache-Control: no-cache\r\nETag: \"2n4-deep-v1\"\r\n",
-                                        include_bytes!("../tests/fixtures/2n4/nested/deep/deep.css.gz"),
+                                        include_bytes!(
+                                            "../tests/fixtures/2n4/nested/deep/deep.css.gz"
+                                        ),
                                     ),
                                     "/2n4-redirect.css" => (
                                         "302 Found",
@@ -5531,12 +5935,9 @@ mod tests {
                                         "Cache-Control: max-age=60\r\n",
                                         include_bytes!("../tests/fixtures/2n4/redirect-final.css"),
                                     ),
-                                    "/2n4-missing.css" => (
-                                        "404 Not Found",
-                                        "text/css",
-                                        "",
-                                        b"missing",
-                                    ),
+                                    "/2n4-missing.css" => {
+                                        ("404 Not Found", "text/css", "", b"missing")
+                                    }
                                     "/2n4-wrong.css" => (
                                         "200 OK",
                                         "text/plain",
@@ -5667,9 +6068,13 @@ mod tests {
                                         break;
                                     }
                                 };
-                                if read == 0 { break; }
+                                if read == 0 {
+                                    break;
+                                }
                                 request_bytes.extend_from_slice(&buffer[..read]);
-                                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") { break; }
+                                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
                             }
 
                             let request = String::from_utf8_lossy(&request_bytes);
@@ -5689,22 +6094,59 @@ mod tests {
                                 thread::sleep(Duration::from_millis(250));
                             }
 
-                            let (status, mime, extra_headers, body): (&str, &str, &str, &[u8]) = match path {
-                                "/2n3-cache.html" => ("200 OK", "text/html", "Cache-Control: no-store\r\n", include_bytes!("../tests/fixtures/2n3/cache.html")),
-                                "/2n3-cached.css" => ("200 OK", "text/css", "Cache-Control: max-age=60\r\n", include_bytes!("../tests/fixtures/2n3/cached.css")),
-                                "/2n3-revalidate.css" if revalidating => ("304 Not Modified", "text/css", "Cache-Control: no-cache\r\nETag: \"2n3-v1\"\r\n", b""),
-                                "/2n3-revalidate.css" => ("200 OK", "text/css", "Cache-Control: no-cache\r\nETag: \"2n3-v1\"\r\n", include_bytes!("../tests/fixtures/2n3/revalidate.css")),
-                                "/2n3-slow.html" => ("200 OK", "text/html", "Cache-Control: no-store\r\n", include_bytes!("../tests/fixtures/2n3/slow.html")),
-                                "/2n3-slow.css" => ("200 OK", "text/css", "Cache-Control: no-store\r\n", include_bytes!("../tests/fixtures/2n3/slow.css")),
-                                "/2n3-clean.html" => ("200 OK", "text/html", "Cache-Control: no-store\r\n", include_bytes!("../tests/fixtures/2n3/clean.html")),
-                                _ => ("404 Not Found", "text/plain", "", b"missing"),
-                            };
+                            let (status, mime, extra_headers, body): (&str, &str, &str, &[u8]) =
+                                match path {
+                                    "/2n3-cache.html" => (
+                                        "200 OK",
+                                        "text/html",
+                                        "Cache-Control: no-store\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/cache.html"),
+                                    ),
+                                    "/2n3-cached.css" => (
+                                        "200 OK",
+                                        "text/css",
+                                        "Cache-Control: max-age=60\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/cached.css"),
+                                    ),
+                                    "/2n3-revalidate.css" if revalidating => (
+                                        "304 Not Modified",
+                                        "text/css",
+                                        "Cache-Control: no-cache\r\nETag: \"2n3-v1\"\r\n",
+                                        b"",
+                                    ),
+                                    "/2n3-revalidate.css" => (
+                                        "200 OK",
+                                        "text/css",
+                                        "Cache-Control: no-cache\r\nETag: \"2n3-v1\"\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/revalidate.css"),
+                                    ),
+                                    "/2n3-slow.html" => (
+                                        "200 OK",
+                                        "text/html",
+                                        "Cache-Control: no-store\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/slow.html"),
+                                    ),
+                                    "/2n3-slow.css" => (
+                                        "200 OK",
+                                        "text/css",
+                                        "Cache-Control: no-store\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/slow.css"),
+                                    ),
+                                    "/2n3-clean.html" => (
+                                        "200 OK",
+                                        "text/html",
+                                        "Cache-Control: no-store\r\n",
+                                        include_bytes!("../tests/fixtures/2n3/clean.html"),
+                                    ),
+                                    _ => ("404 Not Found", "text/plain", "", b"missing"),
+                                };
 
                             let headers = format!(
                                 "HTTP/1.1 {status}\r\nContent-Type: {mime}; charset=utf-8\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
                                 body.len()
                             );
-                            let outcome = stream.write_all(headers.as_bytes())
+                            let outcome = stream
+                                .write_all(headers.as_bytes())
                                 .and_then(|()| stream.write_all(body))
                                 .and_then(|()| stream.flush());
                             if let Ok(mut events) = worker_events.lock() {
@@ -5719,14 +6161,21 @@ mod tests {
                 }
             });
 
-            Ok(Self { address, stop, events, worker: Some(worker) })
+            Ok(Self {
+                address,
+                stop,
+                events,
+                worker: Some(worker),
+            })
         }
     }
 
     impl Drop for StylesheetLifecycleServer {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
-            if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -5771,9 +6220,13 @@ mod tests {
                                         break;
                                     }
                                 };
-                                if read == 0 { break; }
+                                if read == 0 {
+                                    break;
+                                }
                                 request_bytes.extend_from_slice(&buffer[..read]);
-                                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") { break; }
+                                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
                             }
 
                             let request = String::from_utf8_lossy(&request_bytes);
@@ -5785,55 +6238,59 @@ mod tests {
                             if let Ok(mut events) = worker_events.lock() {
                                 events.push(format!("request: {path}"));
                                 if path == "/2n5-data.txt" && revalidating_data {
-                                    events.push("revalidate: if-none-match=\"2n5-data-v1\"".to_owned());
+                                    events.push(
+                                        "revalidate: if-none-match=\"2n5-data-v1\"".to_owned(),
+                                    );
                                 }
                             }
 
-                            let (status, mime, extra_headers, body): (&str, &str, &str, &[u8]) = match path {
-                                "/2n5-page.html" => (
-                                    "200 OK",
-                                    "text/html",
-                                    "Cache-Control: no-store\r\n",
-                                    include_bytes!("../tests/fixtures/2n5/policy.html"),
-                                ),
-                                "/2n5-policy.css" => (
-                                    "200 OK",
-                                    "text/css",
-                                    "Cache-Control: max-age=60\r\n",
-                                    include_bytes!("../tests/fixtures/2n5/policy.css"),
-                                ),
-                                "/2n5-policy.js" => (
-                                    "200 OK",
-                                    "text/javascript",
-                                    "Cache-Control: max-age=60\r\n",
-                                    include_bytes!("../tests/fixtures/2n5/policy.js"),
-                                ),
-                                "/2n5-data.txt" if revalidating_data => (
-                                    "304 Not Modified",
-                                    "text/plain",
-                                    "Cache-Control: no-cache\r\nETag: \"2n5-data-v1\"\r\n",
-                                    b"",
-                                ),
-                                "/2n5-data.txt" => (
-                                    "200 OK",
-                                    "text/plain",
-                                    "Cache-Control: no-cache\r\nETag: \"2n5-data-v1\"\r\n",
-                                    include_bytes!("../tests/fixtures/2n5/data.txt"),
-                                ),
-                                "/2n5-probe.txt" => (
-                                    "200 OK",
-                                    "text/plain",
-                                    "Cache-Control: no-store\r\n",
-                                    b"probe",
-                                ),
-                                _ => ("404 Not Found", "text/plain", "", b"missing"),
-                            };
+                            let (status, mime, extra_headers, body): (&str, &str, &str, &[u8]) =
+                                match path {
+                                    "/2n5-page.html" => (
+                                        "200 OK",
+                                        "text/html",
+                                        "Cache-Control: no-store\r\n",
+                                        include_bytes!("../tests/fixtures/2n5/policy.html"),
+                                    ),
+                                    "/2n5-policy.css" => (
+                                        "200 OK",
+                                        "text/css",
+                                        "Cache-Control: max-age=60\r\n",
+                                        include_bytes!("../tests/fixtures/2n5/policy.css"),
+                                    ),
+                                    "/2n5-policy.js" => (
+                                        "200 OK",
+                                        "text/javascript",
+                                        "Cache-Control: max-age=60\r\n",
+                                        include_bytes!("../tests/fixtures/2n5/policy.js"),
+                                    ),
+                                    "/2n5-data.txt" if revalidating_data => (
+                                        "304 Not Modified",
+                                        "text/plain",
+                                        "Cache-Control: no-cache\r\nETag: \"2n5-data-v1\"\r\n",
+                                        b"",
+                                    ),
+                                    "/2n5-data.txt" => (
+                                        "200 OK",
+                                        "text/plain",
+                                        "Cache-Control: no-cache\r\nETag: \"2n5-data-v1\"\r\n",
+                                        include_bytes!("../tests/fixtures/2n5/data.txt"),
+                                    ),
+                                    "/2n5-probe.txt" => (
+                                        "200 OK",
+                                        "text/plain",
+                                        "Cache-Control: no-store\r\n",
+                                        b"probe",
+                                    ),
+                                    _ => ("404 Not Found", "text/plain", "", b"missing"),
+                                };
 
                             let headers = format!(
                                 "HTTP/1.1 {status}\r\nContent-Type: {mime}; charset=utf-8\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
                                 body.len()
                             );
-                            let outcome = stream.write_all(headers.as_bytes())
+                            let outcome = stream
+                                .write_all(headers.as_bytes())
                                 .and_then(|()| stream.write_all(body))
                                 .and_then(|()| stream.flush());
                             if let Ok(mut events) = worker_events.lock() {
@@ -5848,14 +6305,21 @@ mod tests {
                 }
             });
 
-            Ok(Self { address, stop, events, worker: Some(worker) })
+            Ok(Self {
+                address,
+                stop,
+                events,
+                worker: Some(worker),
+            })
         }
     }
 
     impl Drop for TextSubresourcePolicyServer {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
-            if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -6375,10 +6839,19 @@ mod tests {
     }
 
     fn corpus_painted_text(tab: &BrowserTab) -> String {
-        tab.engine.paint_list().commands().iter().filter_map(|command| match command {
-            PaintCommand::Text { text, .. } => tab.engine.paint_list().text(*text),
-            _ => None,
-        }).collect::<Vec<_>>().join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+        tab.engine
+            .paint_list()
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Text { text, .. } => tab.engine.paint_list().text(*text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
@@ -6392,20 +6865,27 @@ mod tests {
             ("/external.html", "Loaded script in order"),
             ("/async.html", "Fetch completed"),
         ] {
-            start_navigation(&network, &mut tab, format!("{}{page}", server.address), NavigationAction::New);
+            start_navigation(
+                &network,
+                &mut tab,
+                format!("{}{page}", server.address),
+                NavigationAction::New,
+            );
             let deadline = Instant::now() + Duration::from_secs(8);
             let mut peak_pending_fetches = 0_usize;
             let mut peak_pending_timers = 0_usize;
             while Instant::now() < deadline {
                 poll_tab_navigation(&mut tab, &network, 1.0);
                 poll_pending_page_scripts(&mut tab, 1.0);
-                peak_pending_timers = peak_pending_timers
-                    .max(tab.engine.pending_javascript_timer_count());
+                peak_pending_timers =
+                    peak_pending_timers.max(tab.engine.pending_javascript_timer_count());
                 pump_page_timers(&mut tab, Instant::now(), 1.0);
                 poll_page_fetches(&mut tab, 1.0);
                 peak_pending_fetches = peak_pending_fetches.max(tab.pending_script_fetches.len());
                 let painted = corpus_painted_text(&tab);
-                if tab.navigation_phase() == NavigationPhase::Failed { break; }
+                if tab.navigation_phase() == NavigationPhase::Failed {
+                    break;
+                }
                 if tab.navigation_phase() == NavigationPhase::Ready
                     && painted.contains(expected)
                     && (page != "/async.html" || painted.contains("Timer fired"))
@@ -6415,11 +6895,27 @@ mod tests {
                 thread::sleep(Duration::from_millis(5));
             }
             let painted = corpus_painted_text(&tab);
-            let events = server.events.lock().map_or_else(|_| vec!["event lock failed".to_owned()], |events| events.clone());
-            assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "{page}: {}; server={events:?}", tab.status);
-            assert!(painted.contains(expected), "{page}: painted={painted:?}; status={}; server={events:?}", tab.status);
+            let events = server.events.lock().map_or_else(
+                |_| vec!["event lock failed".to_owned()],
+                |events| events.clone(),
+            );
+            assert_eq!(
+                tab.navigation_phase(),
+                NavigationPhase::Ready,
+                "{page}: {}; server={events:?}",
+                tab.status
+            );
+            assert!(
+                painted.contains(expected),
+                "{page}: painted={painted:?}; status={}; server={events:?}",
+                tab.status
+            );
             if page == "/async.html" {
-                assert!(painted.contains("Timer fired"), "{page}: painted={painted:?}; status={}", tab.status);
+                assert!(
+                    painted.contains("Timer fired"),
+                    "{page}: painted={painted:?}; status={}",
+                    tab.status
+                );
             }
         }
         Ok(())
@@ -6427,76 +6923,165 @@ mod tests {
 
     // PHANTOM_2L8_NAVIGATION_ASYNC_ISOLATION_I
     #[test]
-    fn old_fetch_completion_cannot_mutate_next_navigation()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn old_fetch_completion_cannot_mutate_next_navigation() -> Result<(), Box<dyn std::error::Error>>
+    {
         let server = CorpusServer::new()?;
         let network = NetworkClient::new();
         let mut tab = BrowserTab::new();
-        start_navigation(&network, &mut tab, format!("{}/slow.html", server.address), NavigationAction::New);
+        start_navigation(
+            &network,
+            &mut tab,
+            format!("{}/slow.html", server.address),
+            NavigationAction::New,
+        );
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
             poll_tab_navigation(&mut tab, &network, 1.0);
             poll_page_fetches(&mut tab, 1.0);
             let request_started = server.events.lock().is_ok_and(|events| {
-                events.iter().any(|event| event.starts_with("request: /slow.txt;"))
+                events
+                    .iter()
+                    .any(|event| event.starts_with("request: /slow.txt;"))
             });
-            if request_started { break; }
+            if request_started {
+                break;
+            }
             thread::sleep(Duration::from_millis(5));
         }
-        let old_events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
-        assert!(old_events.iter().any(|event| event.starts_with("request: /slow.txt;")), "slow fetch did not start: {old_events:?}; status={}", tab.status);
-        start_navigation(&network, &mut tab, format!("{}/static.html", server.address), NavigationAction::New);
+        let old_events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
+        assert!(
+            old_events
+                .iter()
+                .any(|event| event.starts_with("request: /slow.txt;")),
+            "slow fetch did not start: {old_events:?}; status={}",
+            tab.status
+        );
+        start_navigation(
+            &network,
+            &mut tab,
+            format!("{}/static.html", server.address),
+            NavigationAction::New,
+        );
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
             poll_tab_navigation(&mut tab, &network, 1.0);
             poll_page_fetches(&mut tab, 1.0);
             let slow_responded = server.events.lock().is_ok_and(|events| {
-                events.iter().any(|event| event.starts_with("response: /slow.txt;"))
+                events
+                    .iter()
+                    .any(|event| event.starts_with("response: /slow.txt;"))
             });
-            if tab.navigation_phase() == NavigationPhase::Ready && slow_responded { break; }
-            if tab.navigation_phase() == NavigationPhase::Failed { break; }
+            if tab.navigation_phase() == NavigationPhase::Ready && slow_responded {
+                break;
+            }
+            if tab.navigation_phase() == NavigationPhase::Failed {
+                break;
+            }
             thread::sleep(Duration::from_millis(5));
         }
         let painted = corpus_painted_text(&tab);
-        let events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
-        assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "status={}; server={events:?}", tab.status);
-        assert!(events.iter().any(|event| event.starts_with("response: /slow.txt;")), "slow response did not complete: {events:?}");
-        assert!(painted.contains("Static painted"), "painted={painted:?}; server={events:?}");
-        assert!(!painted.contains("Old navigation"), "stale fetch changed the new page: {painted:?}");
+        let events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
+        assert_eq!(
+            tab.navigation_phase(),
+            NavigationPhase::Ready,
+            "status={}; server={events:?}",
+            tab.status
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("response: /slow.txt;")),
+            "slow response did not complete: {events:?}"
+        );
+        assert!(
+            painted.contains("Static painted"),
+            "painted={painted:?}; server={events:?}"
+        );
+        assert!(
+            !painted.contains("Old navigation"),
+            "stale fetch changed the new page: {painted:?}"
+        );
         assert!(tab.pending_script_fetches.is_empty());
         Ok(())
     }
 
     // PHANTOM_2L9_HTML_CSS_DOM_JS_PAINT_CORPUS_I
     #[test]
-    fn page_script_dom_style_and_new_node_reach_paint()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn page_script_dom_style_and_new_node_reach_paint() -> Result<(), Box<dyn std::error::Error>> {
         let server = CorpusServer::new()?;
         let network = NetworkClient::new();
         let mut tab = BrowserTab::new();
-        start_navigation(&network, &mut tab, format!("{}/dynamic.html", server.address), NavigationAction::New);
+        start_navigation(
+            &network,
+            &mut tab,
+            format!("{}/dynamic.html", server.address),
+            NavigationAction::New,
+        );
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
             poll_tab_navigation(&mut tab, &network, 1.0);
             poll_pending_page_scripts(&mut tab, 1.0);
             let painted = corpus_painted_text(&tab);
-            if tab.navigation_phase() == NavigationPhase::Ready && painted.contains("Created by script") { break; }
-            if tab.navigation_phase() == NavigationPhase::Failed { break; }
+            if tab.navigation_phase() == NavigationPhase::Ready
+                && painted.contains("Created by script")
+            {
+                break;
+            }
+            if tab.navigation_phase() == NavigationPhase::Failed {
+                break;
+            }
             thread::sleep(Duration::from_millis(5));
         }
         let painted = corpus_painted_text(&tab);
-        let events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
-        assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "status={}; server={events:?}", tab.status);
-        assert!(painted.contains("Styled by script"), "painted={painted:?}; status={}", tab.status);
-        assert!(painted.contains("Created by script"), "painted={painted:?}; status={}", tab.status);
-        assert!(!painted.contains("Before script"), "old paint remains: {painted:?}");
-        assert!(tab.engine.paint_list().commands().iter().any(|command| match command {
-            PaintCommand::Text { text, color, .. } => {
-                tab.engine.paint_list().text(*text).is_some_and(|value| value.contains("Styled"))
-                    && color.red() == 255 && color.green() == 0 && color.blue() == 0
-            }
-            _ => false,
-        }), "CSS color did not reach paint: {painted:?}");
+        let events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
+        assert_eq!(
+            tab.navigation_phase(),
+            NavigationPhase::Ready,
+            "status={}; server={events:?}",
+            tab.status
+        );
+        assert!(
+            painted.contains("Styled by script"),
+            "painted={painted:?}; status={}",
+            tab.status
+        );
+        assert!(
+            painted.contains("Created by script"),
+            "painted={painted:?}; status={}",
+            tab.status
+        );
+        assert!(
+            !painted.contains("Before script"),
+            "old paint remains: {painted:?}"
+        );
+        assert!(
+            tab.engine
+                .paint_list()
+                .commands()
+                .iter()
+                .any(|command| match command {
+                    PaintCommand::Text { text, color, .. } => {
+                        tab.engine
+                            .paint_list()
+                            .text(*text)
+                            .is_some_and(|value| value.contains("Styled"))
+                            && color.red() == 255
+                            && color.green() == 0
+                            && color.blue() == 0
+                    }
+                    _ => false,
+                }),
+            "CSS color did not reach paint: {painted:?}"
+        );
         Ok(())
     }
 
@@ -6586,16 +7171,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -6630,9 +7213,7 @@ mod tests {
             "could not resolve External ready across PaintCommand fragments; fragments={paint_fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (255, 0, 0)),
+            status_span.iter().all(|(_, color)| *color == (255, 0, 0)),
             "async inline style did not color every status Paint fragment red; status_span={status_span:?}; painted={painted:?}"
         );
 
@@ -6719,12 +7300,9 @@ mod tests {
             "recovery fetch resource was not requested: {events:?}"
         );
 
-        let report = tab
-            .engine
-            .html_build_report()
-            .ok_or(std::io::Error::other(
-                "2L11 expected authoritative HTML build report",
-            ))?;
+        let report = tab.engine.html_build_report().ok_or(std::io::Error::other(
+            "2L11 expected authoritative HTML build report",
+        ))?;
         eprintln!(
             "2L11 DIAG HTML recovery: recoveries={}, tokenizer_errors={}",
             report.recoveries_total, report.tokenizer_parse_errors
@@ -6746,16 +7324,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -6787,9 +7363,7 @@ mod tests {
             "could not resolve recovered status across paint fragments; fragments={paint_fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (0, 128, 0)),
+            status_span.iter().all(|(_, color)| *color == (0, 128, 0)),
             "valid CSS after malformed selector did not survive recovery; status_span={status_span:?}; painted={painted:?}"
         );
 
@@ -6806,12 +7380,7 @@ mod tests {
         let old_url = format!("{}/lifecycle-old.html", server.address);
         let new_url = format!("{}/lifecycle-new.html", server.address);
 
-        start_navigation(
-            &network,
-            &mut tab,
-            old_url.clone(),
-            NavigationAction::New,
-        );
+        start_navigation(&network, &mut tab, old_url.clone(), NavigationAction::New);
 
         let old_deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < old_deadline {
@@ -6870,12 +7439,7 @@ mod tests {
             "old fetch receiver must still be pending when replacement navigation begins"
         );
 
-        start_navigation(
-            &network,
-            &mut tab,
-            new_url.clone(),
-            NavigationAction::New,
-        );
+        start_navigation(&network, &mut tab, new_url.clone(), NavigationAction::New);
 
         assert_eq!(tab.document_generation, old_generation.saturating_add(1));
         assert_eq!(tab.navigation_phase(), NavigationPhase::Fetching);
@@ -6997,7 +7561,6 @@ mod tests {
         Ok(())
     }
 
-
     // PHANTOM_2L13_RUNTIME_INTEGRATION_STRESS_I
     #[test]
     fn runtime_integration_stress_is_deterministic_across_generations()
@@ -7031,8 +7594,8 @@ mod tests {
             while Instant::now() < deadline {
                 poll_tab_navigation(&mut tab, &network, 1.0);
                 poll_pending_page_scripts(&mut tab, 1.0);
-                peak_pending_timers = peak_pending_timers
-                    .max(tab.engine.pending_javascript_timer_count());
+                peak_pending_timers =
+                    peak_pending_timers.max(tab.engine.pending_javascript_timer_count());
                 pump_page_timers(&mut tab, Instant::now(), 1.0);
                 poll_page_fetches(&mut tab, 1.0);
                 peak_pending_fetches = peak_pending_fetches.max(tab.pending_script_fetches.len());
@@ -7146,14 +7709,14 @@ mod tests {
                 .commands()
                 .iter()
                 .filter_map(|command| match command {
-                    PaintCommand::Text { text, color, .. } => tab.engine.paint_list().text(*text).map(
-                        |value| {
+                    PaintCommand::Text { text, color, .. } => {
+                        tab.engine.paint_list().text(*text).map(|value| {
                             (
                                 value.split_whitespace().collect::<Vec<_>>().join(" "),
                                 (color.red(), color.green(), color.blue()),
                             )
-                        },
-                    ),
+                        })
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -7325,8 +7888,8 @@ mod tests {
             while Instant::now() < deadline {
                 poll_tab_navigation(&mut tab, &network, 1.0);
                 poll_pending_page_scripts(&mut tab, 1.0);
-                peak_pending_timers = peak_pending_timers
-                    .max(tab.engine.pending_javascript_timer_count());
+                peak_pending_timers =
+                    peak_pending_timers.max(tab.engine.pending_javascript_timer_count());
                 pump_page_timers(&mut tab, Instant::now(), 1.0);
                 poll_page_fetches(&mut tab, 1.0);
                 peak_pending_fetches = peak_pending_fetches.max(tab.pending_script_fetches.len());
@@ -7383,9 +7946,7 @@ mod tests {
                 let report = tab
                     .engine
                     .html_build_report()
-                    .ok_or(std::io::Error::other(
-                        "2L14 expected HTML recovery report",
-                    ))?;
+                    .ok_or(std::io::Error::other("2L14 expected HTML recovery report"))?;
                 assert!(report.recoveries_total > 0);
                 assert!(report.tokenizer_parse_errors > 0);
             }
@@ -7645,20 +8206,16 @@ mod tests {
             execute_committed_page_scripts(&mut tab, "https://example.test/", 1.0)?,
             1
         );
-        assert!(
-            tab.engine
-                .paint_list()
-                .commands()
-                .iter()
-                .any(|command| match command {
-                    PaintCommand::Text { text, .. } => tab
-                        .engine
-                        .paint_list()
-                        .text(*text)
-                        .is_some_and(|value| value.contains("After")),
-                    _ => false,
-                })
-        );
+        assert!(tab.engine.paint_list().commands().iter().any(|command| {
+            match command {
+                PaintCommand::Text { text, .. } => tab
+                    .engine
+                    .paint_list()
+                    .text(*text)
+                    .is_some_and(|value| value.contains("After")),
+                _ => false,
+            }
+        }));
         Ok(())
     }
 
@@ -7678,9 +8235,15 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 1);
         pump_page_timers(&mut tab, start + Duration::from_millis(50), 1.0);
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
-        assert!(tab.engine.paint_list().commands().iter().any(|command| match command {
-            PaintCommand::Text { text, .. } => tab.engine.paint_list().text(*text).is_some_and(|value| value.contains("After")),
-            _ => false,
+        assert!(tab.engine.paint_list().commands().iter().any(|command| {
+            match command {
+                PaintCommand::Text { text, .. } => tab
+                    .engine
+                    .paint_list()
+                    .text(*text)
+                    .is_some_and(|value| value.contains("After")),
+                _ => false,
+            }
         }));
         tab.clear_navigation_state();
         tab.engine.load_html("<p>Next page</p>")?;
@@ -7690,11 +8253,11 @@ mod tests {
     }
 
     #[test]
-    fn page_fetch_cross_origin_requires_cors_response()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn page_fetch_cross_origin_requires_cors_response() -> Result<(), Box<dyn std::error::Error>> {
         let origin_server = TextSubresourcePolicyServer::new()?;
         let document_url = format!("{}/2n5-page.html", origin_server.address);
-        let cors_server = CorsTransportServer::new(HttpUrl::parse(&document_url)?.origin().as_str().to_owned())?;
+        let cors_server =
+            CorsTransportServer::new(HttpUrl::parse(&document_url)?.origin().as_str().to_owned())?;
         let denied_url = format!("{}/2n7-no-acao.txt", cors_server.address);
 
         let mut tab = BrowserTab::new();
@@ -7721,8 +8284,8 @@ mod tests {
     }
 
     #[test]
-    fn old_fetch_completion_is_discarded_after_navigation()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn old_fetch_completion_is_discarded_after_navigation() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut tab = BrowserTab::new();
         tab.engine.load_html("<p>Next</p>")?;
         tab.address = "https://example.test/next".to_owned();
@@ -7730,7 +8293,11 @@ mod tests {
         tab.mark_navigation_ready();
         let (sender, receiver) = mpsc::channel();
         sender.send(Err(NetworkError::Request("old result".to_owned())))?;
-        tab.pending_script_fetches.push(PendingScriptFetch { request_id: 1, generation: 1, receiver });
+        tab.pending_script_fetches.push(PendingScriptFetch {
+            request_id: 1,
+            generation: 1,
+            receiver,
+        });
         poll_page_fetches(&mut tab, 1.0);
         assert!(tab.pending_script_fetches.is_empty());
         assert!(!tab.status.contains("old result"));
@@ -7746,9 +8313,15 @@ mod tests {
         tab.address = url.to_owned();
         assert_eq!(start_page_scripts(&mut tab, url, 1.0)?, 2);
         assert!(tab.pending_page_scripts.is_none());
-        assert!(tab.engine.paint_list().commands().iter().any(|command| match command {
-            PaintCommand::Text { text, .. } => tab.engine.paint_list().text(*text).is_some_and(|value| value.contains("first")),
-            _ => false,
+        assert!(tab.engine.paint_list().commands().iter().any(|command| {
+            match command {
+                PaintCommand::Text { text, .. } => tab
+                    .engine
+                    .paint_list()
+                    .text(*text)
+                    .is_some_and(|value| value.contains("first")),
+                _ => false,
+            }
         }));
         Ok(())
     }
@@ -7899,16 +8472,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -7988,14 +8559,11 @@ mod tests {
             "2M1 chained .then received the Promise object instead of its fulfillment value: painted={painted:?}"
         );
         assert_eq!(
-            status_text,
-            target_status,
+            status_text, target_status,
             "2M1 could not resolve the full status across PaintCommand fragments; fragments={fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (128, 0, 128)),
+            status_span.iter().all(|(_, color)| *color == (128, 0, 128)),
             "2M1 resolved second .then did not color every status Paint fragment purple; status_span={status_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8047,16 +8615,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8144,14 +8710,11 @@ mod tests {
             "2M2 leaked a Promise object as a fulfillment value: painted={painted:?}"
         );
         assert_eq!(
-            status_text,
-            target_status,
+            status_text, target_status,
             "2M2 could not resolve the status across Paint fragments: fragments={fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (0, 128, 0)),
+            status_span.iter().all(|(_, color)| *color == (0, 128, 0)),
             "2M2 adopted pending Promise did not reach Paint in green: status_span={status_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8201,16 +8764,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8283,18 +8844,16 @@ mod tests {
             "2M3 non-callable then property was not preserved as a plain value: painted={painted:?}"
         );
         assert!(
-            painted.contains("sync-tail-first-second-catch-promise resolution cycle-Cycle recovered"),
+            painted
+                .contains("sync-tail-first-second-catch-promise resolution cycle-Cycle recovered"),
             "2M3 microtask/cycle recovery order diverged: painted={painted:?}"
         );
         assert_eq!(
-            status_text,
-            target_status,
+            status_text, target_status,
             "2M3 could not resolve cycle status across Paint fragments: fragments={fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (176, 0, 32)),
+            status_span.iter().all(|(_, color)| *color == (176, 0, 32)),
             "2M3 cycle rejection did not reach Paint in expected red: status_span={status_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8347,16 +8906,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8437,14 +8994,11 @@ mod tests {
             "2M4 thenable job did not run after the synchronous tail and before fulfillment: painted={painted:?}"
         );
         assert_eq!(
-            status_text,
-            target_status,
+            status_text, target_status,
             "2M4 could not resolve async thenable status across Paint fragments: fragments={fragments:?}"
         );
         assert!(
-            status_span
-                .iter()
-                .all(|(_, color)| *color == (0, 96, 100)),
+            status_span.iter().all(|(_, color)| *color == (0, 96, 100)),
             "2M4 async thenable result did not reach Paint in expected teal: status_span={status_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8495,16 +9049,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8581,14 +9133,11 @@ mod tests {
             "2M5 nested thenable job ordering is incorrect: painted={painted:?}"
         );
         assert_eq!(
-            nested_text,
-            target_nested,
+            nested_text, target_nested,
             "2M5 could not resolve nested thenable text across Paint fragments: fragments={fragments:?}"
         );
         assert!(
-            nested_span
-                .iter()
-                .all(|(_, color)| *color == (46, 125, 50)),
+            nested_span.iter().all(|(_, color)| *color == (46, 125, 50)),
             "2M5 nested thenable result did not reach Paint in expected green: nested_span={nested_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8596,7 +9145,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M6_PROMISE_THENABLE_COMPATIBILITY_FINAL_GATE_I
     #[test]
@@ -8644,16 +9192,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8734,14 +9280,11 @@ mod tests {
             "2M6 Promise/thenable job order diverged: painted={painted:?}"
         );
         assert_eq!(
-            final_text,
-            target_final,
+            final_text, target_final,
             "2M6 could not resolve final status across Paint fragments: fragments={fragments:?}"
         );
         assert!(
-            final_span
-                .iter()
-                .all(|(_, color)| *color == (27, 94, 32)),
+            final_span.iter().all(|(_, color)| *color == (27, 94, 32)),
             "2M6 final status did not reach Paint in expected green: final_span={final_span:?}; fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8749,7 +9292,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M7_FUNCTION_CONTEXT_COMPATIBILITY_I
     #[test]
@@ -8795,16 +9337,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8858,9 +9398,9 @@ mod tests {
         );
         assert!(painted.contains("Function context GREEN"));
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text.contains("GREEN") && *color == (0, 87, 184)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text.contains("GREEN") && *color == (0, 87, 184) }),
             "2M7 final function-context state did not reach expected blue Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8868,7 +9408,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M8_DOM_EVENT_TARGET_I
     #[test]
@@ -8913,16 +9452,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -8970,9 +9507,9 @@ mod tests {
         );
         assert!(painted.contains("Event target GREEN"));
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text.contains("GREEN") && *color == (106, 27, 154)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text.contains("GREEN") && *color == (106, 27, 154) }),
             "2M8 final EventTarget state did not reach expected purple Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -8980,7 +9517,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M9_DOM_EVENT_PROPAGATION_II
     #[test]
@@ -9024,16 +9560,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9080,9 +9614,9 @@ mod tests {
         );
         assert!(painted.contains("Event propagation GREEN"));
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text.contains("GREEN") && *color == (0, 105, 92)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text.contains("GREEN") && *color == (0, 105, 92) }),
             "2M9 final propagation state did not reach expected teal Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9090,7 +9624,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M10_DOM_EVENT_CONTROL_III
     #[test]
@@ -9135,16 +9668,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9195,9 +9726,9 @@ mod tests {
         );
         assert!(painted.contains("Event control GREEN"));
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text.contains("GREEN") && *color == (21, 101, 192)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text.contains("GREEN") && *color == (21, 101, 192) }),
             "2M10 final event-control state did not reach expected blue Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9205,7 +9736,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M11_DOM_EVENT_LISTENER_SEMANTICS_IV
     #[test]
@@ -9251,16 +9781,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9311,9 +9839,9 @@ mod tests {
         // is already validated in `painted` above while color is checked on its
         // terminal GREEN token instead of requiring "FINAL GREEN" in one fragment.
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (46, 125, 50)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (46, 125, 50) }),
             "2M11 final event-listener state did not reach expected green Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9321,7 +9849,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M12_DOM_TOKENLIST_CLASSLIST_I
     #[test]
@@ -9365,16 +9892,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9419,9 +9944,9 @@ mod tests {
             );
         }
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (142, 36, 170)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (142, 36, 170) }),
             "2M12 final classList state did not reach expected purple Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9429,7 +9954,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M13_CSS_STYLE_DECLARATION_I
     #[test]
@@ -9473,16 +9997,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9527,15 +10049,15 @@ mod tests {
             );
         }
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "target" && *color == (21, 101, 192)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "target" && *color == (21, 101, 192) }),
             "2M13 direct style color did not reach target Paint: fragments={fragments:?}"
         );
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (46, 125, 50)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (46, 125, 50) }),
             "2M13 final style state did not reach expected green Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9543,7 +10065,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M14_DOM_DATASET_ATTRIBUTE_REFLECTION_I
     #[test]
@@ -9589,16 +10110,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9645,15 +10164,15 @@ mod tests {
             );
         }
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "target" && *color == (0, 137, 123)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "target" && *color == (0, 137, 123) }),
             "2M14 data-state attribute selector did not recolor target Paint: fragments={fragments:?}"
         );
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (46, 125, 50)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (46, 125, 50) }),
             "2M14 final dataset state did not reach expected green Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9661,7 +10180,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M15_HTML_ATTRIBUTE_PROPERTY_REFLECTION_II
     #[test]
@@ -9706,16 +10224,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9764,15 +10280,15 @@ mod tests {
             "2M15 hidden=true did not remove the hidden target from Layout/Paint: painted={painted:?}"
         );
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "property" && *color == (21, 101, 192)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "property" && *color == (21, 101, 192) }),
             "2M15 lang property -> attribute selector did not reach blue Paint: fragments={fragments:?}"
         );
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (46, 125, 50)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (46, 125, 50) }),
             "2M15 final reflection state did not reach expected green Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9780,7 +10296,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M16_WEB_GLOBALS_CORE_BUILTINS_I
     #[test]
@@ -9825,16 +10340,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9880,15 +10393,15 @@ mod tests {
             );
         }
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "active" && *color == (21, 101, 192)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "active" && *color == (21, 101, 192) }),
             "2M16 builtin result did not drive target CSS/Paint: fragments={fragments:?}"
         );
         assert!(
-            fragments.iter().any(|(text, color)| {
-                text == "GREEN" && *color == (46, 125, 50)
-            }),
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "GREEN" && *color == (46, 125, 50) }),
             "2M16 final builtin state did not reach green Paint: fragments={fragments:?}"
         );
         assert!(tab.pending_script_fetches.is_empty());
@@ -9896,7 +10409,6 @@ mod tests {
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M17_WEB_CORE_LIBRARY_II
     #[test]
@@ -9941,16 +10453,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9972,7 +10482,11 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /core-library.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /core-library.js;"))
+        );
         for marker in [
             "Array state 2-4-6",
             "String state PHANTOM",
@@ -9980,10 +10494,21 @@ mod tests {
             "Core library active",
             "Web core library GREEN",
         ] {
-            assert!(painted.contains(marker), "2M17 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M17 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "active" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "active" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10033,16 +10558,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10064,7 +10587,11 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /core-library-iii.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /core-library-iii.js;"))
+        );
         for marker in [
             "Core callbacks active",
             "Array callbacks 3-6-9-12 2-4 10 true-true-2",
@@ -10072,10 +10599,21 @@ mod tests {
             "String helpers beta|gamma Phantom engine",
             "Web core library III GREEN",
         ] {
-            assert!(painted.contains(marker), "2M18 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M18 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "active" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "active" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10126,16 +10664,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10157,7 +10693,11 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /core-library-final.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /core-library-final.js;"))
+        );
         for marker in [
             "Core library final active",
             "Array final 6-5-4-3-2 tail 2 first 1",
@@ -10166,10 +10706,21 @@ mod tests {
             "Numeric final 3 -1 true",
             "Web core library FINAL GREEN",
         ] {
-            assert!(painted.contains(marker), "2M19 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M19 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "active" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "active" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10217,16 +10768,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10248,16 +10797,31 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /dom-tree.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /dom-tree.js;"))
+        );
         for marker in [
             "Tree navigation stable",
             "Append order coherent",
             "DOM tree navigation GREEN",
         ] {
-            assert!(painted.contains(marker), "2M20 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M20 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "stable" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "stable" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10307,16 +10871,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10338,7 +10900,11 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /dom-selectors.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /dom-selectors.js;"))
+        );
         for marker in [
             "Selector list document order stable",
             "Matches closest compound stable",
@@ -10346,11 +10912,26 @@ mod tests {
             "Hero selected",
             "DOM selector API II GREEN",
         ] {
-            assert!(painted.contains(marker), "2M21 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M21 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "stable" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "Hero" && *color == (94, 53, 177)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "stable" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "Hero" && *color == (94, 53, 177))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10399,16 +10980,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10430,18 +11009,37 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /dom-mutations.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /dom-mutations.js;"))
+        );
         for marker in [
             "Mutation order stable e-c-a-b",
             "removeChild identity disconnected stable",
             "Mutation selected",
             "DOM mutation API II GREEN",
         ] {
-            assert!(painted.contains(marker), "2M22 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M22 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "stable" && *color == (0, 105, 92)));
-        assert!(fragments.iter().any(|(text, color)| text == "Mutation" && *color == (94, 53, 177)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "stable" && *color == (0, 105, 92))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "Mutation" && *color == (94, 53, 177))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
@@ -10491,16 +11089,14 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -10522,7 +11118,11 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| event.starts_with("request: /html-elements.js;")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("request: /html-elements.js;"))
+        );
         for marker in [
             "Synthetic click target go",
             "Input reflection beta email true true true",
@@ -10530,16 +11130,26 @@ mod tests {
             "Form reflection /submit post multipart/form-data",
             "HTML element interaction GREEN",
         ] {
-            assert!(painted.contains(marker), "2M23 marker missing {marker:?}: {painted:?}");
+            assert!(
+                painted.contains(marker),
+                "2M23 marker missing {marker:?}: {painted:?}"
+            );
         }
-        assert!(fragments.iter().any(|(text, color)| text == "Synthetic" && *color == (46, 125, 50)));
-        assert!(fragments.iter().any(|(text, color)| text == "GREEN" && *color == (46, 125, 50)));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "Synthetic" && *color == (46, 125, 50))
+        );
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| text == "GREEN" && *color == (46, 125, 50))
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M24_NATIVE_INTERACTION_JAVASCRIPT_EVENTS_I
     #[test]
@@ -10582,15 +11192,13 @@ mod tests {
             .map_or(0, |link| link.node_id());
         assert_ne!(allowed_node, 0);
 
-        let allowed_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            allowed_node,
-            &url,
-            1.0,
-        )?;
+        let allowed_default =
+            dispatch_native_click_before_default_action(&mut tab, allowed_node, &url, 1.0)?;
         assert!(allowed_default);
         assert_eq!(
-            tab.engine.link_for_node(allowed_node).map(|link| link.href()),
+            tab.engine
+                .link_for_node(allowed_node)
+                .map(|link| link.href()),
             Some("/mutated-target.html")
         );
         assert!(corpus_painted_text(&tab).contains("Trusted link true"));
@@ -10603,12 +11211,8 @@ mod tests {
             .map_or(0, |link| link.node_id());
         assert_ne!(blocked_node, 0);
 
-        let blocked_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            blocked_node,
-            &url,
-            1.0,
-        )?;
+        let blocked_default =
+            dispatch_native_click_before_default_action(&mut tab, blocked_node, &url, 1.0)?;
         assert!(!blocked_default);
         assert!(corpus_painted_text(&tab).contains("Blocked link true"));
 
@@ -10622,12 +11226,8 @@ mod tests {
             .map_or(0, |control| control.id().as_u64());
         assert_ne!(submit_node, 0);
 
-        let submit_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            submit_node,
-            &url,
-            1.0,
-        )?;
+        let submit_default =
+            dispatch_native_click_before_default_action(&mut tab, submit_node, &url, 1.0)?;
         assert!(!submit_default);
         assert!(corpus_painted_text(&tab).contains("Blocked submit true"));
 
@@ -10658,12 +11258,8 @@ mod tests {
         );
         assert_eq!(hit, Some(plain_node.as_u64()));
 
-        let plain_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            plain_node.as_u64(),
-            &url,
-            1.0,
-        )?;
+        let plain_default =
+            dispatch_native_click_before_default_action(&mut tab, plain_node.as_u64(), &url, 1.0)?;
         assert!(plain_default);
         let painted = corpus_painted_text(&tab);
         assert!(painted.contains("Plain trusted true"));
@@ -10674,29 +11270,28 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
 
-        assert!(fragments.iter().any(|(text, color)| {
-            text == "Plain" && *color == (94, 53, 177)
-        }));
+        assert!(
+            fragments
+                .iter()
+                .any(|(text, color)| { text == "Plain" && *color == (94, 53, 177) })
+        );
         assert!(tab.pending_script_fetches.is_empty());
         assert!(tab.pending_page_scripts.is_none());
         assert_eq!(tab.engine.pending_javascript_timer_count(), 0);
         Ok(())
     }
-
 
     // PHANTOM_2M25_FINAL_WEB_COMPATIBILITY_INTEGRATION_GATE
     #[test]
@@ -10755,12 +11350,16 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(events.iter().any(|event| {
-            event.starts_with("request: /web-compat-final.js;")
-        }));
-        assert!(events.iter().any(|event| {
-            event.starts_with("request: /web-compat-final-data.txt;")
-        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.starts_with("request: /web-compat-final.js;") })
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.starts_with("request: /web-compat-final-data.txt;") })
+        );
         assert!(peak_fetches >= 1, "2M25 fetch path was not observed");
         assert!(peak_timers >= 1, "2M25 timer path was not observed");
         for marker in [
@@ -10786,25 +11385,27 @@ mod tests {
             .commands()
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::Text { text, color, .. } => tab
-                    .engine
-                    .paint_list()
-                    .text(*text)
-                    .map(|value| {
+                PaintCommand::Text { text, color, .. } => {
+                    tab.engine.paint_list().text(*text).map(|value| {
                         (
                             value.split_whitespace().collect::<Vec<_>>().join(" "),
                             (color.red(), color.green(), color.blue()),
                         )
-                    }),
+                    })
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(initial_fragments.iter().any(|(text, color)| {
-            text.contains("ASYNC") && *color == (46, 125, 50)
-        }));
-        assert!(initial_fragments.iter().any(|(text, color)| {
-            text == "Style" && *color == (21, 101, 192)
-        }));
+        assert!(
+            initial_fragments
+                .iter()
+                .any(|(text, color)| { text.contains("ASYNC") && *color == (46, 125, 50) })
+        );
+        assert!(
+            initial_fragments
+                .iter()
+                .any(|(text, color)| { text == "Style" && *color == (21, 101, 192) })
+        );
 
         let allowed_node = tab
             .engine
@@ -10820,15 +11421,13 @@ mod tests {
             })
             .ok_or(std::io::Error::other("2M25 allowed link missing"))?;
         assert_eq!(
-            tab.engine.link_for_node(allowed_node).map(|link| link.href()),
+            tab.engine
+                .link_for_node(allowed_node)
+                .map(|link| link.href()),
             Some("/wrong-target.html")
         );
-        let allowed_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            allowed_node,
-            &url,
-            1.0,
-        )?;
+        let allowed_default =
+            dispatch_native_click_before_default_action(&mut tab, allowed_node, &url, 1.0)?;
         assert!(allowed_default);
         let painted = corpus_painted_text(&tab);
         assert!(painted.contains("Native Ctrue-Ttrue-Btrue"));
@@ -10836,7 +11435,9 @@ mod tests {
             .engine
             .link_for_node(allowed_node)
             .map(|link| link.href().to_owned())
-            .ok_or(std::io::Error::other("2M25 allowed link disappeared after trusted click"))?;
+            .ok_or(std::io::Error::other(
+                "2M25 allowed link disappeared after trusted click",
+            ))?;
         assert_eq!(allowed_href, "/web-compat-final-target.html");
 
         let blocked_node = tab
@@ -10846,12 +11447,8 @@ mod tests {
             .find(|link| link.href() == "/blocked-target.html")
             .map_or(0, |link| link.node_id());
         assert_ne!(blocked_node, 0);
-        let blocked_default = dispatch_native_click_before_default_action(
-            &mut tab,
-            blocked_node,
-            &url,
-            1.0,
-        )?;
+        let blocked_default =
+            dispatch_native_click_before_default_action(&mut tab, blocked_node, &url, 1.0)?;
         assert!(!blocked_default);
         let painted = corpus_painted_text(&tab);
         assert!(painted.contains("Blocked trusted true"));
@@ -10891,7 +11488,6 @@ mod tests {
         Ok(())
     }
 
-
     // PHANTOM_2N6_CORS_FOUNDATION_I
     #[test]
     fn cors_foundation_classifies_typed_origins_and_admits_only_single_allow_origin()
@@ -10928,9 +11524,7 @@ mod tests {
         );
         assert!(cors_response_origin_denial(origin.as_str(), None).is_some());
         assert!(cors_response_origin_denial(origin.as_str(), Some("null")).is_some());
-        assert!(
-            cors_response_origin_denial(origin.as_str(), Some("http://other.test")).is_some()
-        );
+        assert!(cors_response_origin_denial(origin.as_str(), Some("http://other.test")).is_some());
         assert!(
             cors_response_origin_denial(
                 origin.as_str(),
@@ -10981,15 +11575,17 @@ mod tests {
         assert_eq!(patch_response.body(), "PATCH BODY GREEN");
 
         let denied = format!("{}/2n15-deny-method.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_with_body(
-                &denied,
-                &document,
-                phantom_net::CorsBodyMethod::Put,
-                &[("Content-Type", "text/plain")],
-                b"must-not-send",
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_with_body(
+                    &denied,
+                    &document,
+                    phantom_net::CorsBodyMethod::Put,
+                    &[("Content-Type", "text/plain")],
+                    b"must-not-send",
+                )
+                .is_err()
+        );
 
         let events = cors_server
             .events
@@ -11093,24 +11689,28 @@ mod tests {
         assert!(cookie_header.contains("rotated=1"));
 
         let wildcard = format!("{}/2n14-wildcard-final.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_credentialed_get_with_headers(
-                &wildcard,
-                &document,
-                &[("X-Phantom", "wildcard-denied")],
-                phantom_net::CookieSiteContext::SameSite,
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_credentialed_get_with_headers(
+                    &wildcard,
+                    &document,
+                    &[("X-Phantom", "wildcard-denied")],
+                    phantom_net::CookieSiteContext::SameSite,
+                )
+                .is_err()
+        );
 
         let case_denied = format!("{}/2n14-acac-case.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_credentialed_get_with_headers(
-                &case_denied,
-                &document,
-                &[("X-Phantom", "case-denied")],
-                phantom_net::CookieSiteContext::SameSite,
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_credentialed_get_with_headers(
+                    &case_denied,
+                    &document,
+                    &[("X-Phantom", "case-denied")],
+                    phantom_net::CookieSiteContext::SameSite,
+                )
+                .is_err()
+        );
 
         let cookie_header = client
             .cookie_header_for_request(
@@ -11119,20 +11719,23 @@ mod tests {
                 phantom_net::CredentialsMode::Include,
                 phantom_net::CookieSiteContext::SameSite,
             )?
-            .ok_or(std::io::Error::other("credentialed cookie header disappeared"))?;
+            .ok_or(std::io::Error::other(
+                "credentialed cookie header disappeared",
+            ))?;
         assert!(!cookie_header.contains("denied=1"));
         assert!(!cookie_header.contains("deniedcase=1"));
 
-        let preflight_wildcard =
-            format!("{}/2n14-preflight-wildcard.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_credentialed_get_with_headers(
-                &preflight_wildcard,
-                &document,
-                &[("X-Phantom", "preflight-denied")],
-                phantom_net::CookieSiteContext::SameSite,
-            )
-            .is_err());
+        let preflight_wildcard = format!("{}/2n14-preflight-wildcard.txt", cors_server.address);
+        assert!(
+            client
+                .fetch_text_cors_credentialed_get_with_headers(
+                    &preflight_wildcard,
+                    &document,
+                    &[("X-Phantom", "preflight-denied")],
+                    phantom_net::CookieSiteContext::SameSite,
+                )
+                .is_err()
+        );
 
         let events = cors_server
             .events
@@ -11142,10 +11745,16 @@ mod tests {
             .iter()
             .filter(|event| event.contains("/2n14-preflight-wildcard.txt"))
             .collect::<Vec<_>>();
-        assert!(wildcard_events.iter().any(|event| {
-            event.contains("method=OPTIONS") && event.contains("cookie=<none>")
-        }));
-        assert!(!wildcard_events.iter().any(|event| event.contains("method=GET")));
+        assert!(
+            wildcard_events.iter().any(|event| {
+                event.contains("method=OPTIONS") && event.contains("cookie=<none>")
+            })
+        );
+        assert!(
+            !wildcard_events
+                .iter()
+                .any(|event| event.contains("method=GET"))
+        );
         Ok(())
     }
 
@@ -11188,13 +11797,14 @@ mod tests {
             None
         );
         assert_eq!(
-            client.cookie_header_for_request(
-                &document,
-                &request,
-                phantom_net::CredentialsMode::Include,
-                phantom_net::CookieSiteContext::CrossSite,
-            )?
-            .as_deref(),
+            client
+                .cookie_header_for_request(
+                    &document,
+                    &request,
+                    phantom_net::CredentialsMode::Include,
+                    phantom_net::CookieSiteContext::CrossSite,
+                )?
+                .as_deref(),
             Some("sid=foundation")
         );
 
@@ -11242,19 +11852,19 @@ mod tests {
                 && event.contains("acrm=GET")
                 && event.contains("acrh=x-phantom")
         }));
-        assert!(target_events.iter().any(|event| {
-            event.contains("method=GET") && event.contains("x-phantom=admitted")
-        }));
+        assert!(
+            target_events.iter().any(|event| {
+                event.contains("method=GET") && event.contains("x-phantom=admitted")
+            })
+        );
         drop(events);
 
         let denied = format!("{}/2n12-final-deny.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_get_with_headers(
-                &denied,
-                &document,
-                &[("X-Phantom", "blocked")],
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_get_with_headers(&denied, &document, &[("X-Phantom", "blocked")],)
+                .is_err()
+        );
 
         let before_retry = cors_server
             .events
@@ -11267,13 +11877,11 @@ mod tests {
             .count();
         assert_eq!(before_retry, 1);
 
-        assert!(client
-            .fetch_text_cors_get_with_headers(
-                &denied,
-                &document,
-                &[("X-Phantom", "blocked")],
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_get_with_headers(&denied, &document, &[("X-Phantom", "blocked")],)
+                .is_err()
+        );
 
         let after_retry = cors_server
             .events
@@ -11287,21 +11895,21 @@ mod tests {
         assert_eq!(after_retry, 2);
 
         let redirect = format!("{}/2n12-redirect-custom.txt", cors_server.address);
-        assert!(client
-            .fetch_text_cors_get_with_headers(
-                &redirect,
-                &document,
-                &[("X-Phantom", "redirect")],
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_get_with_headers(
+                    &redirect,
+                    &document,
+                    &[("X-Phantom", "redirect")],
+                )
+                .is_err()
+        );
 
-        assert!(client
-            .fetch_text_cors_get_with_headers(
-                &target,
-                &document,
-                &[("Bad Header", "x")],
-            )
-            .is_err());
+        assert!(
+            client
+                .fetch_text_cors_get_with_headers(&target, &document, &[("Bad Header", "x")],)
+                .is_err()
+        );
 
         Ok(())
     }
@@ -11333,7 +11941,9 @@ mod tests {
             .map_err(|_| "CORS transport event lock poisoned")?;
         let preflights = events
             .iter()
-            .filter(|event| event.starts_with("request: /2n11-preflight-put-json.txt; method=OPTIONS"))
+            .filter(|event| {
+                event.starts_with("request: /2n11-preflight-put-json.txt; method=OPTIONS")
+            })
             .collect::<Vec<_>>();
         assert_eq!(preflights.len(), 1);
         assert!(preflights[0].contains(&format!("origin={}", document.origin().as_str())));
@@ -11356,52 +11966,55 @@ mod tests {
         );
 
         let deny_method = format!("{}/2n11-preflight-deny-method.txt", cors_server.address);
-        assert!(client
-            .ensure_cors_preflight(
-                &deny_method,
-                &document,
-                "PUT",
-                &[("Content-Type", "application/json")],
-            )
-            .is_err());
+        assert!(
+            client
+                .ensure_cors_preflight(
+                    &deny_method,
+                    &document,
+                    "PUT",
+                    &[("Content-Type", "application/json")],
+                )
+                .is_err()
+        );
 
         let deny_header = format!("{}/2n11-preflight-deny-header.txt", cors_server.address);
-        assert!(client
-            .ensure_cors_preflight(
-                &deny_header,
-                &document,
-                "PUT",
-                &[("Content-Type", "application/json")],
-            )
-            .is_err());
+        assert!(
+            client
+                .ensure_cors_preflight(
+                    &deny_header,
+                    &document,
+                    "PUT",
+                    &[("Content-Type", "application/json")],
+                )
+                .is_err()
+        );
 
         let no_acao = format!("{}/2n11-preflight-no-acao.txt", cors_server.address);
-        assert!(client
-            .ensure_cors_preflight(
-                &no_acao,
-                &document,
-                "PUT",
-                &[("Content-Type", "application/json")],
-            )
-            .is_err());
+        assert!(
+            client
+                .ensure_cors_preflight(
+                    &no_acao,
+                    &document,
+                    "PUT",
+                    &[("Content-Type", "application/json")],
+                )
+                .is_err()
+        );
 
         let redirect = format!("{}/2n11-preflight-redirect.txt", cors_server.address);
-        assert!(client
-            .ensure_cors_preflight(
-                &redirect,
-                &document,
-                "PUT",
-                &[("Content-Type", "application/json")],
-            )
-            .is_err());
+        assert!(
+            client
+                .ensure_cors_preflight(
+                    &redirect,
+                    &document,
+                    "PUT",
+                    &[("Content-Type", "application/json")],
+                )
+                .is_err()
+        );
 
         assert_eq!(
-            client.ensure_cors_preflight(
-                &target,
-                &document,
-                "GET",
-                &[("Accept", "text/plain")],
-            )?,
+            client.ensure_cors_preflight(&target, &document, "GET", &[("Accept", "text/plain")],)?,
             phantom_net::CorsPreflightOutcome::NotRequired
         );
 
@@ -11412,12 +12025,9 @@ mod tests {
     #[test]
     fn cors_simple_request_matrix_blocks_future_preflight_and_forbidden_paths() {
         assert!(cors_simple_request_denial("GET", &[]).is_none());
-        assert!(
-            cors_simple_request_denial("POST", &[("Content-Type", "text/plain")]).is_none()
-        );
+        assert!(cors_simple_request_denial("POST", &[("Content-Type", "text/plain")]).is_none());
 
-        let preflight =
-            cors_simple_request_denial("POST", &[("Content-Type", "application/json")]);
+        let preflight = cors_simple_request_denial("POST", &[("Content-Type", "application/json")]);
         assert!(preflight.is_some_and(|reason| reason.contains("preflight required")));
 
         let custom = cors_simple_request_denial("GET", &[("X-Phantom", "1")]);
@@ -11436,12 +12046,8 @@ mod tests {
     fn cors_safelisted_response_headers_reach_browser_host_without_forbidden_headers()
     -> Result<(), Box<dyn std::error::Error>> {
         let document = HttpUrl::parse("http://127.0.0.1:9/document.html")?;
-        let cors_server =
-            CorsTransportServer::new(document.origin().as_str().to_owned())?;
-        let target = HttpUrl::parse(&format!(
-            "{}/2n9-safe-headers.txt",
-            cors_server.address
-        ))?;
+        let cors_server = CorsTransportServer::new(document.origin().as_str().to_owned())?;
+        let target = HttpUrl::parse(&format!("{}/2n9-safe-headers.txt", cors_server.address))?;
         let client = NetworkClient::new();
 
         let response = fetch_text_subresource(
@@ -11456,7 +12062,10 @@ mod tests {
         assert_eq!(headers.len(), 7);
         assert_eq!(headers.get("cache-control"), Some("no-store"));
         assert_eq!(headers.get("Content-Language"), Some("pt-BR"));
-        assert_eq!(headers.get("content-type"), Some("text/plain; charset=utf-8"));
+        assert_eq!(
+            headers.get("content-type"),
+            Some("text/plain; charset=utf-8")
+        );
         assert_eq!(
             headers.get("expires"),
             Some("Wed, 21 Oct 2026 07:28:00 GMT")
@@ -11467,7 +12076,10 @@ mod tests {
         );
         assert_eq!(headers.get("pragma"), Some("no-cache"));
         let expected_length = response.body_bytes().to_string();
-        assert_eq!(headers.get("content-length"), Some(expected_length.as_str()));
+        assert_eq!(
+            headers.get("content-length"),
+            Some(expected_length.as_str())
+        );
         assert_eq!(headers.get("set-cookie"), None);
         assert_eq!(headers.get("access-control-allow-origin"), None);
         assert_eq!(headers.get("x-phantom-secret"), None);
@@ -11519,7 +12131,9 @@ mod tests {
                 }
             };
             assert!(
-                error.to_string().contains("CORS response admission blocked"),
+                error
+                    .to_string()
+                    .contains("CORS response admission blocked"),
                 "{error}"
             );
         }
@@ -11621,16 +12235,16 @@ mod tests {
         assert_eq!(third.cache_status(), phantom_net::CacheStatus::Miss);
 
         thread::sleep(Duration::from_millis(20));
-        let cache_requests = cors_server
-            .events
-            .lock()
-            .map_or_else(|_| Vec::new(), |events| {
+        let cache_requests = cors_server.events.lock().map_or_else(
+            |_| Vec::new(),
+            |events| {
                 events
                     .iter()
                     .filter(|event| event.starts_with("request: /2n7-cache-star.txt"))
                     .cloned()
                     .collect::<Vec<_>>()
-            });
+            },
+        );
         assert_eq!(cache_requests.len(), 2, "events={cache_requests:?}");
 
         let slow_target = format!("{}/2n7-slow-star.txt", cors_server.address);
@@ -11784,27 +12398,39 @@ mod tests {
         let public_origin = HttpUrl::parse("https://public.example/document.html")?;
         let client = NetworkClient::with_max_body_bytes(MAX_SCRIPT_FETCH_BODY_BYTES);
 
-        assert!(fetch_text_subresource(
-            &client,
-            &target,
-            &foreign_origin,
-            TextSubresourcePolicy::SameOriginFetch,
-        ).is_err());
-        assert!(fetch_text_subresource(
-            &client,
-            &target,
-            &public_origin,
-            TextSubresourcePolicy::ClassicScript,
-        ).is_err());
-        assert!(fetch_text_subresource(
-            &client,
-            &target,
-            &public_origin,
-            TextSubresourcePolicy::Stylesheet,
-        ).is_err());
+        assert!(
+            fetch_text_subresource(
+                &client,
+                &target,
+                &foreign_origin,
+                TextSubresourcePolicy::SameOriginFetch,
+            )
+            .is_err()
+        );
+        assert!(
+            fetch_text_subresource(
+                &client,
+                &target,
+                &public_origin,
+                TextSubresourcePolicy::ClassicScript,
+            )
+            .is_err()
+        );
+        assert!(
+            fetch_text_subresource(
+                &client,
+                &target,
+                &public_origin,
+                TextSubresourcePolicy::Stylesheet,
+            )
+            .is_err()
+        );
 
         thread::sleep(Duration::from_millis(30));
-        let events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
+        let events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
         assert_eq!(
             events
                 .iter()
@@ -11833,7 +12459,9 @@ mod tests {
                 poll_pending_page_scripts(&mut tab, 1.0);
                 poll_page_fetches(&mut tab, 1.0);
                 let painted = corpus_painted_text(&tab);
-                if tab.navigation_phase() == NavigationPhase::Failed { break; }
+                if tab.navigation_phase() == NavigationPhase::Failed {
+                    break;
+                }
                 if tab.navigation_phase() == NavigationPhase::Ready
                     && painted.contains("2N5 SCRIPT GREEN")
                     && painted.contains("2N5 FETCH GREEN")
@@ -11845,37 +12473,78 @@ mod tests {
                 }
                 thread::sleep(Duration::from_millis(3));
             }
-            assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "pass={pass}: {}", tab.status);
+            assert_eq!(
+                tab.navigation_phase(),
+                NavigationPhase::Ready,
+                "pass={pass}: {}",
+                tab.status
+            );
             let painted = corpus_painted_text(&tab);
-            assert!(painted.contains("2N5 SCRIPT GREEN"), "pass={pass}: {painted:?}");
-            assert!(painted.contains("2N5 FETCH GREEN"), "pass={pass}: {painted:?}");
+            assert!(
+                painted.contains("2N5 SCRIPT GREEN"),
+                "pass={pass}: {painted:?}"
+            );
+            assert!(
+                painted.contains("2N5 FETCH GREEN"),
+                "pass={pass}: {painted:?}"
+            );
         }
 
-        let policy_node = tab.engine.document().nodes().find_map(|node| match node.kind() {
-            phantom_engine::NodeKind::Element(element) if element.attribute("id") == Some("policy") => {
-                Some(node.id())
-            }
-            _ => None,
-        }).ok_or(std::io::Error::other("2N5 policy node missing"))?;
-        let width = tab.engine.layout().boxes().iter()
+        let policy_node = tab
+            .engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
+                phantom_engine::NodeKind::Element(element)
+                    if element.attribute("id") == Some("policy") =>
+                {
+                    Some(node.id())
+                }
+                _ => None,
+            })
+            .ok_or(std::io::Error::other("2N5 policy node missing"))?;
+        let width = tab
+            .engine
+            .layout()
+            .boxes()
+            .iter()
             .filter(|layout_box| layout_box.source_node() == policy_node)
             .map(|layout_box| layout_box.rect().width())
             .fold(0.0_f32, f32::max);
         assert!(width >= 330.0, "2N5 stylesheet width={width}");
 
-        let events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
-        let count = |needle: &str| events.iter().filter(|event| event.as_str() == needle).count();
+        let events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
+        let count = |needle: &str| {
+            events
+                .iter()
+                .filter(|event| event.as_str() == needle)
+                .count()
+        };
         eprintln!(
             "2N5 DIAG phase={:?} status={:?} address={:?} painted={:?}",
-            tab.navigation_phase(), tab.status, tab.address, corpus_painted_text(&tab),
+            tab.navigation_phase(),
+            tab.status,
+            tab.address,
+            corpus_painted_text(&tab),
         );
         eprintln!("2N5 DIAG server={events:?}");
         assert_eq!(count("request: /2n5-page.html"), 2, "events={events:?}");
         assert_eq!(count("request: /2n5-policy.css"), 1, "events={events:?}");
         assert_eq!(count("request: /2n5-policy.js"), 1, "events={events:?}");
         assert_eq!(count("request: /2n5-data.txt"), 2, "events={events:?}");
-        assert!(events.iter().any(|event| event == "revalidate: if-none-match=\"2n5-data-v1\""));
-        assert!(events.iter().any(|event| event.contains("response: /2n5-data.txt; 304 Not Modified")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "revalidate: if-none-match=\"2n5-data-v1\"")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("response: /2n5-data.txt; 304 Not Modified"))
+        );
         Ok(())
     }
 
@@ -11897,9 +12566,11 @@ mod tests {
         assert_eq!(imports[1].href.as_deref(), Some("b.css"));
         assert_eq!(imports[2].href.as_deref(), None);
         assert!(source[imports[0].start..imports[0].end].contains("@import"));
-        assert!(!imports.iter().any(|statement| {
-            source[statement.start..statement.end].contains("late.css")
-        }));
+        assert!(
+            !imports
+                .iter()
+                .any(|statement| { source[statement.start..statement.end].contains("late.css") })
+        );
     }
 
     #[test]
@@ -11931,38 +12602,57 @@ mod tests {
                 }
                 thread::sleep(Duration::from_millis(3));
             }
-            assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "pass={pass}: {}", tab.status);
+            assert_eq!(
+                tab.navigation_phase(),
+                NavigationPhase::Ready,
+                "pass={pass}: {}",
+                tab.status
+            );
             let painted = corpus_painted_text(&tab);
-            assert!(painted.contains("2N4 IMPORT GREEN"), "pass={pass}: {painted:?}");
+            assert!(
+                painted.contains("2N4 IMPORT GREEN"),
+                "pass={pass}: {painted:?}"
+            );
             assert!(painted.contains("DEEP GREEN"), "pass={pass}: {painted:?}");
-            assert!(painted.contains("REDIRECT GREEN"), "pass={pass}: {painted:?}");
+            assert!(
+                painted.contains("REDIRECT GREEN"),
+                "pass={pass}: {painted:?}"
+            );
             assert!(painted.contains("BUDGET GREEN"), "pass={pass}: {painted:?}");
-            assert!(painted.contains("SCRIPT AFTER IMPORTS"), "pass={pass}: {painted:?}");
-            assert!(tab.status.contains("CSS externo 27 ok / 5 falha"), "pass={pass}: {}", tab.status);
+            assert!(
+                painted.contains("SCRIPT AFTER IMPORTS"),
+                "pass={pass}: {painted:?}"
+            );
+            assert!(
+                tab.status.contains("CSS externo 27 ok / 5 falha"),
+                "pass={pass}: {}",
+                tab.status
+            );
         }
 
         let node_for_id = |id: &str| {
-            tab.engine.document().nodes().find_map(|node| match node.kind() {
-                phantom_engine::NodeKind::Element(element) if element.attribute("id") == Some(id) => {
-                    Some(node.id())
-                }
-                _ => None,
-            })
+            tab.engine
+                .document()
+                .nodes()
+                .find_map(|node| match node.kind() {
+                    phantom_engine::NodeKind::Element(element)
+                        if element.attribute("id") == Some(id) =>
+                    {
+                        Some(node.id())
+                    }
+                    _ => None,
+                })
         };
-        let imported = node_for_id("imported")
-            .ok_or(std::io::Error::other("2N4 imported node missing"))?;
-        let deep = node_for_id("deep")
-            .ok_or(std::io::Error::other("2N4 deep node missing"))?;
+        let imported =
+            node_for_id("imported").ok_or(std::io::Error::other("2N4 imported node missing"))?;
+        let deep = node_for_id("deep").ok_or(std::io::Error::other("2N4 deep node missing"))?;
         let redirected = node_for_id("redirected")
             .ok_or(std::io::Error::other("2N4 redirected node missing"))?;
-        let order = node_for_id("order")
-            .ok_or(std::io::Error::other("2N4 order node missing"))?;
-        let cycle = node_for_id("cycle")
-            .ok_or(std::io::Error::other("2N4 cycle node missing"))?;
-        let limit = node_for_id("limit")
-            .ok_or(std::io::Error::other("2N4 limit node missing"))?;
-        let budget_node = node_for_id("budget")
-            .ok_or(std::io::Error::other("2N4 budget node missing"))?;
+        let order = node_for_id("order").ok_or(std::io::Error::other("2N4 order node missing"))?;
+        let cycle = node_for_id("cycle").ok_or(std::io::Error::other("2N4 cycle node missing"))?;
+        let limit = node_for_id("limit").ok_or(std::io::Error::other("2N4 limit node missing"))?;
+        let budget_node =
+            node_for_id("budget").ok_or(std::io::Error::other("2N4 budget node missing"))?;
 
         let color_of = |node_id| {
             tab.engine.styles().get(node_id).map(|style| {
@@ -12002,7 +12692,10 @@ mod tests {
             .filter(|layout_box| layout_box.source_node() == budget_node)
             .map(|layout_box| layout_box.rect().width())
             .fold(0.0_f32, f32::max);
-        assert!(imported_width >= 300.0, "2N4 imported width={imported_width}");
+        assert!(
+            imported_width >= 300.0,
+            "2N4 imported width={imported_width}"
+        );
         assert!(cycle_width >= 240.0, "2N4 cycle width={cycle_width}");
         assert!(budget_width >= 280.0, "2N4 budget width={budget_width}");
 
@@ -12010,7 +12703,12 @@ mod tests {
             .events
             .lock()
             .map_or_else(|_| Vec::new(), |events| events.clone());
-        let count = |needle: &str| events.iter().filter(|event| event.as_str() == needle).count();
+        let count = |needle: &str| {
+            events
+                .iter()
+                .filter(|event| event.as_str() == needle)
+                .count()
+        };
         eprintln!(
             "2N4 DIAG phase={:?} status={:?} address={:?} painted={:?}",
             tab.navigation_phase(),
@@ -12022,22 +12720,56 @@ mod tests {
 
         assert_eq!(count("request: /2n4-page.html"), 2, "events={events:?}");
         assert_eq!(count("request: /2n4-root.css"), 1, "events={events:?}");
-        assert_eq!(count("request: /2n4-budget-root.css"), 1, "events={events:?}");
-        assert_eq!(count("request: /2n4-budget-child.css"), 1, "events={events:?}");
+        assert_eq!(
+            count("request: /2n4-budget-root.css"),
+            1,
+            "events={events:?}"
+        );
+        assert_eq!(
+            count("request: /2n4-budget-child.css"),
+            1,
+            "events={events:?}"
+        );
         assert_eq!(count("request: /nested/base.css"), 1, "events={events:?}");
-        assert_eq!(count("request: /nested/deep/deep.css"), 2, "events={events:?}");
+        assert_eq!(
+            count("request: /nested/deep/deep.css"),
+            2,
+            "events={events:?}"
+        );
         assert_eq!(count("request: /cycle-a.css"), 1, "events={events:?}");
         assert_eq!(count("request: /cycle-b.css"), 1, "events={events:?}");
         assert_eq!(count("request: /limit-4.css"), 1, "events={events:?}");
         assert_eq!(count("request: /limit-5.css"), 0, "events={events:?}");
-        assert!(events.iter().any(|event| event == "request: /2n4-redirect.css"));
-        assert!(events.iter().any(|event| event == "request: /2n4-redirect-final.css"));
-        assert!(events.iter().any(|event| event == "request: /2n4-missing.css"));
-        assert!(events.iter().any(|event| event == "request: /2n4-wrong.css"));
-        assert!(events.iter().any(|event| event == "revalidate: if-none-match=\"2n4-deep-v1\""));
-        assert!(events.iter().any(|event| {
-            event.contains("response: /nested/deep/deep.css; 304 Not Modified")
-        }));
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "request: /2n4-redirect.css")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "request: /2n4-redirect-final.css")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "request: /2n4-missing.css")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "request: /2n4-wrong.css")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "revalidate: if-none-match=\"2n4-deep-v1\"")
+        );
+        assert!(
+            events.iter().any(|event| {
+                event.contains("response: /nested/deep/deep.css; 304 Not Modified")
+            })
+        );
         assert!(tab.pending_external_stylesheets.is_none());
         Ok(())
     }
@@ -12060,36 +12792,89 @@ mod tests {
                 poll_pending_page_scripts(&mut tab, 1.0);
                 poll_page_fetches(&mut tab, 1.0);
                 let painted = corpus_painted_text(&tab);
-                if tab.navigation_phase() == NavigationPhase::Failed { break; }
+                if tab.navigation_phase() == NavigationPhase::Failed {
+                    break;
+                }
                 if tab.navigation_phase() == NavigationPhase::Ready
                     && painted.contains("2N3 CACHE GREEN")
-                    && tab.pending_external_stylesheets.is_none() { break; }
+                    && tab.pending_external_stylesheets.is_none()
+                {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(3));
             }
-            assert_eq!(tab.navigation_phase(), NavigationPhase::Ready, "pass={pass}");
+            assert_eq!(
+                tab.navigation_phase(),
+                NavigationPhase::Ready,
+                "pass={pass}"
+            );
             assert!(corpus_painted_text(&tab).contains("2N3 CACHE GREEN"));
         }
 
-        let responsive = tab.engine.document().nodes().find_map(|node| match node.kind() {
-            phantom_engine::NodeKind::Element(element) if element.attribute("id") == Some("responsive") => Some(node.id()),
-            _ => None,
-        }).ok_or(std::io::Error::other("2N3 responsive node missing"))?;
-        let wide_color = tab.engine.styles().get(responsive).map(|style| style.color())
+        let responsive = tab
+            .engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
+                phantom_engine::NodeKind::Element(element)
+                    if element.attribute("id") == Some("responsive") =>
+                {
+                    Some(node.id())
+                }
+                _ => None,
+            })
+            .ok_or(std::io::Error::other("2N3 responsive node missing"))?;
+        let wide_color = tab
+            .engine
+            .styles()
+            .get(responsive)
+            .map(|style| style.color())
             .ok_or(std::io::Error::other("2N3 wide style missing"))?;
-        assert_eq!((wide_color.red(), wide_color.green(), wide_color.blue()), (198, 40, 40));
+        assert_eq!(
+            (wide_color.red(), wide_color.green(), wide_color.blue()),
+            (198, 40, 40)
+        );
         tab.engine.relayout_with_viewport(600.0, 768.0)?;
-        let narrow_color = tab.engine.styles().get(responsive).map(|style| style.color())
+        let narrow_color = tab
+            .engine
+            .styles()
+            .get(responsive)
+            .map(|style| style.color())
             .ok_or(std::io::Error::other("2N3 narrow style missing"))?;
-        assert_eq!((narrow_color.red(), narrow_color.green(), narrow_color.blue()), (21, 101, 192));
+        assert_eq!(
+            (
+                narrow_color.red(),
+                narrow_color.green(),
+                narrow_color.blue()
+            ),
+            (21, 101, 192)
+        );
         tab.engine.relayout_with_viewport(1024.0, 768.0)?;
 
-        let events_after_cache = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
-        let cached_requests = events_after_cache.iter().filter(|event| event.as_str() == "request: /2n3-cached.css").count();
-        let revalidate_requests = events_after_cache.iter().filter(|event| event.as_str() == "request: /2n3-revalidate.css").count();
+        let events_after_cache = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
+        let cached_requests = events_after_cache
+            .iter()
+            .filter(|event| event.as_str() == "request: /2n3-cached.css")
+            .count();
+        let revalidate_requests = events_after_cache
+            .iter()
+            .filter(|event| event.as_str() == "request: /2n3-revalidate.css")
+            .count();
         assert_eq!(cached_requests, 1, "events={events_after_cache:?}");
         assert_eq!(revalidate_requests, 2, "events={events_after_cache:?}");
-        assert!(events_after_cache.iter().any(|event| event == "revalidate: if-none-match=\"2n3-v1\""));
-        assert!(events_after_cache.iter().any(|event| event.contains("response: /2n3-revalidate.css; 304 Not Modified")));
+        assert!(
+            events_after_cache
+                .iter()
+                .any(|event| event == "revalidate: if-none-match=\"2n3-v1\"")
+        );
+        assert!(
+            events_after_cache
+                .iter()
+                .any(|event| event.contains("response: /2n3-revalidate.css; 304 Not Modified"))
+        );
 
         let slow_url = format!("{}/2n3-slow.html", server.address);
         start_navigation(&network, &mut tab, slow_url, NavigationAction::New);
@@ -12116,17 +12901,28 @@ mod tests {
             poll_pending_external_stylesheets(&mut tab, &network, 1.0);
             poll_pending_page_scripts(&mut tab, 1.0);
             poll_page_fetches(&mut tab, 1.0);
-            if tab.navigation_phase() == NavigationPhase::Failed { break; }
+            if tab.navigation_phase() == NavigationPhase::Failed {
+                break;
+            }
             if tab.navigation_phase() == NavigationPhase::Ready
-                && corpus_painted_text(&tab).contains("2N3 CLEAN GREEN") { break; }
+                && corpus_painted_text(&tab).contains("2N3 CLEAN GREEN")
+            {
+                break;
+            }
             thread::sleep(Duration::from_millis(3));
         }
 
         let painted = corpus_painted_text(&tab);
-        let events = server.events.lock().map_or_else(|_| Vec::new(), |events| events.clone());
+        let events = server
+            .events
+            .lock()
+            .map_or_else(|_| Vec::new(), |events| events.clone());
         eprintln!(
             "2N3 DIAG generation={} phase={:?} status={:?} address={:?} painted={painted:?}",
-            tab.document_generation, tab.navigation_phase(), tab.status, tab.address,
+            tab.document_generation,
+            tab.navigation_phase(),
+            tab.status,
+            tab.address,
         );
         eprintln!("2N3 DIAG server={events:?}");
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
@@ -12135,7 +12931,11 @@ mod tests {
         assert!(!painted.contains("STALE STYLE APPLIED"));
         assert!(tab.pending_external_stylesheets.is_none());
         assert!(events.iter().any(|event| event == "request: /2n3-slow.css"));
-        assert!(events.iter().any(|event| event == "request: /2n3-clean.html"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "request: /2n3-clean.html")
+        );
         Ok(())
     }
 
@@ -12189,7 +12989,10 @@ mod tests {
 
         assert_eq!(tab.navigation_phase(), NavigationPhase::Ready);
         assert_eq!(tab.address, url);
-        assert!(observed_stylesheet_phase, "stylesheet phase was not observed");
+        assert!(
+            observed_stylesheet_phase,
+            "stylesheet phase was not observed"
+        );
         assert!(painted.contains("SCRIPT AFTER CSS"), "painted={painted:?}");
 
         let target = tab
@@ -12239,7 +13042,11 @@ mod tests {
             .map(|style| style.color())
             .ok_or(std::io::Error::other("2N2 target style missing"))?;
         assert_eq!(
-            (target_color.red(), target_color.green(), target_color.blue()),
+            (
+                target_color.red(),
+                target_color.green(),
+                target_color.blue()
+            ),
             (46, 125, 50)
         );
         let order_color = tab
@@ -12275,8 +13082,16 @@ mod tests {
                 "missing server event {expected:?}: {events:?}"
             );
         }
-        assert!(!events.iter().any(|event| event == "request: /2n2-alternate.css"));
-        assert!(!events.iter().any(|event| event == "request: /2n2-print.css"));
+        assert!(
+            !events
+                .iter()
+                .any(|event| event == "request: /2n2-alternate.css")
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event == "request: /2n2-print.css")
+        );
         assert!(tab.pending_external_stylesheets.is_none());
         assert!(tab.pending_page_scripts.is_none());
 
@@ -12293,12 +13108,7 @@ mod tests {
         let entry_url = format!("{}/2n1-entry", server.address);
         let final_url = format!("{}/2n1-page.html", server.address);
 
-        start_navigation(
-            &network,
-            &mut tab,
-            entry_url,
-            NavigationAction::New,
-        );
+        start_navigation(&network, &mut tab, entry_url, NavigationAction::New);
 
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut peak_fetches = 0_usize;
@@ -12366,5 +13176,4 @@ mod tests {
 
         Ok(())
     }
-
 }

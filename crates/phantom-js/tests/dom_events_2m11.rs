@@ -25,8 +25,7 @@ fn runtime_with_target() -> Result<Runtime, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn passive_listener_cannot_cancel_default()
--> Result<(), Box<dyn std::error::Error>> {
+fn passive_listener_cannot_cancel_default() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_target()?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \
@@ -97,16 +96,12 @@ fn duplicate_registration_keeps_first_passive_and_once_configuration()
          count + '|' + firstResult + '|' + first.defaultPrevented + '|' + secondResult + '|' + second.defaultPrevented;",
     )?;
 
-    assert_eq!(
-        value,
-        Value::String("2|true|false|true|false".to_owned())
-    );
+    assert_eq!(value, Value::String("2|true|false|true|false".to_owned()));
     Ok(())
 }
 
 #[test]
-fn once_listener_is_removed_before_reentrant_dispatch()
--> Result<(), Box<dyn std::error::Error>> {
+fn once_listener_is_removed_before_reentrant_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = runtime_with_target()?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \

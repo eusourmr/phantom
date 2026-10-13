@@ -35,8 +35,8 @@ pub use phantom_paint::{
 };
 // PHANTOM_2J2_LIVE_DOM_BRIDGE_I
 pub use phantom_js::{
-    BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, FetchCredentialsMode, FetchHostRequest,
-    RuntimeError as JavaScriptError, Value as JavaScriptValue,
+    BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, FetchCredentialsMode,
+    FetchHostRequest, RuntimeError as JavaScriptError, Value as JavaScriptValue,
 };
 
 use thiserror::Error;
@@ -429,10 +429,9 @@ fn stylesheet_link_is_eligible(element: &ElementData) -> bool {
         return false;
     }
 
-    if !element
-        .attribute("type")
-        .is_none_or(|value| value.trim().is_empty() || value.trim().eq_ignore_ascii_case("text/css"))
-    {
+    if !element.attribute("type").is_none_or(|value| {
+        value.trim().is_empty() || value.trim().eq_ignore_ascii_case("text/css")
+    }) {
         return false;
     }
 
@@ -808,9 +807,7 @@ impl Engine {
             .iter()
             .rev()
             .find(|layout_box| rect_contains(layout_box.rect(), x, y))
-            .and_then(|layout_box| {
-                nearest_element_node(&self.document, layout_box.source_node())
-            })
+            .and_then(|layout_box| nearest_element_node(&self.document, layout_box.source_node()))
             .map(NodeId::as_u64)
     }
     /// Returns responsive image subresources for a default device-pixel ratio.
@@ -1072,7 +1069,9 @@ impl Engine {
                 _ => false,
             });
         if !eligible {
-            return Err(EngineError::ExternalStylesheetTargetInvalid(node_id.as_u64()));
+            return Err(EngineError::ExternalStylesheetTargetInvalid(
+                node_id.as_u64(),
+            ));
         }
 
         let mut external_stylesheets = self.external_stylesheets.clone();
@@ -1178,22 +1177,27 @@ impl Engine {
     /// Script contents are captured before execution mutates the DOM.
     #[must_use]
     pub fn page_script_tasks(&self) -> Vec<PageScriptTask> {
-        self.document.nodes().filter_map(|node| {
-            let NodeKind::Element(element) = node.kind() else {
-                return None;
-            };
-            if element.tag_name() != "script"
-                || element.attribute("async").is_some()
-                || !is_supported_classic_script_type(element.attribute("type"))
-            {
-                return None;
-            }
-            if let Some(src) = element.attribute("src") {
-                return (!src.trim().is_empty()).then(|| PageScriptTask::External(src.to_owned()));
-            }
-            let source = descendant_text_content(&self.document, node.id());
-            (!source.trim().is_empty()).then_some(PageScriptTask::Inline(source))
-        }).take(64).collect()
+        self.document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+                if element.tag_name() != "script"
+                    || element.attribute("async").is_some()
+                    || !is_supported_classic_script_type(element.attribute("type"))
+                {
+                    return None;
+                }
+                if let Some(src) = element.attribute("src") {
+                    return (!src.trim().is_empty())
+                        .then(|| PageScriptTask::External(src.to_owned()));
+                }
+                let source = descendant_text_content(&self.document, node.id());
+                (!source.trim().is_empty()).then_some(PageScriptTask::Inline(source))
+            })
+            .take(64)
+            .collect()
     }
 
     // PHANTOM_2L1_PAGE_SCRIPT_EXECUTION_I
@@ -1212,19 +1216,24 @@ impl Engine {
         document_url: &str,
         device_pixel_ratio: f64,
     ) -> Result<usize, EngineError> {
-        let scripts: Vec<String> = self.document.nodes().filter_map(|node| {
-            let NodeKind::Element(element) = node.kind() else {
-                return None;
-            };
-            if element.tag_name() != "script"
-                || element.attribute("src").is_some()
-                || element.attribute("async").is_some()
-                || !is_supported_classic_script_type(element.attribute("type"))
-            {
-                return None;
-            }
-            Some(descendant_text_content(&self.document, node.id()))
-        }).filter(|source| !source.trim().is_empty()).collect();
+        let scripts: Vec<String> = self
+            .document
+            .nodes()
+            .filter_map(|node| {
+                let NodeKind::Element(element) = node.kind() else {
+                    return None;
+                };
+                if element.tag_name() != "script"
+                    || element.attribute("src").is_some()
+                    || element.attribute("async").is_some()
+                    || !is_supported_classic_script_type(element.attribute("type"))
+                {
+                    return None;
+                }
+                Some(descendant_text_content(&self.document, node.id()))
+            })
+            .filter(|source| !source.trim().is_empty())
+            .collect();
 
         let mut executed = 0;
         for source in scripts {
@@ -1347,7 +1356,11 @@ impl Engine {
         let mut javascript = self.javascript.clone();
         let (body, headers) = response_body_and_headers;
         javascript.complete_fetch_success_with_headers(
-            request_id, status, response_url, body, headers,
+            request_id,
+            status,
+            response_url,
+            body,
+            headers,
         )?;
         let mutations = javascript.drain_dom_mutations();
         if !mutations.is_empty() {
@@ -1768,8 +1781,7 @@ fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkR
                 return None;
             }
 
-            let (anchor_node, anchor) =
-                link_element_for_node(document, layout_box.source_node())?;
+            let (anchor_node, anchor) = link_element_for_node(document, layout_box.source_node())?;
             let href = anchor.attribute("href")?.to_owned();
             let rect = layout_box.rect();
 
@@ -1789,10 +1801,7 @@ fn build_link_regions(document: &Document, layout: &LayoutSnapshot) -> Vec<LinkR
         .collect()
 }
 
-fn link_element_for_node(
-    document: &Document,
-    node_id: NodeId,
-) -> Option<(NodeId, &ElementData)> {
+fn link_element_for_node(document: &Document, node_id: NodeId) -> Option<(NodeId, &ElementData)> {
     let mut current = Some(node_id);
 
     while let Some(current_id) = current {
@@ -2186,7 +2195,8 @@ mod tests {
     use phantom_dom::NodeKind;
 
     use super::{
-        Engine, EngineError, EngineState, ImageLoading, LayoutKind, PageScriptTask, PaintCommand, Rgba,
+        Engine, EngineError, EngineState, ImageLoading, LayoutKind, PageScriptTask, PaintCommand,
+        Rgba,
     };
 
     #[test]
@@ -2364,8 +2374,8 @@ mod tests {
 
     // PHANTOM_2N1_REAL_WEB_NETWORK_I
     #[test]
-    fn defer_and_legacy_classic_script_types_are_exposed_as_page_tasks()
-    -> Result<(), EngineError> {
+    fn defer_and_legacy_classic_script_types_are_exposed_as_page_tasks() -> Result<(), EngineError>
+    {
         let mut engine = Engine::new();
 
         engine.load_html(
@@ -2453,35 +2463,51 @@ mod tests {
 
     // PHANTOM_2N3_STYLESHEET_LIFECYCLE_CACHE_III
     #[test]
-    fn external_stylesheet_media_reacts_to_relayout_without_reinstall()
-    -> Result<(), EngineError> {
+    fn external_stylesheet_media_reacts_to_relayout_without_reinstall() -> Result<(), EngineError> {
         let mut engine = Engine::new();
         engine.load_html(
             "<link rel='stylesheet' href='/responsive.css'><p id='responsive'>Responsive external CSS</p>",
         )?;
-        let request = engine.external_stylesheet_requests().into_iter().next()
+        let request = engine
+            .external_stylesheet_requests()
+            .into_iter()
+            .next()
             .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
         engine.install_external_stylesheet(
             request.node_id(),
             "#responsive { color: rgb(198, 40, 40); } @media (max-width: 700px) { #responsive { color: rgb(21, 101, 192); } }",
         )?;
-        let responsive = engine.document().nodes().find_map(|node| match node.kind() {
-            NodeKind::Element(element) if element.attribute("id") == Some("responsive") => Some(node.id()),
-            _ => None,
-        }).ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
+        let responsive = engine
+            .document()
+            .nodes()
+            .find_map(|node| match node.kind() {
+                NodeKind::Element(element) if element.attribute("id") == Some("responsive") => {
+                    Some(node.id())
+                }
+                _ => None,
+            })
+            .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
 
-        let wide = engine.styles().get(responsive).map(|style| style.color())
+        let wide = engine
+            .styles()
+            .get(responsive)
+            .map(|style| style.color())
             .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
         assert_eq!(wide, Rgba::new(198, 40, 40, 255));
         engine.relayout_with_viewport(600.0, 768.0)?;
-        let narrow = engine.styles().get(responsive).map(|style| style.color())
+        let narrow = engine
+            .styles()
+            .get(responsive)
+            .map(|style| style.color())
             .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
         assert_eq!(narrow, Rgba::new(21, 101, 192, 255));
         engine.relayout_with_viewport(1024.0, 768.0)?;
-        let wide_again = engine.styles().get(responsive).map(|style| style.color())
+        let wide_again = engine
+            .styles()
+            .get(responsive)
+            .map(|style| style.color())
             .ok_or(EngineError::ExternalStylesheetTargetInvalid(0))?;
         assert_eq!(wide_again, Rgba::new(198, 40, 40, 255));
         Ok(())
     }
-
 }

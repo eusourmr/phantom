@@ -12,9 +12,11 @@ fn element(
     attributes: BTreeMap<String, String>,
     parent: Option<u64>,
 ) -> Result<BrowserDomElementSnapshot, Box<dyn std::error::Error>> {
-    Ok(BrowserDomElementSnapshot::new(node_id, tag, attributes, "")?
-        .with_parent_node_id(parent)
-        .with_connected(true))
+    Ok(
+        BrowserDomElementSnapshot::new(node_id, tag, attributes, "")?
+            .with_parent_node_id(parent)
+            .with_connected(true),
+    )
 }
 
 fn attrs(values: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -98,8 +100,7 @@ fn prevent_default_blocks_native_default_action_and_preserves_listener_mutation(
 }
 
 #[test]
-fn trusted_click_finishes_with_a_microtask_checkpoint()
--> Result<(), Box<dyn std::error::Error>> {
+fn trusted_click_finishes_with_a_microtask_checkpoint() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = interaction_runtime()?;
     runtime.execute(
         "var trace = 'sync'; \
@@ -118,10 +119,8 @@ fn trusted_click_finishes_with_a_microtask_checkpoint()
     Ok(())
 }
 
-
 #[test]
-fn script_dispatch_event_cannot_forge_is_trusted()
--> Result<(), Box<dyn std::error::Error>> {
+fn script_dispatch_event_cannot_forge_is_trusted() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = interaction_runtime()?;
     let value = runtime.execute(
         "var button = document.getElementById('go'); \
@@ -137,8 +136,8 @@ fn script_dispatch_event_cannot_forge_is_trusted()
 }
 
 #[test]
-fn disabled_form_control_suppresses_host_originated_click()
--> Result<(), Box<dyn std::error::Error>> {
+fn disabled_form_control_suppresses_host_originated_click() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = interaction_runtime()?;
     runtime.execute(
         "var count = 0; document.getElementById('disabled').addEventListener('click', function() { count = count + 1; });",

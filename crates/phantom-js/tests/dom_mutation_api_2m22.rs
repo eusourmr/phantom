@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserHostSnapshot, Runtime, RuntimeErrorKind, Value,
+};
 
 fn attrs(id: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("id".to_owned(), id.to_owned())])
@@ -98,8 +100,8 @@ fn invalid_multi_node_mutation_fails_before_partial_reparenting()
 }
 
 #[test]
-fn remove_child_rejects_non_child_without_mutating_tree()
--> Result<(), Box<dyn std::error::Error>> {
+fn remove_child_rejects_non_child_without_mutating_tree() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = mutation_runtime()?;
     match runtime.execute(
         "var p = document.getElementById('parent'); var d = document.getElementById('d'); p.removeChild(d);",

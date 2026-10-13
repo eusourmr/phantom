@@ -30,8 +30,8 @@ fn math_slice_supports_common_numeric_operations_and_constants()
 }
 
 #[test]
-fn parsing_globals_handle_numeric_prefixes_radix_and_nan()
--> Result<(), Box<dyn std::error::Error>> {
+fn parsing_globals_handle_numeric_prefixes_radix_and_nan() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut runtime = browser_runtime()?;
     let value = runtime.execute(
         "parseInt('42px', 10) + '|' + parseInt('0xff', 0) + '|' + parseFloat(' -12.5rem') + '|' + isNaN('not-a-number') + '|' + isNaN('12');",
@@ -50,7 +50,10 @@ fn array_and_number_static_checks_keep_non_coercing_contract()
     let value = runtime.execute(
         "Array.isArray([1, 2]) + '|' + Array.isArray({a: 1}) + '|' + Number.isFinite(12) + '|' + Number.isFinite('12') + '|' + Number.isFinite(Infinity);",
     )?;
-    assert_eq!(value, Value::String("true|false|true|false|false".to_owned()));
+    assert_eq!(
+        value,
+        Value::String("true|false|true|false|false".to_owned())
+    );
     Ok(())
 }
 

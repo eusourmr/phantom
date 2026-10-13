@@ -2,9 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use phantom_js::{BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, Runtime, Value};
+use phantom_js::{
+    BrowserDomElementSnapshot, BrowserDomMutation, BrowserHostSnapshot, Runtime, Value,
+};
 
-fn runtime_with_target(attributes: BTreeMap<String, String>) -> Result<Runtime, Box<dyn std::error::Error>> {
+fn runtime_with_target(
+    attributes: BTreeMap<String, String>,
+) -> Result<Runtime, Box<dyn std::error::Error>> {
     let target = BrowserDomElementSnapshot::new(1, "div", attributes, "target")?;
     let snapshot = BrowserHostSnapshot::new(
         "https://dom.test/reflection",
@@ -39,10 +43,8 @@ fn string_reflected_properties_are_live_across_property_and_attribute_paths()
 #[test]
 fn hidden_reflects_boolean_attribute_presence_and_truthiness()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = runtime_with_target(BTreeMap::from([(
-        "id".to_owned(),
-        "target".to_owned(),
-    )]))?;
+    let mut runtime =
+        runtime_with_target(BTreeMap::from([("id".to_owned(), "target".to_owned())]))?;
     let value = runtime.execute(
         "var target = document.getElementById('target'); \
          var a = target.hidden; target.hidden = 'yes'; \
@@ -78,10 +80,8 @@ fn get_attribute_names_returns_bounded_deterministic_snapshot()
 #[test]
 fn reflected_property_writes_emit_real_dom_attribute_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = runtime_with_target(BTreeMap::from([(
-        "id".to_owned(),
-        "target".to_owned(),
-    )]))?;
+    let mut runtime =
+        runtime_with_target(BTreeMap::from([("id".to_owned(), "target".to_owned())]))?;
     runtime.execute(
         "var target = document.getElementById('target'); \
          target.title = 'tip'; target.hidden = true; target.hidden = false;",

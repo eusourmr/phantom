@@ -135,7 +135,6 @@ const MAX_FETCH_HEADER_NAME_BYTES: usize = 256;
 const MAX_FETCH_HEADER_VALUE_BYTES: usize = 8 * 1024;
 const MAX_FETCH_HEADER_BYTES: usize = 32 * 1024;
 
-
 // PHANTOM_2M17_WEB_CORE_LIBRARY_II
 const MAX_JSON_DEPTH: usize = 128;
 
@@ -981,27 +980,39 @@ pub struct FetchHostRequest {
 impl FetchHostRequest {
     /// Host request identifier paired with completion APIs.
     #[must_use]
-    pub const fn id(&self) -> u64 { self.id }
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
 
     /// Raw URL supplied by JavaScript.
     #[must_use]
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 
     /// Canonical uppercase method token.
     #[must_use]
-    pub fn method(&self) -> &str { &self.method }
+    pub fn method(&self) -> &str {
+        &self.method
+    }
 
     /// Author headers captured from the bounded RequestInit object.
     #[must_use]
-    pub fn headers(&self) -> &[(String, String)] { &self.headers }
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
 
     /// Optional textual request body.
     #[must_use]
-    pub fn body(&self) -> Option<&str> { self.body.as_deref() }
+    pub fn body(&self) -> Option<&str> {
+        self.body.as_deref()
+    }
 
     /// Requested credentials mode.
     #[must_use]
-    pub const fn credentials(&self) -> FetchCredentialsMode { self.credentials }
+    pub const fn credentials(&self) -> FetchCredentialsMode {
+        self.credentials
+    }
 }
 
 // PHANTOM_2N18_RESPONSE_HEADERS_EXPOSURE_I
@@ -1009,11 +1020,19 @@ fn validate_response_headers_2n18(
     headers: &[(String, String)],
 ) -> Result<BTreeMap<String, String>, RuntimeError> {
     const NAMES: [&str; 7] = [
-        "cache-control", "content-language", "content-length", "content-type",
-        "expires", "last-modified", "pragma",
+        "cache-control",
+        "content-language",
+        "content-length",
+        "content-type",
+        "expires",
+        "last-modified",
+        "pragma",
     ];
     if headers.len() > NAMES.len() {
-        return Err(RuntimeError::new(RuntimeErrorKind::FetchResponseLimitExceeded, 0));
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::FetchResponseLimitExceeded,
+            0,
+        ));
     }
     let mut values = BTreeMap::new();
     for (name, value) in headers {
@@ -1023,7 +1042,10 @@ fn validate_response_headers_2n18(
             || value.bytes().any(|byte| byte == b'\r' || byte == b'\n')
             || values.insert(name, value.clone()).is_some()
         {
-            return Err(RuntimeError::new(RuntimeErrorKind::FetchResponseLimitExceeded, 0));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::FetchResponseLimitExceeded,
+                0,
+            ));
         }
     }
     Ok(values)
@@ -1306,7 +1328,11 @@ impl Runtime {
         let admitted = validate_response_headers_2n18(headers)?;
         let mut staged = self.clone();
         staged.complete_fetch_success_inner_with_headers(
-            request_id, status, response_url.into(), body.into(), admitted,
+            request_id,
+            status,
+            response_url.into(),
+            body.into(),
+            admitted,
         )?;
         *self = staged;
         Ok(())
@@ -1380,13 +1406,7 @@ impl Runtime {
             element.attributes.contains_key("disabled")
                 && matches!(
                     element.tag_name.as_str(),
-                    "button"
-                        | "input"
-                        | "select"
-                        | "textarea"
-                        | "option"
-                        | "optgroup"
-                        | "fieldset"
+                    "button" | "input" | "select" | "textarea" | "option" | "optgroup" | "fieldset"
                 )
         });
         if disabled {
@@ -1463,10 +1483,14 @@ impl Runtime {
                 // across host refreshes. This is a bounded compatibility slice, not a prototype
                 // implementation: the exposed methods are own properties of stable host objects.
                 let console = object_id(self.allocate_object(BTreeMap::new(), 0)?, 0)?;
-                let console_log = self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
-                let console_info = self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
-                let console_warn = self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
-                let console_error = self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
+                let console_log =
+                    self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
+                let console_info =
+                    self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
+                let console_warn =
+                    self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
+                let console_error =
+                    self.allocate_native_function(NativeFunctionKind::ConsoleNoop, 0)?;
                 self.replace_host_object(
                     console,
                     BTreeMap::from([
@@ -1515,10 +1539,7 @@ impl Runtime {
                 self.replace_host_object(
                     array,
                     BTreeMap::from([
-                        (
-                            "isArray".to_owned(),
-                            Value::NativeFunction(array_is_array),
-                        ),
+                        ("isArray".to_owned(), Value::NativeFunction(array_is_array)),
                         ("of".to_owned(), Value::NativeFunction(array_of)),
                     ]),
                 )?;
@@ -1536,25 +1557,40 @@ impl Runtime {
                     BTreeMap::from([
                         ("NaN".to_owned(), Value::Number(f64::NAN)),
                         ("POSITIVE_INFINITY".to_owned(), Value::Number(f64::INFINITY)),
-                        ("NEGATIVE_INFINITY".to_owned(), Value::Number(f64::NEG_INFINITY)),
-                        ("isFinite".to_owned(), Value::NativeFunction(number_is_finite)),
-                        ("isInteger".to_owned(), Value::NativeFunction(number_is_integer)),
+                        (
+                            "NEGATIVE_INFINITY".to_owned(),
+                            Value::Number(f64::NEG_INFINITY),
+                        ),
+                        (
+                            "isFinite".to_owned(),
+                            Value::NativeFunction(number_is_finite),
+                        ),
+                        (
+                            "isInteger".to_owned(),
+                            Value::NativeFunction(number_is_integer),
+                        ),
                         ("isNaN".to_owned(), Value::NativeFunction(number_is_nan)),
                     ]),
                 )?;
 
                 let parse_int = self.allocate_native_function(NativeFunctionKind::ParseInt, 0)?;
-                let parse_float = self.allocate_native_function(NativeFunctionKind::ParseFloat, 0)?;
+                let parse_float =
+                    self.allocate_native_function(NativeFunctionKind::ParseFloat, 0)?;
                 let is_nan = self.allocate_native_function(NativeFunctionKind::GlobalIsNaN, 0)?;
 
                 // PHANTOM_2M17_WEB_CORE_LIBRARY_II
                 let object = object_id(self.allocate_object(BTreeMap::new(), 0)?, 0)?;
-                let object_keys = self.allocate_native_function(NativeFunctionKind::ObjectKeys, 0)?;
-                let object_values = self.allocate_native_function(NativeFunctionKind::ObjectValues, 0)?;
-                let object_assign = self.allocate_native_function(NativeFunctionKind::ObjectAssign, 0)?;
+                let object_keys =
+                    self.allocate_native_function(NativeFunctionKind::ObjectKeys, 0)?;
+                let object_values =
+                    self.allocate_native_function(NativeFunctionKind::ObjectValues, 0)?;
+                let object_assign =
+                    self.allocate_native_function(NativeFunctionKind::ObjectAssign, 0)?;
                 // PHANTOM_2M18_WEB_CORE_LIBRARY_III
-                let object_entries = self.allocate_native_function(NativeFunctionKind::ObjectEntries, 0)?;
-                let object_has_own = self.allocate_native_function(NativeFunctionKind::ObjectHasOwn, 0)?;
+                let object_entries =
+                    self.allocate_native_function(NativeFunctionKind::ObjectEntries, 0)?;
+                let object_has_own =
+                    self.allocate_native_function(NativeFunctionKind::ObjectHasOwn, 0)?;
                 // PHANTOM_2M19_WEB_CORE_LIBRARY_FINAL_GATE
                 let object_from_entries =
                     self.allocate_native_function(NativeFunctionKind::ObjectFromEntries, 0)?;
@@ -1563,7 +1599,10 @@ impl Runtime {
                     BTreeMap::from([
                         ("assign".to_owned(), Value::NativeFunction(object_assign)),
                         ("entries".to_owned(), Value::NativeFunction(object_entries)),
-                        ("fromEntries".to_owned(), Value::NativeFunction(object_from_entries)),
+                        (
+                            "fromEntries".to_owned(),
+                            Value::NativeFunction(object_from_entries),
+                        ),
                         ("hasOwn".to_owned(), Value::NativeFunction(object_has_own)),
                         ("keys".to_owned(), Value::NativeFunction(object_keys)),
                         ("values".to_owned(), Value::NativeFunction(object_values)),
@@ -1572,55 +1611,84 @@ impl Runtime {
 
                 let json = object_id(self.allocate_object(BTreeMap::new(), 0)?, 0)?;
                 let json_parse = self.allocate_native_function(NativeFunctionKind::JsonParse, 0)?;
-                let json_stringify = self.allocate_native_function(NativeFunctionKind::JsonStringify, 0)?;
+                let json_stringify =
+                    self.allocate_native_function(NativeFunctionKind::JsonStringify, 0)?;
                 self.replace_host_object(
                     json,
                     BTreeMap::from([
                         ("parse".to_owned(), Value::NativeFunction(json_parse)),
-                        ("stringify".to_owned(), Value::NativeFunction(json_stringify)),
+                        (
+                            "stringify".to_owned(),
+                            Value::NativeFunction(json_stringify),
+                        ),
                     ]),
                 )?;
 
                 let array_push = self.allocate_native_function(NativeFunctionKind::ArrayPush, 0)?;
                 let array_pop = self.allocate_native_function(NativeFunctionKind::ArrayPop, 0)?;
                 let array_join = self.allocate_native_function(NativeFunctionKind::ArrayJoin, 0)?;
-                let array_index_of = self.allocate_native_function(NativeFunctionKind::ArrayIndexOf, 0)?;
-                let array_includes = self.allocate_native_function(NativeFunctionKind::ArrayIncludes, 0)?;
-                let array_slice = self.allocate_native_function(NativeFunctionKind::ArraySlice, 0)?;
-                let string_trim = self.allocate_native_function(NativeFunctionKind::StringTrim, 0)?;
-                let string_to_lower_case = self.allocate_native_function(NativeFunctionKind::StringToLowerCase, 0)?;
-                let string_to_upper_case = self.allocate_native_function(NativeFunctionKind::StringToUpperCase, 0)?;
-                let string_includes = self.allocate_native_function(NativeFunctionKind::StringIncludes, 0)?;
-                let string_starts_with = self.allocate_native_function(NativeFunctionKind::StringStartsWith, 0)?;
-                let string_ends_with = self.allocate_native_function(NativeFunctionKind::StringEndsWith, 0)?;
-                let string_index_of = self.allocate_native_function(NativeFunctionKind::StringIndexOf, 0)?;
-                let string_slice = self.allocate_native_function(NativeFunctionKind::StringSlice, 0)?;
+                let array_index_of =
+                    self.allocate_native_function(NativeFunctionKind::ArrayIndexOf, 0)?;
+                let array_includes =
+                    self.allocate_native_function(NativeFunctionKind::ArrayIncludes, 0)?;
+                let array_slice =
+                    self.allocate_native_function(NativeFunctionKind::ArraySlice, 0)?;
+                let string_trim =
+                    self.allocate_native_function(NativeFunctionKind::StringTrim, 0)?;
+                let string_to_lower_case =
+                    self.allocate_native_function(NativeFunctionKind::StringToLowerCase, 0)?;
+                let string_to_upper_case =
+                    self.allocate_native_function(NativeFunctionKind::StringToUpperCase, 0)?;
+                let string_includes =
+                    self.allocate_native_function(NativeFunctionKind::StringIncludes, 0)?;
+                let string_starts_with =
+                    self.allocate_native_function(NativeFunctionKind::StringStartsWith, 0)?;
+                let string_ends_with =
+                    self.allocate_native_function(NativeFunctionKind::StringEndsWith, 0)?;
+                let string_index_of =
+                    self.allocate_native_function(NativeFunctionKind::StringIndexOf, 0)?;
+                let string_slice =
+                    self.allocate_native_function(NativeFunctionKind::StringSlice, 0)?;
 
                 // PHANTOM_2M18_WEB_CORE_LIBRARY_III
-                let array_for_each = self.allocate_native_function(NativeFunctionKind::ArrayForEach, 0)?;
+                let array_for_each =
+                    self.allocate_native_function(NativeFunctionKind::ArrayForEach, 0)?;
                 let array_map = self.allocate_native_function(NativeFunctionKind::ArrayMap, 0)?;
-                let array_filter = self.allocate_native_function(NativeFunctionKind::ArrayFilter, 0)?;
+                let array_filter =
+                    self.allocate_native_function(NativeFunctionKind::ArrayFilter, 0)?;
                 let array_some = self.allocate_native_function(NativeFunctionKind::ArraySome, 0)?;
-                let array_every = self.allocate_native_function(NativeFunctionKind::ArrayEvery, 0)?;
+                let array_every =
+                    self.allocate_native_function(NativeFunctionKind::ArrayEvery, 0)?;
                 let array_find = self.allocate_native_function(NativeFunctionKind::ArrayFind, 0)?;
-                let array_find_index = self.allocate_native_function(NativeFunctionKind::ArrayFindIndex, 0)?;
-                let array_reduce = self.allocate_native_function(NativeFunctionKind::ArrayReduce, 0)?;
-                let string_split = self.allocate_native_function(NativeFunctionKind::StringSplit, 0)?;
-                let string_replace = self.allocate_native_function(NativeFunctionKind::StringReplace, 0)?;
+                let array_find_index =
+                    self.allocate_native_function(NativeFunctionKind::ArrayFindIndex, 0)?;
+                let array_reduce =
+                    self.allocate_native_function(NativeFunctionKind::ArrayReduce, 0)?;
+                let string_split =
+                    self.allocate_native_function(NativeFunctionKind::StringSplit, 0)?;
+                let string_replace =
+                    self.allocate_native_function(NativeFunctionKind::StringReplace, 0)?;
 
                 // PHANTOM_2M19_WEB_CORE_LIBRARY_FINAL_GATE
                 let array_at = self.allocate_native_function(NativeFunctionKind::ArrayAt, 0)?;
-                let array_shift = self.allocate_native_function(NativeFunctionKind::ArrayShift, 0)?;
-                let array_unshift = self.allocate_native_function(NativeFunctionKind::ArrayUnshift, 0)?;
-                let array_concat = self.allocate_native_function(NativeFunctionKind::ArrayConcat, 0)?;
-                let array_reverse = self.allocate_native_function(NativeFunctionKind::ArrayReverse, 0)?;
-                let string_char_at = self.allocate_native_function(NativeFunctionKind::StringCharAt, 0)?;
+                let array_shift =
+                    self.allocate_native_function(NativeFunctionKind::ArrayShift, 0)?;
+                let array_unshift =
+                    self.allocate_native_function(NativeFunctionKind::ArrayUnshift, 0)?;
+                let array_concat =
+                    self.allocate_native_function(NativeFunctionKind::ArrayConcat, 0)?;
+                let array_reverse =
+                    self.allocate_native_function(NativeFunctionKind::ArrayReverse, 0)?;
+                let string_char_at =
+                    self.allocate_native_function(NativeFunctionKind::StringCharAt, 0)?;
                 let string_substring =
                     self.allocate_native_function(NativeFunctionKind::StringSubstring, 0)?;
-                let string_repeat = self.allocate_native_function(NativeFunctionKind::StringRepeat, 0)?;
+                let string_repeat =
+                    self.allocate_native_function(NativeFunctionKind::StringRepeat, 0)?;
                 let string_pad_start =
                     self.allocate_native_function(NativeFunctionKind::StringPadStart, 0)?;
-                let string_pad_end = self.allocate_native_function(NativeFunctionKind::StringPadEnd, 0)?;
+                let string_pad_end =
+                    self.allocate_native_function(NativeFunctionKind::StringPadEnd, 0)?;
                 let string_replace_all =
                     self.allocate_native_function(NativeFunctionKind::StringReplaceAll, 0)?;
 
@@ -1795,8 +1863,14 @@ impl Runtime {
                 ("Math".to_owned(), Value::Object(handles.math)),
                 ("Array".to_owned(), Value::Object(handles.array)),
                 ("Number".to_owned(), Value::Object(handles.number)),
-                ("parseInt".to_owned(), Value::NativeFunction(handles.parse_int)),
-                ("parseFloat".to_owned(), Value::NativeFunction(handles.parse_float)),
+                (
+                    "parseInt".to_owned(),
+                    Value::NativeFunction(handles.parse_int),
+                ),
+                (
+                    "parseFloat".to_owned(),
+                    Value::NativeFunction(handles.parse_float),
+                ),
                 ("isNaN".to_owned(), Value::NativeFunction(handles.is_nan)),
                 ("NaN".to_owned(), Value::Number(f64::NAN)),
                 ("Infinity".to_owned(), Value::Number(f64::INFINITY)),
@@ -2099,7 +2173,10 @@ impl Runtime {
                 .rev()
                 .find_map(|scope| scope.bindings.get("this"))
                 .map(|binding| binding.value.clone())
-                .or_else(|| self.browser_host.map(|handles| Value::Object(handles.window)))
+                .or_else(|| {
+                    self.browser_host
+                        .map(|handles| Value::Object(handles.window))
+                })
                 .unwrap_or(Value::Undefined)),
             ExpressionKind::Grouped(expression) => self.evaluate_expression(source, expression),
             ExpressionKind::Unary { operator, argument } => {
@@ -2159,24 +2236,20 @@ impl Runtime {
                 // Member calls carry their receiver into the function frame so
                 // `obj.method()` can resolve `this` to `obj`. Plain calls keep
                 // the bounded foundation behavior of an undefined receiver.
-                let (callable, this_value) = if let ExpressionKind::Member { object, property } = callee.kind() {
-                    let target = self.evaluate_expression(source, object)?;
-                    let key = self.member_key(source, property)?;
-                    let callable = self.get_member(&target, &key, callee.span().start())?;
-                    (callable, target)
-                } else {
-                    (self.evaluate_expression(source, callee)?, Value::Undefined)
-                };
+                let (callable, this_value) =
+                    if let ExpressionKind::Member { object, property } = callee.kind() {
+                        let target = self.evaluate_expression(source, object)?;
+                        let key = self.member_key(source, property)?;
+                        let callable = self.get_member(&target, &key, callee.span().start())?;
+                        (callable, target)
+                    } else {
+                        (self.evaluate_expression(source, callee)?, Value::Undefined)
+                    };
                 let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
                     values.push(self.evaluate_expression(source, argument)?);
                 }
-                self.call_value_with_this(
-                    callable,
-                    values,
-                    this_value,
-                    expression.span().start(),
-                )
+                self.call_value_with_this(callable, values, this_value, expression.span().start())
             }
             ExpressionKind::Function(function) => {
                 let name = function
@@ -2190,8 +2263,7 @@ impl Runtime {
                     .map(|span| self.span_text(source, *span).map(str::to_owned))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let captured_scopes =
-                    self.capture_function_scopes(expression.span().start())?;
+                let captured_scopes = self.capture_function_scopes(expression.span().start())?;
                 self.allocate_function(
                     FunctionRecord {
                         name,
@@ -2400,7 +2472,10 @@ impl Runtime {
             total.saturating_add(scope.bindings.len())
         });
         if captured_bindings > MAX_CAPTURED_BINDINGS_PER_FUNCTION {
-            return Err(RuntimeError::new(RuntimeErrorKind::BindingLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::BindingLimitExceeded,
+                offset,
+            ));
         }
         Ok(captured_scopes)
     }
@@ -2433,7 +2508,12 @@ impl Runtime {
         Ok(Value::Function(id))
     }
 
-    fn get_member(&mut self, target: &Value, key: &str, offset: usize) -> Result<Value, RuntimeError> {
+    fn get_member(
+        &mut self,
+        target: &Value,
+        key: &str,
+        offset: usize,
+    ) -> Result<Value, RuntimeError> {
         match target {
             Value::Array(id) => {
                 let Some(array) = self.arrays.get(*id) else {
@@ -2518,16 +2598,15 @@ impl Runtime {
                 // CSSStyleDeclaration named properties are live views over the
                 // element's current `style` attribute instead of stale object slots.
                 if let Some(element_object_id) = self.host_style_object_elements.get(id).copied() {
-                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied() else {
+                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied()
+                    else {
                         return Err(RuntimeError::new(
                             RuntimeErrorKind::InvalidMemberTarget,
                             offset,
                         ));
                     };
                     if key == "cssText" {
-                        return self
-                            .host_style_css_text(node_id, offset)
-                            .map(Value::String);
+                        return self.host_style_css_text(node_id, offset).map(Value::String);
                     }
                     let Ok(property_name) = style_property_name_from_member(key, offset) else {
                         return Ok(Value::Undefined);
@@ -2538,8 +2617,10 @@ impl Runtime {
                 }
 
                 // PHANTOM_2M14_DOM_DATASET_ATTRIBUTE_REFLECTION_I
-                if let Some(element_object_id) = self.host_dataset_object_elements.get(id).copied() {
-                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied() else {
+                if let Some(element_object_id) = self.host_dataset_object_elements.get(id).copied()
+                {
+                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied()
+                    else {
                         return Err(RuntimeError::new(
                             RuntimeErrorKind::InvalidMemberTarget,
                             offset,
@@ -2650,7 +2731,8 @@ impl Runtime {
             Value::Object(id) => {
                 // PHANTOM_2M13_CSS_STYLE_DECLARATION_I
                 if let Some(element_object_id) = self.host_style_object_elements.get(id).copied() {
-                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied() else {
+                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied()
+                    else {
                         return Err(RuntimeError::new(
                             RuntimeErrorKind::InvalidMemberTarget,
                             offset,
@@ -2679,8 +2761,10 @@ impl Runtime {
                 }
 
                 // PHANTOM_2M14_DOM_DATASET_ATTRIBUTE_REFLECTION_I
-                if let Some(element_object_id) = self.host_dataset_object_elements.get(id).copied() {
-                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied() else {
+                if let Some(element_object_id) = self.host_dataset_object_elements.get(id).copied()
+                {
+                    let Some(node_id) = self.host_object_nodes.get(&element_object_id).copied()
+                    else {
                         return Err(RuntimeError::new(
                             RuntimeErrorKind::InvalidMemberTarget,
                             offset,
@@ -3132,7 +3216,8 @@ impl Runtime {
             }
             NativeFunctionKind::ThenableResolve(promise_id, thenable_id) => {
                 let value = arguments.first().cloned().unwrap_or(Value::Undefined);
-                let state = if matches!(&value, Value::Object(object_id) if *object_id == thenable_id) {
+                let state = if matches!(&value, Value::Object(object_id) if *object_id == thenable_id)
+                {
                     PromiseState::Rejected(Value::String(
                         "thenable cannot resolve itself".to_owned(),
                     ))
@@ -3209,7 +3294,8 @@ impl Runtime {
                 };
 
                 let init = self.parse_fetch_request_init(arguments.get(1), offset)?;
-                self.issue_fetch(url.clone(), init, offset).map(Value::Object)
+                self.issue_fetch(url.clone(), init, offset)
+                    .map(Value::Object)
             }
             NativeFunctionKind::ResponseText(response_id) => {
                 self.response_text(response_id, offset).map(Value::Object)
@@ -3219,15 +3305,23 @@ impl Runtime {
                     return Ok(Value::Null);
                 };
                 let name = name.to_ascii_lowercase();
-                Ok(self.fetch_responses.get(&response_id)
+                Ok(self
+                    .fetch_responses
+                    .get(&response_id)
                     .and_then(|response| response.headers.get(&name))
                     .map_or(Value::Null, |value| Value::String(value.clone())))
             }
             NativeFunctionKind::ResponseHeaderHas(response_id) => {
-                let name = arguments.first().and_then(Value::as_str)
-                    .unwrap_or_default().to_ascii_lowercase();
-                Ok(Value::Boolean(self.fetch_responses.get(&response_id)
-                    .is_some_and(|response| response.headers.contains_key(&name))))
+                let name = arguments
+                    .first()
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                Ok(Value::Boolean(
+                    self.fetch_responses
+                        .get(&response_id)
+                        .is_some_and(|response| response.headers.contains_key(&name)),
+                ))
             }
             // PHANTOM_2M16_WEB_GLOBALS_CORE_BUILTINS_I
             NativeFunctionKind::ConsoleNoop => Ok(Value::Undefined),
@@ -3266,7 +3360,11 @@ impl Runtime {
             NativeFunctionKind::ParseInt => Ok(Value::Number(parse_int_compat(&arguments))),
             NativeFunctionKind::ParseFloat => Ok(Value::Number(parse_float_compat(&arguments))),
             NativeFunctionKind::GlobalIsNaN => Ok(Value::Boolean(
-                arguments.first().map(to_number).unwrap_or(f64::NAN).is_nan(),
+                arguments
+                    .first()
+                    .map(to_number)
+                    .unwrap_or(f64::NAN)
+                    .is_nan(),
             )),
             // PHANTOM_2M19_WEB_CORE_LIBRARY_FINAL_GATE
             NativeFunctionKind::MathTrunc => Ok(Value::Number(
@@ -3311,12 +3409,8 @@ impl Runtime {
             }
             NativeFunctionKind::ArraySlice => self.array_slice(this_value, &arguments, offset),
             NativeFunctionKind::StringTrim => self.string_trim(this_value, offset),
-            NativeFunctionKind::StringToLowerCase => {
-                self.string_case(this_value, false, offset)
-            }
-            NativeFunctionKind::StringToUpperCase => {
-                self.string_case(this_value, true, offset)
-            }
+            NativeFunctionKind::StringToLowerCase => self.string_case(this_value, false, offset),
+            NativeFunctionKind::StringToUpperCase => self.string_case(this_value, true, offset),
             NativeFunctionKind::StringIncludes => {
                 self.string_search(this_value, &arguments, StringSearchKind::Includes, offset)
             }
@@ -3339,10 +3433,14 @@ impl Runtime {
             NativeFunctionKind::ArraySome => self.array_some(this_value, &arguments, offset),
             NativeFunctionKind::ArrayEvery => self.array_every(this_value, &arguments, offset),
             NativeFunctionKind::ArrayFind => self.array_find(this_value, &arguments, offset),
-            NativeFunctionKind::ArrayFindIndex => self.array_find_index(this_value, &arguments, offset),
+            NativeFunctionKind::ArrayFindIndex => {
+                self.array_find_index(this_value, &arguments, offset)
+            }
             NativeFunctionKind::ArrayReduce => self.array_reduce(this_value, &arguments, offset),
             NativeFunctionKind::StringSplit => self.string_split(this_value, &arguments, offset),
-            NativeFunctionKind::StringReplace => self.string_replace(this_value, &arguments, offset),
+            NativeFunctionKind::StringReplace => {
+                self.string_replace(this_value, &arguments, offset)
+            }
             // PHANTOM_2M19_WEB_CORE_LIBRARY_FINAL_GATE
             NativeFunctionKind::ObjectFromEntries => self.object_from_entries(&arguments, offset),
             NativeFunctionKind::ArrayAt => self.array_at(this_value, &arguments, offset),
@@ -3374,18 +3472,30 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Some(Value::Array(entries_id)) = arguments.first() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(entries) = self.arrays.get(*entries_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let mut object = BTreeMap::new();
         for entry in entries {
             let Value::Array(pair_id) = entry else {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidMemberTarget,
+                    offset,
+                ));
             };
             let Some(pair) = self.arrays.get(pair_id) else {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidMemberTarget,
+                    offset,
+                ));
             };
             let key = pair
                 .first()
@@ -3393,7 +3503,10 @@ impl Runtime {
                 .unwrap_or_else(|| "undefined".to_owned());
             let value = pair.get(1).cloned().unwrap_or(Value::Undefined);
             if !object.contains_key(&key) && object.len() >= MAX_OBJECT_PROPERTIES {
-                return Err(RuntimeError::new(RuntimeErrorKind::PropertyLimitExceeded, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::PropertyLimitExceeded,
+                    offset,
+                ));
             }
             object.insert(key, value);
         }
@@ -3407,10 +3520,16 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let number = arguments.first().map(to_number).unwrap_or(0.0);
         if number.is_nan() {
@@ -3434,10 +3553,16 @@ impl Runtime {
 
     fn array_shift(&mut self, this_value: Value, offset: usize) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get_mut(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         if array.is_empty() {
             Ok(Value::Undefined)
@@ -3453,13 +3578,22 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get_mut(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         if array.len().saturating_add(arguments.len()) > MAX_ARRAY_LENGTH {
-            return Err(RuntimeError::new(RuntimeErrorKind::ArrayLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ArrayLimitExceeded,
+                offset,
+            ));
         }
         array.splice(0..0, arguments);
         Ok(Value::Number(array.len() as f64))
@@ -3472,26 +3606,41 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get(array_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let mut values = array;
         for argument in arguments {
             match argument {
                 Value::Array(other_id) => {
                     let Some(other) = self.arrays.get(*other_id) else {
-                        return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::InvalidMemberTarget,
+                            offset,
+                        ));
                     };
                     if values.len().saturating_add(other.len()) > MAX_ARRAY_LENGTH {
-                        return Err(RuntimeError::new(RuntimeErrorKind::ArrayLimitExceeded, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::ArrayLimitExceeded,
+                            offset,
+                        ));
                     }
                     values.extend(other.iter().cloned());
                 }
                 value => {
                     if values.len() >= MAX_ARRAY_LENGTH {
-                        return Err(RuntimeError::new(RuntimeErrorKind::ArrayLimitExceeded, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::ArrayLimitExceeded,
+                            offset,
+                        ));
                     }
                     values.push(value.clone());
                 }
@@ -3502,10 +3651,16 @@ impl Runtime {
 
     fn array_reverse(&mut self, this_value: Value, offset: usize) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get_mut(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         array.reverse();
         Ok(Value::Array(array_id))
@@ -3557,11 +3712,21 @@ impl Runtime {
         let value = Self::string_receiver(this_value, offset)?;
         let number = arguments.first().map(to_number).unwrap_or(0.0);
         if number.is_infinite() || number < 0.0 {
-            return Err(RuntimeError::new(RuntimeErrorKind::ArgumentLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ArgumentLimitExceeded,
+                offset,
+            ));
         }
-        let count = if number.is_nan() { 0 } else { number.trunc() as usize };
+        let count = if number.is_nan() {
+            0
+        } else {
+            number.trunc() as usize
+        };
         if value.len().saturating_mul(count) > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         Ok(Value::String(value.repeat(count)))
     }
@@ -3592,7 +3757,10 @@ impl Runtime {
         for index in 0..needed {
             fill.push(pad_chars[index % pad_chars.len()]);
             if fill.len().saturating_add(value.len()) > MAX_RUNTIME_STRING_BYTES {
-                return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::StringLimitExceeded,
+                    offset,
+                ));
             }
         }
         let output = if start {
@@ -3601,7 +3769,10 @@ impl Runtime {
             format!("{value}{fill}")
         };
         if output.len() > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         Ok(Value::String(output))
     }
@@ -3625,13 +3796,19 @@ impl Runtime {
         if search.is_empty() {
             output.push_str(&replacement);
             if output.len() > MAX_RUNTIME_STRING_BYTES {
-                return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::StringLimitExceeded,
+                    offset,
+                ));
             }
             for character in value.chars() {
                 output.push(character);
                 output.push_str(&replacement);
                 if output.len() > MAX_RUNTIME_STRING_BYTES {
-                    return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::StringLimitExceeded,
+                        offset,
+                    ));
                 }
             }
         } else {
@@ -3640,25 +3817,41 @@ impl Runtime {
                 output.push_str(&remaining[..index]);
                 output.push_str(&replacement);
                 if output.len() > MAX_RUNTIME_STRING_BYTES {
-                    return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::StringLimitExceeded,
+                        offset,
+                    ));
                 }
                 remaining = &remaining[index + search.len()..];
             }
             output.push_str(remaining);
         }
         if output.len() > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         Ok(Value::String(output))
     }
 
     // PHANTOM_2M18_WEB_CORE_LIBRARY_III
-    fn object_entries(&mut self, arguments: &[Value], offset: usize) -> Result<Value, RuntimeError> {
+    fn object_entries(
+        &mut self,
+        arguments: &[Value],
+        offset: usize,
+    ) -> Result<Value, RuntimeError> {
         let Some(Value::Object(object_id)) = arguments.first() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(object) = self.objects.get(*object_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let mut entries = Vec::with_capacity(object.len());
         for (key, value) in object {
@@ -3669,12 +3862,21 @@ impl Runtime {
 
     fn object_has_own(&self, arguments: &[Value], offset: usize) -> Result<Value, RuntimeError> {
         let Some(Value::Object(object_id)) = arguments.first() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(object) = self.objects.get(*object_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
-        let key = arguments.get(1).map(runtime_string).unwrap_or_else(|| "undefined".to_owned());
+        let key = arguments
+            .get(1)
+            .map(runtime_string)
+            .unwrap_or_else(|| "undefined".to_owned());
         Ok(Value::Boolean(object.contains_key(&key)))
     }
 
@@ -3685,14 +3887,20 @@ impl Runtime {
         offset: usize,
     ) -> Result<(usize, Vec<Value>, Value), RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let callback = arguments.first().cloned().unwrap_or(Value::Undefined);
         if !is_callable(&callback) {
             return Err(RuntimeError::new(RuntimeErrorKind::CallNonFunction, offset));
         }
         let Some(snapshot) = self.arrays.get(array_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         Ok((array_id, snapshot, callback))
     }
@@ -3875,7 +4083,10 @@ impl Runtime {
         } else if let Some(first) = snapshot.first() {
             (first.clone(), 1usize)
         } else {
-            return Err(RuntimeError::new(RuntimeErrorKind::ReduceEmptyArray, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ReduceEmptyArray,
+                offset,
+            ));
         };
         for (index, value) in snapshot.into_iter().enumerate().skip(start) {
             accumulator = self.call_value_with_this(
@@ -3955,7 +4166,10 @@ impl Runtime {
             .unwrap_or_else(|| "undefined".to_owned());
         let output = if let Some(index) = value.find(&search) {
             let mut output = String::with_capacity(
-                value.len().saturating_sub(search.len()).saturating_add(replacement.len()),
+                value
+                    .len()
+                    .saturating_sub(search.len())
+                    .saturating_add(replacement.len()),
             );
             output.push_str(&value[..index]);
             output.push_str(&replacement);
@@ -3965,7 +4179,10 @@ impl Runtime {
             value
         };
         if output.len() > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         Ok(Value::String(output))
     }
@@ -3973,21 +4190,37 @@ impl Runtime {
     // PHANTOM_2M17_WEB_CORE_LIBRARY_II
     fn object_keys(&mut self, arguments: &[Value], offset: usize) -> Result<Value, RuntimeError> {
         let Some(Value::Object(object_id)) = arguments.first() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(object) = self.objects.get(*object_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
-        let values = object.keys().cloned().map(Value::String).collect::<Vec<_>>();
+        let values = object
+            .keys()
+            .cloned()
+            .map(Value::String)
+            .collect::<Vec<_>>();
         self.allocate_array(values, offset)
     }
 
     fn object_values(&mut self, arguments: &[Value], offset: usize) -> Result<Value, RuntimeError> {
         let Some(Value::Object(object_id)) = arguments.first() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(object) = self.objects.get(*object_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let values = object.values().cloned().collect::<Vec<_>>();
         self.allocate_array(values, offset)
@@ -3995,7 +4228,10 @@ impl Runtime {
 
     fn object_assign(&mut self, arguments: &[Value], offset: usize) -> Result<Value, RuntimeError> {
         let Some(Value::Object(target_id)) = arguments.first().cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let mut additions = Vec::new();
         for source in arguments.iter().skip(1) {
@@ -4003,22 +4239,40 @@ impl Runtime {
                 Value::Null | Value::Undefined => continue,
                 Value::Object(source_id) => {
                     let Some(source_object) = self.objects.get(*source_id) else {
-                        return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::InvalidMemberTarget,
+                            offset,
+                        ));
                     };
-                    additions.extend(source_object.iter().map(|(key, value)| (key.clone(), value.clone())));
+                    additions.extend(
+                        source_object
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
                 }
-                _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset)),
+                _ => {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidMemberTarget,
+                        offset,
+                    ));
+                }
             }
         }
         let Some(target) = self.objects.get_mut(target_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let additional_keys = additions
             .iter()
             .filter(|(key, _)| !target.contains_key(key))
             .count();
         if target.len().saturating_add(additional_keys) > MAX_OBJECT_PROPERTIES {
-            return Err(RuntimeError::new(RuntimeErrorKind::PropertyLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::PropertyLimitExceeded,
+                offset,
+            ));
         }
         for (key, value) in additions {
             target.insert(key, value);
@@ -4033,13 +4287,22 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get_mut(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         if array.len().saturating_add(arguments.len()) > MAX_ARRAY_LENGTH {
-            return Err(RuntimeError::new(RuntimeErrorKind::ArrayLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ArrayLimitExceeded,
+                offset,
+            ));
         }
         array.extend(arguments);
         Ok(Value::Number(array.len() as f64))
@@ -4047,10 +4310,16 @@ impl Runtime {
 
     fn array_pop(&mut self, this_value: Value, offset: usize) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get_mut(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         Ok(array.pop().unwrap_or(Value::Undefined))
     }
@@ -4062,10 +4331,16 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get(array_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let separator = match arguments.first() {
             None | Some(Value::Undefined) => ",".to_owned(),
@@ -4080,7 +4355,10 @@ impl Runtime {
                 output.push_str(&runtime_string(value));
             }
             if output.len() > MAX_RUNTIME_STRING_BYTES {
-                return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::StringLimitExceeded,
+                    offset,
+                ));
             }
         }
         Ok(Value::String(output))
@@ -4094,10 +4372,16 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get(array_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let needle = arguments.first().cloned().unwrap_or(Value::Undefined);
         let start = relative_index(arguments.get(1), array.len(), false);
@@ -4121,10 +4405,16 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let Value::Array(array_id) = this_value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let Some(array) = self.arrays.get(array_id).cloned() else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            ));
         };
         let start = relative_index(arguments.first(), array.len(), false);
         let end = relative_index(arguments.get(1), array.len(), true);
@@ -4139,7 +4429,10 @@ impl Runtime {
     fn string_receiver(this_value: Value, offset: usize) -> Result<String, RuntimeError> {
         match this_value {
             Value::String(value) => Ok(value),
-            _ => Err(RuntimeError::new(RuntimeErrorKind::InvalidMemberTarget, offset)),
+            _ => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidMemberTarget,
+                offset,
+            )),
         }
     }
 
@@ -4161,7 +4454,10 @@ impl Runtime {
             value.to_lowercase()
         };
         if converted.len() > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         Ok(Value::String(converted))
     }
@@ -4174,7 +4470,10 @@ impl Runtime {
         offset: usize,
     ) -> Result<Value, RuntimeError> {
         let value = Self::string_receiver(this_value, offset)?;
-        let needle = arguments.first().map(runtime_string).unwrap_or_else(|| "undefined".to_owned());
+        let needle = arguments
+            .first()
+            .map(runtime_string)
+            .unwrap_or_else(|| "undefined".to_owned());
         let chars = value.chars().collect::<Vec<_>>();
         let start = bounded_position(arguments.get(1), chars.len(), false);
         let tail = chars.iter().skip(start).collect::<String>();
@@ -4187,9 +4486,9 @@ impl Runtime {
                 Ok(Value::Boolean(head.ends_with(&needle)))
             }
             StringSearchKind::IndexOf => {
-                let position = tail.find(&needle).map(|byte_index| {
-                    start + tail[..byte_index].chars().count()
-                });
+                let position = tail
+                    .find(&needle)
+                    .map(|byte_index| start + tail[..byte_index].chars().count());
                 Ok(Value::Number(position.map_or(-1.0, |index| index as f64)))
             }
         }
@@ -4219,7 +4518,10 @@ impl Runtime {
             .map(runtime_string)
             .unwrap_or_else(|| "undefined".to_owned());
         if source.len() > MAX_RUNTIME_STRING_BYTES {
-            return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::StringLimitExceeded,
+                offset,
+            ));
         }
         let mut parser = JsonParser::new(&source, self, offset);
         parser.parse()
@@ -4248,7 +4550,10 @@ impl Runtime {
             return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, offset));
         }
         match value {
-            Value::Undefined | Value::Function(_) | Value::NativeFunction(_) | Value::HostFunction(_) => {
+            Value::Undefined
+            | Value::Function(_)
+            | Value::NativeFunction(_)
+            | Value::HostFunction(_) => {
                 if array_slot {
                     output.push_str("null");
                     return Ok(true);
@@ -4287,9 +4592,13 @@ impl Runtime {
                     if index > 0 {
                         output.push(',');
                     }
-                    let _ = self.json_stringify_value(item, output, seen, depth + 1, true, offset)?;
+                    let _ =
+                        self.json_stringify_value(item, output, seen, depth + 1, true, offset)?;
                     if output.len() > MAX_RUNTIME_STRING_BYTES {
-                        return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::StringLimitExceeded,
+                            offset,
+                        ));
                     }
                 }
                 output.push(']');
@@ -4307,7 +4616,14 @@ impl Runtime {
                 let mut first = true;
                 for (key, item) in object {
                     let mut encoded = String::new();
-                    if !self.json_stringify_value(item, &mut encoded, seen, depth + 1, false, offset)? {
+                    if !self.json_stringify_value(
+                        item,
+                        &mut encoded,
+                        seen,
+                        depth + 1,
+                        false,
+                        offset,
+                    )? {
                         continue;
                     }
                     if !first {
@@ -4318,7 +4634,10 @@ impl Runtime {
                     output.push(':');
                     output.push_str(&encoded);
                     if output.len() > MAX_RUNTIME_STRING_BYTES {
-                        return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::StringLimitExceeded,
+                            offset,
+                        ));
                     }
                 }
                 output.push('}');
@@ -4341,45 +4660,88 @@ impl Runtime {
             return Ok(FetchRequestInit::default());
         }
         let Value::Object(object_id) = value else {
-            return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::UnsupportedFetchOptions,
+                offset,
+            ));
         };
         let Some(object) = self.objects.get(*object_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::UnsupportedFetchOptions,
+                offset,
+            ));
         };
 
         let method = match object.get("method") {
             None | Some(Value::Undefined) => "GET".to_owned(),
             Some(Value::String(value)) => canonical_fetch_method(value, offset)?,
-            _ => return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset)),
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
+            }
         };
 
         let credentials = match object.get("credentials") {
             None | Some(Value::Undefined) => FetchCredentialsMode::SameOrigin,
             Some(Value::String(value)) if value == "omit" => FetchCredentialsMode::Omit,
-            Some(Value::String(value)) if value == "same-origin" => FetchCredentialsMode::SameOrigin,
+            Some(Value::String(value)) if value == "same-origin" => {
+                FetchCredentialsMode::SameOrigin
+            }
             Some(Value::String(value)) if value == "include" => FetchCredentialsMode::Include,
-            _ => return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset)),
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
+            }
         };
 
         let body = match object.get("body") {
             None | Some(Value::Undefined) | Some(Value::Null) => None,
-            Some(Value::String(value)) if value.len() <= MAX_FETCH_BODY_BYTES => Some(value.clone()),
-            Some(Value::String(_)) => {
-                return Err(RuntimeError::new(RuntimeErrorKind::FetchResponseLimitExceeded, offset));
+            Some(Value::String(value)) if value.len() <= MAX_FETCH_BODY_BYTES => {
+                Some(value.clone())
             }
-            _ => return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset)),
+            Some(Value::String(_)) => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::FetchResponseLimitExceeded,
+                    offset,
+                ));
+            }
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
+            }
         };
         if method == "GET" && body.is_some() {
-            return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::UnsupportedFetchOptions,
+                offset,
+            ));
         }
 
         let headers = match object.get("headers") {
             None | Some(Value::Undefined) => Vec::new(),
-            Some(Value::Object(headers_id)) => self.fetch_headers_from_object(*headers_id, offset)?,
-            _ => return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset)),
+            Some(Value::Object(headers_id)) => {
+                self.fetch_headers_from_object(*headers_id, offset)?
+            }
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
+            }
         };
 
-        Ok(FetchRequestInit { method, headers, body, credentials })
+        Ok(FetchRequestInit {
+            method,
+            headers,
+            body,
+            credentials,
+        })
     }
 
     fn fetch_headers_from_object(
@@ -4388,31 +4750,51 @@ impl Runtime {
         offset: usize,
     ) -> Result<Vec<(String, String)>, RuntimeError> {
         let Some(object) = self.objects.get(object_id) else {
-            return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::UnsupportedFetchOptions,
+                offset,
+            ));
         };
         if object.len() > MAX_FETCH_HEADERS {
-            return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::UnsupportedFetchOptions,
+                offset,
+            ));
         }
         let mut total = 0usize;
         let mut headers = Vec::with_capacity(object.len());
         for (name, value) in object {
             if name.is_empty()
                 || name.len() > MAX_FETCH_HEADER_NAME_BYTES
-                || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             {
-                return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
             }
             let Value::String(value) = value else {
-                return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
             };
             if value.len() > MAX_FETCH_HEADER_VALUE_BYTES
                 || value.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0))
             {
-                return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
             }
             total = total.saturating_add(name.len()).saturating_add(value.len());
             if total > MAX_FETCH_HEADER_BYTES {
-                return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::UnsupportedFetchOptions,
+                    offset,
+                ));
             }
             headers.push((name.to_ascii_lowercase(), value.clone()));
         }
@@ -4465,7 +4847,11 @@ impl Runtime {
         body: String,
     ) -> Result<(), RuntimeError> {
         self.complete_fetch_success_inner_with_headers(
-            request_id, status, response_url, body, BTreeMap::new(),
+            request_id,
+            status,
+            response_url,
+            body,
+            BTreeMap::new(),
         )
     }
 
@@ -4508,16 +4894,17 @@ impl Runtime {
         let text_function =
             self.allocate_native_function(NativeFunctionKind::ResponseText(response_id), 0)?;
         let headers_id = object_id(self.allocate_object(BTreeMap::new(), 0)?, 0)?;
-        let get_fn = self.allocate_native_function(
-            NativeFunctionKind::ResponseHeaderGet(response_id), 0,
+        let get_fn =
+            self.allocate_native_function(NativeFunctionKind::ResponseHeaderGet(response_id), 0)?;
+        let has_fn =
+            self.allocate_native_function(NativeFunctionKind::ResponseHeaderHas(response_id), 0)?;
+        self.replace_host_object(
+            headers_id,
+            BTreeMap::from([
+                ("get".to_owned(), Value::NativeFunction(get_fn)),
+                ("has".to_owned(), Value::NativeFunction(has_fn)),
+            ]),
         )?;
-        let has_fn = self.allocate_native_function(
-            NativeFunctionKind::ResponseHeaderHas(response_id), 0,
-        )?;
-        self.replace_host_object(headers_id, BTreeMap::from([
-            ("get".to_owned(), Value::NativeFunction(get_fn)),
-            ("has".to_owned(), Value::NativeFunction(has_fn)),
-        ]))?;
         self.replace_host_object(
             response_id,
             BTreeMap::from([
@@ -5237,7 +5624,10 @@ impl Runtime {
     ) -> Result<(), RuntimeError> {
         let offset = 0usize;
         let Value::Object(event_id) = event else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidEventObject, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidEventObject,
+                offset,
+            ));
         };
         let mut sequences = self
             .event_listeners
@@ -5382,14 +5772,10 @@ impl Runtime {
             ancestor_objects.push(ancestor_object);
         }
 
-        let prevent_default = self.allocate_native_function(
-            NativeFunctionKind::EventPreventDefault(event_id),
-            offset,
-        )?;
-        let stop_propagation = self.allocate_native_function(
-            NativeFunctionKind::EventStopPropagation(event_id),
-            offset,
-        )?;
+        let prevent_default = self
+            .allocate_native_function(NativeFunctionKind::EventPreventDefault(event_id), offset)?;
+        let stop_propagation = self
+            .allocate_native_function(NativeFunctionKind::EventStopPropagation(event_id), offset)?;
         let stop_immediate = self.allocate_native_function(
             NativeFunctionKind::EventStopImmediatePropagation(event_id),
             offset,
@@ -5491,7 +5877,10 @@ impl Runtime {
         let clear_current = self.set_member(&event, "currentTarget", Value::Null, offset);
         let clear_phase = self.set_member(&event, "eventPhase", Value::Number(0.0), offset);
         let Some(control) = control else {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidEventObject, offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidEventObject,
+                offset,
+            ));
         };
         let persist_default = self.set_member(
             &event,
@@ -5638,25 +6027,25 @@ impl Runtime {
                 self.validate_host_reparenting(parent_id, &nodes, offset)?;
 
                 let siblings = self.direct_host_children(parent_id);
-                let reference_id = if method == HOST_METHOD_BEFORE || method == HOST_METHOD_REPLACE_WITH {
-                    Some(node_id)
-                } else {
-                    siblings
-                        .iter()
-                        .position(|candidate| *candidate == node_id)
-                        .and_then(|index| siblings.get(index.saturating_add(1)).copied())
-                };
+                let reference_id =
+                    if method == HOST_METHOD_BEFORE || method == HOST_METHOD_REPLACE_WITH {
+                        Some(node_id)
+                    } else {
+                        siblings
+                            .iter()
+                            .position(|candidate| *candidate == node_id)
+                            .and_then(|index| siblings.get(index.saturating_add(1)).copied())
+                    };
 
                 // Reserve conservatively before any runtime or mutation-queue change.
                 self.ensure_dom_mutation_capacity(
-                    nodes
-                        .len()
-                        .saturating_add(siblings.len())
-                        .saturating_add(if method == HOST_METHOD_REPLACE_WITH && !nodes.contains(&node_id) {
+                    nodes.len().saturating_add(siblings.len()).saturating_add(
+                        if method == HOST_METHOD_REPLACE_WITH && !nodes.contains(&node_id) {
                             1
                         } else {
                             0
-                        }),
+                        },
+                    ),
                     offset,
                 )?;
 
@@ -5758,7 +6147,9 @@ impl Runtime {
                     .to_ascii_lowercase();
                 if name.is_empty()
                     || name.len() > MAX_HOST_TAG_BYTES
-                    || name.chars().any(|character| character.is_ascii_whitespace())
+                    || name
+                        .chars()
+                        .any(|character| character.is_ascii_whitespace())
                 {
                     return Err(RuntimeError::new(
                         RuntimeErrorKind::InvalidPropertyKey,
@@ -6026,10 +6417,16 @@ impl Runtime {
             }
             HOST_METHOD_DISPATCH_EVENT => {
                 if arguments.len() != 1 {
-                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidEventObject, offset));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidEventObject,
+                        offset,
+                    ));
                 }
                 let Some(Value::Object(event_id)) = arguments.first() else {
-                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidEventObject, offset));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidEventObject,
+                        offset,
+                    ));
                 };
 
                 self.dispatch_event_object(object_id, node_id, *event_id, offset, false)
@@ -6156,11 +6553,11 @@ impl Runtime {
         }
 
         match step.relation_to_previous {
-            Some(HostSelectorCombinator::Child) => element
-                .parent_node_id
-                .is_some_and(|parent_id| {
+            Some(HostSelectorCombinator::Child) => {
+                element.parent_node_id.is_some_and(|parent_id| {
                     self.host_selector_group_matches_at(parent_id, group, index - 1)
-                }),
+                })
+            }
             Some(HostSelectorCombinator::Descendant) => {
                 let mut current = element.parent_node_id;
                 let mut visited = 0usize;
@@ -6224,11 +6621,7 @@ impl Runtime {
     }
 
     // PHANTOM_2M12_DOM_TOKENLIST_CLASSLIST_I
-    fn host_class_tokens(
-        &self,
-        node_id: u64,
-        offset: usize,
-    ) -> Result<Vec<String>, RuntimeError> {
+    fn host_class_tokens(&self, node_id: u64, offset: usize) -> Result<Vec<String>, RuntimeError> {
         let Some(element) = self.host_element(node_id) else {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::InvalidMemberTarget,
@@ -6265,7 +6658,9 @@ impl Runtime {
             .iter()
             .filter(|(name, _)| name.as_str() != "class")
             .fold(0usize, |total, (name, current)| {
-                total.saturating_add(name.len()).saturating_add(current.len())
+                total
+                    .saturating_add(name.len())
+                    .saturating_add(current.len())
             })
             .saturating_add("class".len())
             .saturating_add(value.len());
@@ -6300,7 +6695,11 @@ impl Runtime {
             ));
         };
         parse_inline_style_declarations(
-            element.attributes.get("style").map(String::as_str).unwrap_or_default(),
+            element
+                .attributes
+                .get("style")
+                .map(String::as_str)
+                .unwrap_or_default(),
             offset,
         )
     }
@@ -6317,13 +6716,14 @@ impl Runtime {
         offset: usize,
     ) -> Result<String, RuntimeError> {
         let canonical = canonical_style_property_name(property_name);
-        self.host_style_declarations(node_id, offset).map(|declarations| {
-            declarations
-                .iter()
-                .find(|(name, _)| canonical_style_property_name(name) == canonical)
-                .map(|(_, value)| value.clone())
-                .unwrap_or_default()
-        })
+        self.host_style_declarations(node_id, offset)
+            .map(|declarations| {
+                declarations
+                    .iter()
+                    .find(|(name, _)| canonical_style_property_name(name) == canonical)
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default()
+            })
     }
 
     fn set_host_style_property(
@@ -6419,7 +6819,9 @@ impl Runtime {
             .iter()
             .filter(|(name, _)| name.as_str() != "style")
             .fold(0usize, |total, (name, current)| {
-                total.saturating_add(name.len()).saturating_add(current.len())
+                total
+                    .saturating_add(name.len())
+                    .saturating_add(current.len())
             });
         let next_attribute_bytes = if css_text.is_empty() {
             retained_attribute_bytes
@@ -6493,7 +6895,8 @@ impl Runtime {
         let class_list = self.ensure_host_class_list_object(object_id, 0)?;
         let style = self.ensure_host_style_object(object_id, 0)?;
         let dataset = self.ensure_host_dataset_object(object_id, 0)?;
-        let properties = self.host_element_properties(element, object_id, class_list, style, dataset);
+        let properties =
+            self.host_element_properties(element, object_id, class_list, style, dataset);
         self.replace_host_object(object_id, properties)
     }
 
@@ -6513,17 +6916,13 @@ impl Runtime {
             return Ok(Value::Object(class_list_id));
         }
 
-        let class_list_id =
-            object_id(self.allocate_object(BTreeMap::new(), offset)?, offset)?;
+        let class_list_id = object_id(self.allocate_object(BTreeMap::new(), offset)?, offset)?;
         let properties = self.host_class_list_properties(element_object_id);
         self.replace_host_object(class_list_id, properties)?;
         Ok(Value::Object(class_list_id))
     }
 
-    fn host_class_list_properties(
-        &self,
-        element_object_id: usize,
-    ) -> BTreeMap<String, Value> {
+    fn host_class_list_properties(&self, element_object_id: usize) -> BTreeMap<String, Value> {
         BTreeMap::from([
             (
                 "add".to_owned(),
@@ -6690,7 +7089,13 @@ impl Runtime {
             ),
             (
                 "placeholder".to_owned(),
-                Value::String(element.attributes.get("placeholder").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("placeholder")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "href".to_owned(),
@@ -6698,7 +7103,13 @@ impl Runtime {
             ),
             (
                 "target".to_owned(),
-                Value::String(element.attributes.get("target").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("target")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "rel".to_owned(),
@@ -6706,27 +7117,63 @@ impl Runtime {
             ),
             (
                 "action".to_owned(),
-                Value::String(element.attributes.get("action").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("action")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "method".to_owned(),
-                Value::String(element.attributes.get("method").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("method")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "enctype".to_owned(),
-                Value::String(element.attributes.get("enctype").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("enctype")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "formAction".to_owned(),
-                Value::String(element.attributes.get("formaction").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("formaction")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "formMethod".to_owned(),
-                Value::String(element.attributes.get("formmethod").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("formmethod")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "formEnctype".to_owned(),
-                Value::String(element.attributes.get("formenctype").cloned().unwrap_or_default()),
+                Value::String(
+                    element
+                        .attributes
+                        .get("formenctype")
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
             ),
             (
                 "src".to_owned(),
@@ -6814,7 +7261,10 @@ impl Runtime {
             ),
             (
                 "replaceChildren".to_owned(),
-                Value::HostFunction(host_function_handle(object_id, HOST_METHOD_REPLACE_CHILDREN)),
+                Value::HostFunction(host_function_handle(
+                    object_id,
+                    HOST_METHOD_REPLACE_CHILDREN,
+                )),
             ),
             (
                 "removeChild".to_owned(),
@@ -6979,7 +7429,10 @@ impl Runtime {
                     .position(|candidate| *candidate == node_id)
                     .and_then(|index| {
                         if key == "previousElementSibling" {
-                            index.checked_sub(1).and_then(|previous| siblings.get(previous)).copied()
+                            index
+                                .checked_sub(1)
+                                .and_then(|previous| siblings.get(previous))
+                                .copied()
                         } else {
                             siblings.get(index.saturating_add(1)).copied()
                         }
@@ -7047,7 +7500,9 @@ impl Runtime {
             ));
         }
         for child_id in node_ids {
-            if self.host_element(*child_id).is_none() || self.would_create_host_cycle(parent_id, *child_id) {
+            if self.host_element(*child_id).is_none()
+                || self.would_create_host_cycle(parent_id, *child_id)
+            {
                 return Err(RuntimeError::new(
                     RuntimeErrorKind::InvalidDomHierarchy,
                     offset,
@@ -7062,12 +7517,7 @@ impl Runtime {
         additional: usize,
         offset: usize,
     ) -> Result<(), RuntimeError> {
-        if self
-            .dom_mutations
-            .len()
-            .saturating_add(additional)
-            > MAX_DOM_MUTATIONS_PER_EXECUTION
-        {
+        if self.dom_mutations.len().saturating_add(additional) > MAX_DOM_MUTATIONS_PER_EXECUTION {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::DomMutationLimitExceeded,
                 offset,
@@ -7311,9 +7761,8 @@ impl Runtime {
             .host_elements
             .iter()
             .filter_map(|element| {
-                (element.node_id == root_id
-                    || self.host_is_descendant_of(element.node_id, root_id))
-                .then_some(element.node_id)
+                (element.node_id == root_id || self.host_is_descendant_of(element.node_id, root_id))
+                    .then_some(element.node_id)
             })
             .collect::<BTreeSet<_>>();
         if subtree_ids.is_empty() {
@@ -7774,7 +8223,10 @@ fn dom_token_argument(value: Option<&Value>, offset: usize) -> Result<String, Ru
 
 fn dom_token_arguments(arguments: &[Value], offset: usize) -> Result<Vec<String>, RuntimeError> {
     if arguments.len() > MAX_DOM_TOKEN_ARGUMENTS {
-        return Err(RuntimeError::new(RuntimeErrorKind::ArgumentLimitExceeded, offset));
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::ArgumentLimitExceeded,
+            offset,
+        ));
     }
     arguments
         .iter()
@@ -7822,9 +8274,10 @@ fn normalize_style_property_name(raw: &str, offset: usize) -> Result<String, Run
             offset,
         ));
     }
-    if !name.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-    }) {
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
         return Err(RuntimeError::new(
             RuntimeErrorKind::InvalidCssPropertyName,
             offset,
@@ -7980,7 +8433,10 @@ fn valid_event_type(value: &str) -> bool {
 fn event_type_argument(value: Option<&Value>, offset: usize) -> Result<String, RuntimeError> {
     match value {
         Some(Value::String(value)) if valid_event_type(value) => Ok(value.clone()),
-        _ => Err(RuntimeError::new(RuntimeErrorKind::InvalidEventType, offset)),
+        _ => Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidEventType,
+            offset,
+        )),
     }
 }
 
@@ -8270,7 +8726,10 @@ fn parse_host_selector_group(group: &str) -> Option<Vec<HostSelectorStep>> {
         return None;
     }
     if steps.first()?.relation_to_previous.is_some()
-        || steps.iter().skip(1).any(|step| step.relation_to_previous.is_none())
+        || steps
+            .iter()
+            .skip(1)
+            .any(|step| step.relation_to_previous.is_none())
     {
         return None;
     }
@@ -8290,9 +8749,10 @@ fn parse_host_selector_compound(source: &str) -> Option<HostSelectorCompound> {
         index = 1;
     } else if bytes.first().is_some_and(|byte| byte.is_ascii_alphabetic()) {
         let start = index;
-        while bytes.get(index).is_some_and(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_')
-        }) {
+        while bytes
+            .get(index)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_'))
+        {
             index = index.saturating_add(1);
         }
         let value = source.get(start..index)?;
@@ -8425,9 +8885,11 @@ fn host_selector_compound_matches(
     {
         return false;
     }
-    if selector.id.as_ref().is_some_and(|id| {
-        element.attributes.get("id").map(String::as_str) != Some(id.as_str())
-    }) {
+    if selector
+        .id
+        .as_ref()
+        .is_some_and(|id| element.attributes.get("id").map(String::as_str) != Some(id.as_str()))
+    {
         return false;
     }
     if selector.classes.iter().any(|class| {
@@ -8438,13 +8900,16 @@ fn host_selector_compound_matches(
     }) {
         return false;
     }
-    selector.attributes.iter().all(|attribute| match &attribute.value {
-        Some(expected) => {
-            element.attributes.get(&attribute.name).map(String::as_str)
-                == Some(expected.as_str())
-        }
-        None => element.attributes.contains_key(&attribute.name),
-    })
+    selector
+        .attributes
+        .iter()
+        .all(|attribute| match &attribute.value {
+            Some(expected) => {
+                element.attributes.get(&attribute.name).map(String::as_str)
+                    == Some(expected.as_str())
+            }
+            None => element.attributes.contains_key(&attribute.name),
+        })
 }
 
 fn object_id(value: Value, offset: usize) -> Result<usize, RuntimeError> {
@@ -8658,7 +9123,10 @@ fn parse_float_compat(arguments: &[Value]) -> f64 {
 
     let bytes = text.as_bytes();
     let mut index = 0usize;
-    if bytes.first().is_some_and(|byte| matches!(*byte, b'+' | b'-')) {
+    if bytes
+        .first()
+        .is_some_and(|byte| matches!(*byte, b'+' | b'-'))
+    {
         index += 1;
     }
     let mut mantissa_digits = 0usize;
@@ -8769,7 +9237,12 @@ struct JsonParser<'source, 'runtime> {
 
 impl<'source, 'runtime> JsonParser<'source, 'runtime> {
     fn new(source: &'source str, runtime: &'runtime mut Runtime, offset: usize) -> Self {
-        Self { source, index: 0, runtime, offset }
+        Self {
+            source,
+            index: 0,
+            runtime,
+            offset,
+        }
     }
 
     fn parse(&mut self) -> Result<Value, RuntimeError> {
@@ -8777,14 +9250,20 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
         let value = self.parse_value(0)?;
         self.skip_whitespace();
         if self.index != self.source.len() {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidJson,
+                self.offset,
+            ));
         }
         Ok(value)
     }
 
     fn parse_value(&mut self, depth: usize) -> Result<Value, RuntimeError> {
         if depth > MAX_JSON_DEPTH {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidJson,
+                self.offset,
+            ));
         }
         self.skip_whitespace();
         match self.peek_byte() {
@@ -8795,7 +9274,10 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
             Some(b'[') => self.parse_array(depth + 1),
             Some(b'{') => self.parse_object(depth + 1),
             Some(b'-' | b'0'..=b'9') => self.parse_number().map(Value::Number),
-            _ => Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+            _ => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidJson,
+                self.offset,
+            )),
         }
     }
 
@@ -8809,7 +9291,10 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
         }
         loop {
             if values.len() >= MAX_ARRAY_LENGTH {
-                return Err(RuntimeError::new(RuntimeErrorKind::ArrayLimitExceeded, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::ArrayLimitExceeded,
+                    self.offset,
+                ));
             }
             values.push(self.parse_value(depth)?);
             self.skip_whitespace();
@@ -8822,7 +9307,12 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                     self.index += 1;
                     break;
                 }
-                _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+                _ => {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidJson,
+                        self.offset,
+                    ));
+                }
             }
         }
         self.runtime.allocate_array(values, self.offset)
@@ -8838,15 +9328,24 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
         }
         loop {
             if values.len() >= MAX_OBJECT_PROPERTIES {
-                return Err(RuntimeError::new(RuntimeErrorKind::PropertyLimitExceeded, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::PropertyLimitExceeded,
+                    self.offset,
+                ));
             }
             if self.peek_byte() != Some(b'"') {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidJson,
+                    self.offset,
+                ));
             }
             let key = self.parse_string()?;
             self.skip_whitespace();
             if self.peek_byte() != Some(b':') {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidJson,
+                    self.offset,
+                ));
             }
             self.index += 1;
             let value = self.parse_value(depth)?;
@@ -8861,7 +9360,12 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                     self.index += 1;
                     break;
                 }
-                _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+                _ => {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidJson,
+                        self.offset,
+                    ));
+                }
             }
         }
         self.runtime.allocate_object(values, self.offset)
@@ -8880,7 +9384,10 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                 '"' => return Ok(output),
                 '\\' => {
                     let Some(escape) = self.peek_byte() else {
-                        return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::InvalidJson,
+                            self.offset,
+                        ));
                     };
                     self.index += 1;
                     match escape {
@@ -8901,46 +9408,80 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                                     .get(self.index..self.index.saturating_add(2))
                                     != Some(&b"\\u"[..])
                                 {
-                                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::InvalidJson,
+                                        self.offset,
+                                    ));
                                 }
                                 self.index += 2;
                                 let low = self.parse_hex_quad()?;
                                 if !(0xDC00..=0xDFFF).contains(&low) {
-                                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::InvalidJson,
+                                        self.offset,
+                                    ));
                                 }
-                                let scalar = 0x10000 + (((high - 0xD800) as u32) << 10) + (low - 0xDC00) as u32;
+                                let scalar = 0x10000
+                                    + (((high - 0xD800) as u32) << 10)
+                                    + (low - 0xDC00) as u32;
                                 let Some(decoded) = char::from_u32(scalar) else {
-                                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::InvalidJson,
+                                        self.offset,
+                                    ));
                                 };
                                 output.push(decoded);
                             } else if (0xDC00..=0xDFFF).contains(&high) {
-                                return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                                return Err(RuntimeError::new(
+                                    RuntimeErrorKind::InvalidJson,
+                                    self.offset,
+                                ));
                             } else {
                                 let Some(decoded) = char::from_u32(high as u32) else {
-                                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                                    return Err(RuntimeError::new(
+                                        RuntimeErrorKind::InvalidJson,
+                                        self.offset,
+                                    ));
                                 };
                                 output.push(decoded);
                             }
                         }
-                        _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+                        _ => {
+                            return Err(RuntimeError::new(
+                                RuntimeErrorKind::InvalidJson,
+                                self.offset,
+                            ));
+                        }
                     }
                 }
                 character if character <= '\u{1F}' => {
-                    return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidJson,
+                        self.offset,
+                    ));
                 }
                 character => output.push(character),
             }
             if output.len() > MAX_RUNTIME_STRING_BYTES {
-                return Err(RuntimeError::new(RuntimeErrorKind::StringLimitExceeded, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::StringLimitExceeded,
+                    self.offset,
+                ));
             }
         }
-        Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset))
+        Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidJson,
+            self.offset,
+        ))
     }
 
     fn parse_hex_quad(&mut self) -> Result<u16, RuntimeError> {
         let bytes = self.source.as_bytes();
         if self.index.saturating_add(4) > bytes.len() {
-            return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidJson,
+                self.offset,
+            ));
         }
         let mut value = 0u16;
         for _ in 0..4 {
@@ -8948,7 +9489,12 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                 b'0'..=b'9' => u16::from(bytes[self.index] - b'0'),
                 b'a'..=b'f' => u16::from(bytes[self.index] - b'a' + 10),
                 b'A'..=b'F' => u16::from(bytes[self.index] - b'A' + 10),
-                _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+                _ => {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidJson,
+                        self.offset,
+                    ));
+                }
             };
             value = value * 16 + digit;
             self.index += 1;
@@ -8969,7 +9515,12 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                     self.index += 1;
                 }
             }
-            _ => return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset)),
+            _ => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidJson,
+                    self.offset,
+                ));
+            }
         }
         if self.peek_byte() == Some(b'.') {
             self.index += 1;
@@ -8978,12 +9529,21 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                 self.index += 1;
             }
             if self.index == fraction_start {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidJson,
+                    self.offset,
+                ));
             }
         }
-        if self.peek_byte().is_some_and(|byte| matches!(byte, b'e' | b'E')) {
+        if self
+            .peek_byte()
+            .is_some_and(|byte| matches!(byte, b'e' | b'E'))
+        {
             self.index += 1;
-            if self.peek_byte().is_some_and(|byte| matches!(byte, b'+' | b'-')) {
+            if self
+                .peek_byte()
+                .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+            {
                 self.index += 1;
             }
             let exponent_start = self.index;
@@ -8991,7 +9551,10 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
                 self.index += 1;
             }
             if self.index == exponent_start {
-                return Err(RuntimeError::new(RuntimeErrorKind::InvalidJson, self.offset));
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidJson,
+                    self.offset,
+                ));
             }
         }
         self.source[start..self.index]
@@ -9011,7 +9574,10 @@ impl<'source, 'runtime> JsonParser<'source, 'runtime> {
     }
 
     fn skip_whitespace(&mut self) {
-        while self.peek_byte().is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t')) {
+        while self
+            .peek_byte()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+        {
             self.index += 1;
         }
     }
@@ -9082,15 +9648,25 @@ fn runtime_string(value: &Value) -> String {
 
 // PHANTOM_2N16_FETCH_REQUEST_INIT_HOST_BOUNDARY_I
 fn canonical_fetch_method(value: &str, offset: usize) -> Result<String, RuntimeError> {
-    if value.is_empty() || value.len() > 16 || !value.bytes().all(|byte| byte.is_ascii_alphabetic()) {
-        return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+    if value.is_empty() || value.len() > 16 || !value.bytes().all(|byte| byte.is_ascii_alphabetic())
+    {
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::UnsupportedFetchOptions,
+            offset,
+        ));
     }
     let method = value.to_ascii_uppercase();
     if matches!(method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
-        return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::UnsupportedFetchOptions,
+            offset,
+        ));
     }
     if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH") {
-        return Err(RuntimeError::new(RuntimeErrorKind::UnsupportedFetchOptions, offset));
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::UnsupportedFetchOptions,
+            offset,
+        ));
     }
     Ok(method)
 }
@@ -9178,20 +9754,15 @@ fn relational_compare(left: &Value, right: &Value, compare: impl FnOnce(f64, f64
     }
 }
 
-
 #[cfg(test)]
 mod request_init_2n16_tests {
     use super::{BrowserHostSnapshot, FetchCredentialsMode, Runtime, RuntimeErrorKind};
 
     fn runtime() -> Runtime {
         let mut runtime = Runtime::new();
-        let snapshot = BrowserHostSnapshot::new(
-            "https://app.example.test/page",
-            "2N16",
-            1280.0,
-            720.0,
-            1.0,
-        ).unwrap_or_else(|error| panic!("snapshot failed: {error}"));
+        let snapshot =
+            BrowserHostSnapshot::new("https://app.example.test/page", "2N16", 1280.0, 720.0, 1.0)
+                .unwrap_or_else(|error| panic!("snapshot failed: {error}"));
         runtime
             .install_browser_host(&snapshot)
             .unwrap_or_else(|error| panic!("host install failed: {error}"));
@@ -9214,8 +9785,18 @@ mod request_init_2n16_tests {
         assert_eq!(request.method(), "POST");
         assert_eq!(request.credentials(), FetchCredentialsMode::Include);
         assert_eq!(request.body(), Some(r#"{"ok":true}"#));
-        assert!(request.headers().iter().any(|(name, value)| name == "content-type" && value == "application/json"));
-        assert!(request.headers().iter().any(|(name, value)| name == "x-phantom" && value == "yes"));
+        assert!(
+            request
+                .headers()
+                .iter()
+                .any(|(name, value)| name == "content-type" && value == "application/json")
+        );
+        assert!(
+            request
+                .headers()
+                .iter()
+                .any(|(name, value)| name == "x-phantom" && value == "yes")
+        );
     }
 
     #[test]
@@ -9253,26 +9834,40 @@ mod response_headers_2n18_tests {
 
     #[test]
     fn allowlist_is_case_insensitive_and_rejects_forbidden_headers() {
-        let accepted = validate_response_headers_2n18(&[(
-            "Content-Type".to_owned(), "text/plain".to_owned(),
-        )]).unwrap();
-        assert_eq!(accepted.get("content-type").map(String::as_str), Some("text/plain"));
-        assert!(validate_response_headers_2n18(&[(
-            "Set-Cookie".to_owned(), "token=secret".to_owned(),
-        )]).is_err());
-        assert!(validate_response_headers_2n18(&[(
-            "X-Secret".to_owned(), "private".to_owned(),
-        )]).is_err());
+        let accepted =
+            validate_response_headers_2n18(&[("Content-Type".to_owned(), "text/plain".to_owned())])
+                .unwrap();
+        assert_eq!(
+            accepted.get("content-type").map(String::as_str),
+            Some("text/plain")
+        );
+        assert!(
+            validate_response_headers_2n18(&[
+                ("Set-Cookie".to_owned(), "token=secret".to_owned(),)
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_response_headers_2n18(&[("X-Secret".to_owned(), "private".to_owned(),)])
+                .is_err()
+        );
     }
 
     #[test]
     fn invalid_values_and_duplicate_headers_fail_closed() {
-        assert!(validate_response_headers_2n18(&[(
-            "content-type".to_owned(), "text/plain\r\nCookie: a".to_owned(),
-        )]).is_err());
-        assert!(validate_response_headers_2n18(&[
-            ("content-type".to_owned(), "a".to_owned()),
-            ("Content-Type".to_owned(), "b".to_owned()),
-        ]).is_err());
+        assert!(
+            validate_response_headers_2n18(&[(
+                "content-type".to_owned(),
+                "text/plain\r\nCookie: a".to_owned(),
+            )])
+            .is_err()
+        );
+        assert!(
+            validate_response_headers_2n18(&[
+                ("content-type".to_owned(), "a".to_owned()),
+                ("Content-Type".to_owned(), "b".to_owned()),
+            ])
+            .is_err()
+        );
     }
 }
